@@ -1,0 +1,34 @@
+import 'package:flutter_test/flutter_test.dart';
+
+import 'package:armin/core/models/task_status.dart';
+import 'package:armin/features/tasks/services/task_status_machine.dart';
+
+void main() {
+  test('allows valid task status transitions', () {
+    final machine = TaskStatusMachine();
+
+    expect(
+        machine.next(TaskStatus.draft, TaskStatus.pending), TaskStatus.pending);
+    expect(machine.next(TaskStatus.pending, TaskStatus.running),
+        TaskStatus.running);
+    expect(
+      machine.next(TaskStatus.running, TaskStatus.needApproval),
+      TaskStatus.needApproval,
+    );
+    expect(
+      machine.next(TaskStatus.needApproval, TaskStatus.running),
+      TaskStatus.running,
+    );
+    expect(machine.next(TaskStatus.running, TaskStatus.completed),
+        TaskStatus.completed);
+  });
+
+  test('rejects invalid task status transitions', () {
+    final machine = TaskStatusMachine();
+
+    expect(
+      () => machine.next(TaskStatus.completed, TaskStatus.running),
+      throwsStateError,
+    );
+  });
+}

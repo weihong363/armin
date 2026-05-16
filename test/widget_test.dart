@@ -9,7 +9,8 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Armin'), findsOneWidget);
-    expect(find.text('Task Queue'), findsOneWidget);
-    expect(find.text('New Task'), findsOneWidget);
+    expect(find.text('当前任务'), findsOneWidget);
+    expect(find.text('最近任务'), findsOneWidget);
+    expect(find.text('新任务'), findsOneWidget);
   });
 }

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../core/models/task_status.dart';
+import '../theme/armin_theme.dart';
 
 class StatusBadge extends StatelessWidget {
   const StatusBadge({required this.status, super.key});
@@ -13,9 +14,17 @@ class StatusBadge extends StatelessWidget {
       TaskStatus.completed => Colors.green.shade700,
       TaskStatus.failed => Colors.red.shade700,
       TaskStatus.needApproval => Colors.orange.shade800,
-      TaskStatus.running => Colors.blue.shade700,
+      TaskStatus.running => ArminTheme.primary,
       TaskStatus.pending => Colors.blueGrey.shade700,
       TaskStatus.draft => Colors.grey.shade700,
+    };
+    final label = switch (status) {
+      TaskStatus.completed => '已完成',
+      TaskStatus.failed => '失败',
+      TaskStatus.needApproval => '需确认',
+      TaskStatus.running => '运行中',
+      TaskStatus.pending => '等待中',
+      TaskStatus.draft => '草稿',
     };
 
     return DecoratedBox(
@@ -26,7 +35,7 @@ class StatusBadge extends StatelessWidget {
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
         child: Text(
-          status.label,
+          label,
           style: TextStyle(
             color: color,
             fontWeight: FontWeight.w600,

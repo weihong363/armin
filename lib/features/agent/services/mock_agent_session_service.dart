@@ -74,4 +74,16 @@ TASK_RESULT_END
       done: true,
     );
   }
+
+  @override
+  Future<void> sendFollowUp(AgentControlRequest request) async {}
+
+  @override
+  Future<void> pause(AgentControlRequest request) async {}
+
+  @override
+  Future<void> resume(AgentControlRequest request) async {}
+
+  @override
+  Future<void> stop(AgentControlRequest request) async {}
 }

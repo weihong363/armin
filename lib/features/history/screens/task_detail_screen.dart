@@ -326,7 +326,12 @@ class _LogPanelState extends State<_LogPanel> {
                     tone: ControlTone.neutral,
                     onPressed: _controlState == RuntimeControlState.stopped
                         ? null
-                        : () {
+                        : () async {
+                            if (_controlState == RuntimeControlState.paused) {
+                              await AppStateScope.of(context).resumeTask(task);
+                            } else {
+                              await AppStateScope.of(context).pauseTask(task);
+                            }
                             setState(() {
                               _controlState =
                                   _controlState == RuntimeControlState.paused
@@ -341,7 +346,8 @@ class _LogPanelState extends State<_LogPanel> {
                     tone: ControlTone.danger,
                     onPressed: _controlState == RuntimeControlState.stopped
                         ? null
-                        : () {
+                        : () async {
+                            await AppStateScope.of(context).stopTask(task);
                             setState(() {
                               _controlState = RuntimeControlState.stopped;
                             });
@@ -381,11 +387,37 @@ class _LogPanelState extends State<_LogPanel> {
                     for (final approval in task.approvalRequests.isEmpty
                         ? [task.approval!]
                         : task.approvalRequests)
-                      SelectableText(
-                        'reason: ${approval.reason}\n'
-                        'command: ${approval.command}\n'
-                        'risk: ${approval.risk}\n'
-                        'status: ${approval.status}',
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 12),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            SelectableText(
+                              'reason: ${approval.reason}\n'
+                              'command: ${approval.command}\n'
+                              'risk: ${approval.risk}\n'
+                              'status: ${approval.status}',
+                            ),
+                            const SizedBox(height: 10),
+                            Wrap(
+                              spacing: 8,
+                              children: [
+                                FilledButton.icon(
+                                  onPressed: () => AppStateScope.of(context)
+                                      .resolveApproval(task, approved: true),
+                                  icon: const Icon(Icons.check_outlined),
+                                  label: const Text('允许'),
+                                ),
+                                OutlinedButton.icon(
+                                  onPressed: () => AppStateScope.of(context)
+                                      .resolveApproval(task, approved: false),
+                                  icon: const Icon(Icons.close_outlined),
+                                  label: const Text('拒绝'),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
                       ),
                   ],
                 ),
@@ -419,7 +451,16 @@ class _LogPanelState extends State<_LogPanel> {
                 ),
                 const SizedBox(height: 12),
                 FilledButton.icon(
-                  onPressed: () => Navigator.of(context).pop(),
+                  onPressed: () async {
+                    final instruction = controller.text.trim();
+                    if (instruction.isNotEmpty) {
+                      await AppStateScope.of(context)
+                          .sendFollowUp(widget.task, instruction);
+                    }
+                    if (context.mounted) {
+                      Navigator.of(context).pop();
+                    }
+                  },
                   icon: const Icon(Icons.send_outlined),
                   label: const Text('记录为 Phase 1 占位'),
                 ),
@@ -625,7 +666,7 @@ class _MetricPayloadDisplay extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final structured = _parsePayload(payloadJson);
-    
+
     if (structured.isEmpty) {
       return Text('无数据', style: Theme.of(context).textTheme.bodySmall);
     }
@@ -642,9 +683,9 @@ class _MetricPayloadDisplay extends StatelessWidget {
                 Text(
                   '${entry.key}: ',
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    fontWeight: FontWeight.w500,
-                    color: ArminTheme.ink.withValues(alpha: 0.7),
-                  ),
+                        fontWeight: FontWeight.w500,
+                        color: ArminTheme.ink.withValues(alpha: 0.7),
+                      ),
                 ),
                 Expanded(
                   child: Text(

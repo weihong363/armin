@@ -28,4 +28,25 @@ class MetricEvent {
   final String eventType;
   final String payloadJson;
   final DateTime createdAt;
+
+  factory MetricEvent.fromJson(Map<String, Object?> json) {
+    return MetricEvent(
+      id: json['id'] as String? ?? '',
+      taskId: json['taskId'] as String? ?? '',
+      eventType: json['eventType'] as String? ?? '',
+      payloadJson: json['payloadJson'] as String? ?? '{}',
+      createdAt: DateTime.tryParse(json['createdAt'] as String? ?? '') ??
+          DateTime.now(),
+    );
+  }
+
+  Map<String, Object?> toJson() {
+    return {
+      'id': id,
+      'taskId': taskId,
+      'eventType': eventType,
+      'payloadJson': payloadJson,
+      'createdAt': createdAt.toIso8601String(),
+    };
+  }
 }

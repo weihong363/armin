@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 
 import '../../../app_state_scope.dart';
@@ -348,16 +350,18 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
 
     setState(() => _isSending = true);
     final state = AppStateScope.of(context);
+    final host = state.defaultHost;
     final now = DateTime.now();
     final taskId = 'task-${now.microsecondsSinceEpoch}';
     final prompt = _buildPrompt();
+    final privateKeyPem = await _privateKeyPemFor(host.privateKeyPath);
     final secretRecords = _secrets
         .map(
             (secret) => secret.toRedactedRecord(taskId: taskId, createdAt: now))
         .toList();
     var task = TaskSession(
       id: taskId,
-      host: state.defaultHost,
+      host: host,
       title: _titleFrom(taskText),
       status: TaskStatus.running,
       createdAt: now,
@@ -408,7 +412,7 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
         MetricEvent.create(
           taskId: taskId,
           eventType: 'task_started',
-          payloadJson: '{"agent_command":"${state.defaultHost.agentCommand}"}',
+          payloadJson: '{"agent_command":"${host.agentCommand}"}',
           now: now,
         ),
       ],
@@ -419,9 +423,14 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
       AgentExecutionRequest(
         prompt: prompt,
         scenario: _scenario,
-        hostId: state.defaultHost.id,
-        projectPath: state.defaultHost.projectPath,
-        agentCommand: state.defaultHost.agentCommand,
+        hostId: host.id,
+        host: host.host,
+        port: host.port,
+        username: host.username,
+        projectPath: host.projectPath,
+        tmuxSessionName: host.tmuxSessionName,
+        agentCommand: host.agentCommand,
+        privateKeyPem: privateKeyPem,
       ),
     )) {
       final updateAt = DateTime.now();
@@ -519,6 +528,21 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
       return trimmed;
     }
     return '${trimmed.substring(0, 32)}...';
+  }
+
+  Future<String?> _privateKeyPemFor(String rawPath) async {
+    final path = rawPath.trim();
+    if (path.isEmpty) {
+      return null;
+    }
+    final expandedPath = path.startsWith('~/')
+        ? '${Platform.environment['HOME'] ?? ''}/${path.substring(2)}'
+        : path;
+    final file = File(expandedPath);
+    if (!await file.exists()) {
+      return null;
+    }
+    return file.readAsString();
   }
 }
 

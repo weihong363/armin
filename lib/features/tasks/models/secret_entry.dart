@@ -53,4 +53,32 @@ class SecretRedactedRecord {
   final String placeholder;
   final bool oneTimeOnly;
   final DateTime? createdAt;
+
+  factory SecretRedactedRecord.fromJson(Map<String, Object?> json) {
+    return SecretRedactedRecord(
+      id: json['id'] as String? ?? '',
+      taskId: json['taskId'] as String? ?? '',
+      name: json['name'] as String? ?? '',
+      usage: json['usage'] as String? ?? '',
+      redactedValue: json['redactedValue'] as String? ?? '[REDACTED]',
+      scope: json['scope'] as String? ?? 'current_task_only',
+      placeholder: json['placeholder'] as String? ?? '',
+      oneTimeOnly: json['oneTimeOnly'] as bool? ?? true,
+      createdAt: DateTime.tryParse(json['createdAt'] as String? ?? ''),
+    );
+  }
+
+  Map<String, Object?> toJson() {
+    return {
+      'id': id,
+      'taskId': taskId,
+      'name': name,
+      'usage': usage,
+      'redactedValue': redactedValue,
+      'scope': scope,
+      'placeholder': placeholder,
+      'oneTimeOnly': oneTimeOnly,
+      'createdAt': createdAt?.toIso8601String(),
+    };
+  }
 }

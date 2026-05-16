@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../../app_state_scope.dart';
 import '../../../core/models/task_status.dart';
+import '../../../shared/theme/armin_theme.dart';
 import '../../agent/services/agent_session_service.dart';
 import '../../history/screens/task_detail_screen.dart';
 import '../models/execution_log.dart';
@@ -59,28 +60,47 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('New Task')),
+      appBar: AppBar(
+        title: const Text('新建任务'),
+        actions: [
+          IconButton(
+            tooltip: 'Prompt',
+            icon: const Icon(Icons.description_outlined),
+            onPressed: () => _showPromptPreview(context),
+          ),
+        ],
+      ),
       body: ListView(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.fromLTRB(20, 12, 20, 112),
         children: [
-          FilledButton.icon(
-            icon: Icon(_isListening ? Icons.hourglass_top : Icons.mic_outlined),
-            label: Text(_isListening ? 'Listening...' : 'Mock Voice Input'),
-            onPressed: _isListening ? null : _listen,
+          _VoiceCard(
+            isListening: _isListening,
+            onListen: _listen,
           ),
           if (_rawStt.isNotEmpty) ...[
             const SizedBox(height: 12),
-            Text('Raw STT', style: Theme.of(context).textTheme.titleSmall),
-            Text(_rawStt),
+            _SurfaceCard(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('原始语音转写', style: Theme.of(context).textTheme.titleSmall),
+                  const SizedBox(height: 8),
+                  Text(_rawStt, style: Theme.of(context).textTheme.bodySmall),
+                ],
+              ),
+            ),
           ],
           const SizedBox(height: 16),
+          Text('任务草稿', style: Theme.of(context).textTheme.titleSmall),
+          const SizedBox(height: 8),
           TextField(
             controller: _taskController,
             minLines: 6,
             maxLines: 10,
             decoration: const InputDecoration(
-              labelText: 'Task description',
+              hintText: '描述你要交给 Codex 的任务...',
               alignLabelWithHint: true,
+              counterText: '36/1000',
             ),
             onChanged: (_) => _refreshPreview(),
           ),
@@ -112,13 +132,13 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
             minLines: 4,
             maxLines: 8,
             decoration: const InputDecoration(
-              labelText: 'Supplemental context',
+              labelText: '补充上下文',
               alignLabelWithHint: true,
             ),
             onChanged: (_) => _refreshPreview(),
           ),
           const SizedBox(height: 16),
-          Text('Constraints', style: Theme.of(context).textTheme.titleSmall),
+          Text('执行约束', style: Theme.of(context).textTheme.titleSmall),
           const SizedBox(height: 8),
           Wrap(
             spacing: 8,
@@ -144,7 +164,7 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
           const SizedBox(height: 16),
           DropdownButtonFormField<MockAgentScenario>(
             initialValue: _scenario,
-            decoration: const InputDecoration(labelText: 'Mock result'),
+            decoration: const InputDecoration(labelText: 'Mock 执行结果'),
             items: const [
               DropdownMenuItem(
                 value: MockAgentScenario.completed,
@@ -166,27 +186,27 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
             },
           ),
           const SizedBox(height: 16),
-          Text('Secrets', style: Theme.of(context).textTheme.titleSmall),
+          Text('敏感信息', style: Theme.of(context).textTheme.titleSmall),
           const SizedBox(height: 8),
           TextField(
             controller: _secretNameController,
-            decoration: const InputDecoration(labelText: 'Secret name'),
+            decoration: const InputDecoration(labelText: 'Secret 名称'),
           ),
           const SizedBox(height: 8),
           TextField(
             controller: _secretValueController,
             obscureText: true,
-            decoration: const InputDecoration(labelText: 'Secret value'),
+            decoration: const InputDecoration(labelText: 'Secret 值'),
           ),
           const SizedBox(height: 8),
           TextField(
             controller: _secretUsageController,
-            decoration: const InputDecoration(labelText: 'Usage'),
+            decoration: const InputDecoration(labelText: '用途'),
           ),
           const SizedBox(height: 8),
           OutlinedButton.icon(
             icon: const Icon(Icons.add),
-            label: const Text('Add Secret'),
+            label: const Text('添加 Secret'),
             onPressed: _addSecret,
           ),
           for (final secret in _secrets)
@@ -196,29 +216,30 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
               title: Text(secret.placeholder),
               subtitle: Text(secret.usage),
             ),
-          const SizedBox(height: 16),
-          Text('Prompt Preview', style: Theme.of(context).textTheme.titleSmall),
-          const SizedBox(height: 8),
-          DecoratedBox(
-            decoration: BoxDecoration(
-              color: Colors.white,
-              border: Border.all(color: const Color(0xFFE3E7ED)),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: SelectableText(
-                _promptPreview.isEmpty ? _buildPrompt() : _promptPreview,
-              ),
-            ),
-          ),
-          const SizedBox(height: 24),
-          FilledButton.icon(
-            icon: const Icon(Icons.send_outlined),
-            label: Text(_isSending ? 'Sending...' : 'Send to Mock Agent'),
-            onPressed: _isSending ? null : _send,
-          ),
         ],
+      ),
+      bottomNavigationBar: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 10, 20, 16),
+          child: Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: () => _showPromptPreview(context),
+                  child: const Text('预览 Prompt'),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: FilledButton.icon(
+                  icon: const Icon(Icons.send_outlined),
+                  label: Text(_isSending ? '发送中...' : '发送给 Codex'),
+                  onPressed: _isSending ? null : _send,
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -278,6 +299,42 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
 
   void _refreshPreview() {
     setState(() => _promptPreview = _buildPrompt());
+  }
+
+  void _showPromptPreview(BuildContext context) {
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (context) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Prompt Preview',
+                  style: Theme.of(context).textTheme.titleLarge,
+                ),
+                const SizedBox(height: 12),
+                ConstrainedBox(
+                  constraints: BoxConstraints(
+                    maxHeight: MediaQuery.sizeOf(context).height * 0.62,
+                  ),
+                  child: SingleChildScrollView(
+                    child: SelectableText(
+                      _promptPreview.isEmpty ? _buildPrompt() : _promptPreview,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
   }
 
   Future<void> _send() async {
@@ -462,5 +519,186 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
       return trimmed;
     }
     return '${trimmed.substring(0, 32)}...';
+  }
+}
+
+class _VoiceCard extends StatefulWidget {
+  const _VoiceCard({required this.isListening, required this.onListen});
+
+  final bool isListening;
+  final VoidCallback onListen;
+
+  @override
+  State<_VoiceCard> createState() => _VoiceCardState();
+}
+
+class _VoiceCardState extends State<_VoiceCard>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 900),
+    );
+    if (widget.isListening) {
+      _controller.repeat(reverse: true);
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant _VoiceCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.isListening && !_controller.isAnimating) {
+      _controller.repeat(reverse: true);
+    }
+    if (!widget.isListening && _controller.isAnimating) {
+      _controller.stop();
+      _controller.value = 0;
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return _SurfaceCard(
+      child: InkWell(
+        onTap: widget.isListening ? null : widget.onListen,
+        borderRadius: BorderRadius.circular(18),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 22),
+          child: Column(
+            children: [
+              AnimatedBuilder(
+                animation: _controller,
+                builder: (context, _) {
+                  final pulse = widget.isListening ? _controller.value : 0.0;
+                  return SizedBox(
+                    width: 132,
+                    height: 116,
+                    child: Stack(
+                      alignment: Alignment.center,
+                      children: [
+                        _PulseRing(size: 104 + pulse * 24, opacity: 0.18),
+                        _PulseRing(size: 88 + pulse * 18, opacity: 0.28),
+                        Container(
+                          width: 78,
+                          height: 78,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: const Color(0xFFE4F4EF),
+                            border: Border.all(
+                              color: ArminTheme.mint.withValues(alpha: 0.55),
+                              width: 2,
+                            ),
+                          ),
+                          child: Center(
+                            child: _VoiceWaveform(
+                              progress:
+                                  widget.isListening ? _controller.value : 0.35,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+              const SizedBox(height: 10),
+              Text(
+                widget.isListening ? '正在听...' : '按住说话',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+              const SizedBox(height: 4),
+              Text(
+                widget.isListening ? '正在生成语音波形' : '松开发送，或点击停止',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _PulseRing extends StatelessWidget {
+  const _PulseRing({required this.size, required this.opacity});
+
+  final double size;
+  final double opacity;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        border: Border.all(
+          color: ArminTheme.mint.withValues(alpha: opacity),
+          width: 2,
+        ),
+      ),
+    );
+  }
+}
+
+class _VoiceWaveform extends StatelessWidget {
+  const _VoiceWaveform({required this.progress});
+
+  final double progress;
+
+  @override
+  Widget build(BuildContext context) {
+    const baseHeights = [14.0, 24.0, 34.0, 22.0, 30.0, 18.0];
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        for (var index = 0; index < baseHeights.length; index++)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 2),
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 160),
+              width: 4,
+              height: baseHeights[index] *
+                  (0.72 + 0.45 * ((progress + index * 0.19) % 1.0)),
+              decoration: BoxDecoration(
+                color: ArminTheme.primary,
+                borderRadius: BorderRadius.circular(999),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _SurfaceCard extends StatelessWidget {
+  const _SurfaceCard({required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: ArminTheme.border),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: child,
+      ),
+    );
   }
 }

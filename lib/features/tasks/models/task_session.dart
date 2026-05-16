@@ -74,6 +74,50 @@ class TaskSession {
   final List<MetricEvent> metricEvents;
   final List<Subtask> subtasks;
 
+  factory TaskSession.fromJson(Map<String, Object?> json) {
+    final hostJson = json['host'];
+    return TaskSession(
+      id: json['id'] as String? ?? '',
+      host: hostJson is Map<String, Object?>
+          ? HostConfig.fromJson(hostJson)
+          : HostConfig.mock(),
+      title: json['title'] as String? ?? '',
+      status: TaskStatus.values.firstWhere(
+        (status) => status.name == json['status'],
+        orElse: () => TaskStatus.pending,
+      ),
+      createdAt: _date(json['createdAt']),
+      updatedAt: _date(json['updatedAt']),
+      startedAt: _nullableDate(json['startedAt']),
+      completedAt: _nullableDate(json['completedAt']),
+      parentTaskId: json['parentTaskId'] as String?,
+      workerLabel: json['workerLabel'] as String?,
+      rawSttText: json['rawSttText'] as String? ?? '',
+      cleanedDraft: json['cleanedDraft'] as String? ?? '',
+      userText: json['userText'] as String? ?? '',
+      context: json['context'] as String? ?? '',
+      constraints: _constraintsFromJson(json['constraints']),
+      finalPrompt: json['finalPrompt'] as String? ?? '',
+      secretRecords: _listOf(
+        json['secretRecords'],
+        SecretRedactedRecord.fromJson,
+      ),
+      rawLog: json['rawLog'] as String? ?? '',
+      shortSummary: json['shortSummary'] as String? ?? '',
+      summary: json['summary'] as String?,
+      result: _objectOf(json['result'], TaskResult.fromJson),
+      approval: _objectOf(json['approval'], ApprovalRequest.fromJson),
+      voiceInputs: _listOf(json['voiceInputs'], VoiceInput.fromJson),
+      draftRecord: _objectOf(json['draftRecord'], TaskDraft.fromJson),
+      promptRecord: _objectOf(json['promptRecord'], PromptRecord.fromJson),
+      executionLogs: _listOf(json['executionLogs'], ExecutionLog.fromJson),
+      approvalRequests:
+          _listOf(json['approvalRequests'], ApprovalRequest.fromJson),
+      metricEvents: _listOf(json['metricEvents'], MetricEvent.fromJson),
+      subtasks: _listOf(json['subtasks'], Subtask.fromJson),
+    );
+  }
+
   TaskSession copyWith({
     String? id,
     HostConfig? host,
@@ -138,4 +182,85 @@ class TaskSession {
       subtasks: subtasks ?? this.subtasks,
     );
   }
+
+  Map<String, Object?> toJson() {
+    return {
+      'id': id,
+      'host': host.toJson(),
+      'title': title,
+      'status': status.name,
+      'createdAt': createdAt.toIso8601String(),
+      'updatedAt': updatedAt.toIso8601String(),
+      'startedAt': startedAt?.toIso8601String(),
+      'completedAt': completedAt?.toIso8601String(),
+      'parentTaskId': parentTaskId,
+      'workerLabel': workerLabel,
+      'rawSttText': rawSttText,
+      'cleanedDraft': cleanedDraft,
+      'userText': userText,
+      'context': context,
+      'constraints': constraints.map((constraint) => constraint.name).toList(),
+      'finalPrompt': finalPrompt,
+      'secretRecords': secretRecords.map((record) => record.toJson()).toList(),
+      'rawLog': rawLog,
+      'shortSummary': shortSummary,
+      'summary': summary,
+      'result': result?.toJson(),
+      'approval': approval?.toJson(),
+      'voiceInputs': voiceInputs.map((input) => input.toJson()).toList(),
+      'draftRecord': draftRecord?.toJson(),
+      'promptRecord': promptRecord?.toJson(),
+      'executionLogs': executionLogs.map((log) => log.toJson()).toList(),
+      'approvalRequests':
+          approvalRequests.map((approval) => approval.toJson()).toList(),
+      'metricEvents': metricEvents.map((event) => event.toJson()).toList(),
+      'subtasks': subtasks.map((subtask) => subtask.toJson()).toList(),
+    };
+  }
+}
+
+DateTime _date(Object? value) {
+  return DateTime.tryParse(value as String? ?? '') ?? DateTime.now();
+}
+
+DateTime? _nullableDate(Object? value) {
+  return DateTime.tryParse(value as String? ?? '');
+}
+
+Set<TaskConstraint> _constraintsFromJson(Object? value) {
+  if (value is! List) {
+    return const {};
+  }
+  return value
+      .whereType<String>()
+      .map(
+        (name) => TaskConstraint.values.firstWhere(
+          (constraint) => constraint.name == name,
+          orElse: () => TaskConstraint.minimalChange,
+        ),
+      )
+      .toSet();
+}
+
+T? _objectOf<T>(
+  Object? value,
+  T Function(Map<String, Object?> json) fromJson,
+) {
+  if (value is Map<String, Object?>) {
+    return fromJson(value);
+  }
+  return null;
+}
+
+List<T> _listOf<T>(
+  Object? value,
+  T Function(Map<String, Object?> json) fromJson,
+) {
+  if (value is! List) {
+    return const [];
+  }
+  return value
+      .whereType<Map<String, Object?>>()
+      .map(fromJson)
+      .toList(growable: false);
 }

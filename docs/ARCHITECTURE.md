@@ -5,18 +5,18 @@ Armin 是一个 Flutter 应用，采用本地优先的状态管理，并围绕�
 ## 层级结构
 
 - `core/models`: 共享状态和跨功能值类型
-- `core/storage`: 历史存储抽象及第一阶段的内存实现
-- `features/voice`: STT/TTS 抽象以及模拟语音服务
+- `core/storage`: 历史存储抽象、内存实现和 JSON 文件持久化实现
+- `features/voice`: STT/TTS 抽象、模拟语音服务和设备语音服务
 - `features/tasks`: 草稿模型、提示构建器、秘密信息脱敏、约束提取、状态流转和任务 UI
-- `features/agent`: 代理会话抽象、模拟代理执行、未来的 SSH/tmux 服务、结果解析器
+- `features/agent`: 代理会话抽象、模拟代理执行、SSH/tmux 服务、结果解析器
 - `features/hosts`: 主机配置模型和 UI
 - `features/history`: 任务详情审计视图
 
 ## 本地存储
 
-第一阶段使用 `InMemoryTaskHistoryStore`。存储边界设计得较为紧凑，以便第二阶段可以添加 SQLite 或其他本地数据库而无需更改 UI 流程。
+测试和 mock flow 使用 `InMemoryTaskHistoryStore`。应用运行时使用 `JsonTaskHistoryStore`，通过 `path_provider` 将 host 和 task history 写入应用文档目录下的 `armin_history.json`。
 
-正常任务历史绝不能存储明文敏感值。未来的持久化密钥必须通过 Android Keystore 或 EncryptedSharedPreferences 进行处理。
+正常任务历史绝不能存储明文敏感值。Phase 2 只持久化 private key path，不持久化 password 或 private key value。后续可将可复用 secret 迁移到 Android Keystore 或 EncryptedSharedPreferences。
 
 ## 代理会话服务
 
@@ -33,14 +33,14 @@ Stream<AgentExecutionUpdate> execute(AgentExecutionRequest request);
 - 完成的 `TASK_RESULT`
 - 失败的 `TASK_RESULT`
 
-`SSHAgentSessionService` 是第二阶段的占位符。其目标流程为：
+`SSHAgentSessionService` 的 Phase 2 流程为：
 
 1. 连接到主机
 2. 附加或创建 tmux 会话，默认为 `armin-codex`
 3. 进入项目路径
 4. 启动代理命令，默认为 `codex`
 5. 发送最终提示
-6. 流式传输原始输出
+6. 轮询 `tmux capture-pane` 并流式写入原始输出
 7. 解析 `TASK_RESULT` 和 `NEED_APPROVAL` 块
 
 Armin 不负责代理的推理、规划、代码合并或调度。它仅管理 shell 级别的通信和可审计性。
@@ -73,13 +73,13 @@ Armin 不负责代理的推理、规划、代码合并或调度。它仅管理 s
 
 新建任务：
 
-- 模拟语音输入
+- 设备语音输入，测试可注入 mock
 - 任务描述编辑器
 - 上下文编辑器
 - 约束芯片
 - 密钥输入
 - 提示预览
-- 模拟执行场景选择器
+- 发送到真实 SSH/tmux agent session
 
 任务详情：
 
@@ -94,4 +94,4 @@ Armin 不负责代理的推理、规划、代码合并或调度。它仅管理 s
 
 ## 运行时控制
 
-运行时控制仅限于 shell 级别。跟进和中止指令作为追加文本发送到活动的终端会话。暂停、恢复和停止功能需要在 SSH/tmux 实现后才能影响实际执行。
+运行时控制仅限于 shell 级别。跟进指令作为 `RUNTIME_UPDATE` 文本发送到活动 tmux 会话。批准/拒绝会作为 `APPROVAL_DECISION` 文本发送回当前会话。暂停发送 `C-z`，恢复发送 `fg`，停止发送 `C-c`。Armin 不解释或重写 agent 的执行逻辑。

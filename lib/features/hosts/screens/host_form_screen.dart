@@ -21,6 +21,7 @@ class _HostFormScreenState extends State<HostFormScreen> {
   late final TextEditingController _projectPathController;
   late final TextEditingController _tmuxController;
   late final TextEditingController _agentCommandController;
+  late final TextEditingController _privateKeyPathController;
   HostAuthType _authType = HostAuthType.privateKey;
 
   @override
@@ -39,6 +40,9 @@ class _HostFormScreenState extends State<HostFormScreen> {
     _agentCommandController = TextEditingController(
       text: host?.agentCommand ?? 'codex',
     );
+    _privateKeyPathController = TextEditingController(
+      text: host?.privateKeyPath ?? '~/.ssh/id_ed25519',
+    );
     _authType = host?.authType ?? HostAuthType.privateKey;
   }
 
@@ -51,6 +55,7 @@ class _HostFormScreenState extends State<HostFormScreen> {
     _projectPathController.dispose();
     _tmuxController.dispose();
     _agentCommandController.dispose();
+    _privateKeyPathController.dispose();
     super.dispose();
   }
 
@@ -91,9 +96,11 @@ class _HostFormScreenState extends State<HostFormScreen> {
             _field(_projectPathController, 'Project path'),
             _field(_tmuxController, 'tmux session name'),
             _field(_agentCommandController, 'Agent command'),
+            if (_authType == HostAuthType.privateKey)
+              _field(_privateKeyPathController, 'Private key path'),
             const SizedBox(height: 12),
             Text(
-              'Password/private key value is intentionally not persisted in Phase 1. Future storage must use Android Keystore or EncryptedSharedPreferences.',
+              'Phase 2 persists host config and private key path only. Passwords and private key values are not written into normal task history.',
               style: Theme.of(context).textTheme.bodySmall,
             ),
             const SizedBox(height: 24),
@@ -148,6 +155,7 @@ class _HostFormScreenState extends State<HostFormScreen> {
       agentCommand: _agentCommandController.text.trim(),
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
+      privateKeyPath: _privateKeyPathController.text.trim(),
     );
 
     await AppStateScope.of(context).saveHost(host);

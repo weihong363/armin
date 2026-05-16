@@ -16,6 +16,7 @@ class HostConfig {
     required this.agentCommand,
     required this.createdAt,
     required this.updatedAt,
+    this.privateKeyPath = '',
   });
 
   factory HostConfig.mock() {
@@ -32,6 +33,29 @@ class HostConfig {
       agentCommand: 'codex',
       createdAt: now,
       updatedAt: now,
+      privateKeyPath: '~/.ssh/id_ed25519',
+    );
+  }
+
+  factory HostConfig.fromJson(Map<String, Object?> json) {
+    return HostConfig(
+      id: json['id'] as String? ?? '',
+      name: json['name'] as String? ?? '',
+      host: json['host'] as String? ?? json['address'] as String? ?? '',
+      port: json['port'] as int? ?? 22,
+      username: json['username'] as String? ?? '',
+      authType: HostAuthType.values.firstWhere(
+        (type) => type.name == json['authType'],
+        orElse: () => HostAuthType.privateKey,
+      ),
+      projectPath: json['projectPath'] as String? ?? '',
+      tmuxSessionName: json['tmuxSessionName'] as String? ?? 'armin-codex',
+      agentCommand: json['agentCommand'] as String? ?? 'codex',
+      createdAt: DateTime.tryParse(json['createdAt'] as String? ?? '') ??
+          DateTime.now(),
+      updatedAt: DateTime.tryParse(json['updatedAt'] as String? ?? '') ??
+          DateTime.now(),
+      privateKeyPath: json['privateKeyPath'] as String? ?? '',
     );
   }
 
@@ -46,6 +70,7 @@ class HostConfig {
   final String agentCommand;
   final DateTime createdAt;
   final DateTime updatedAt;
+  final String privateKeyPath;
 
   String get address => host;
 
@@ -61,6 +86,7 @@ class HostConfig {
     String? agentCommand,
     DateTime? createdAt,
     DateTime? updatedAt,
+    String? privateKeyPath,
   }) {
     return HostConfig(
       id: id ?? this.id,
@@ -74,6 +100,24 @@ class HostConfig {
       agentCommand: agentCommand ?? this.agentCommand,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
+      privateKeyPath: privateKeyPath ?? this.privateKeyPath,
     );
+  }
+
+  Map<String, Object?> toJson() {
+    return {
+      'id': id,
+      'name': name,
+      'host': host,
+      'port': port,
+      'username': username,
+      'authType': authType.name,
+      'projectPath': projectPath,
+      'tmuxSessionName': tmuxSessionName,
+      'agentCommand': agentCommand,
+      'createdAt': createdAt.toIso8601String(),
+      'updatedAt': updatedAt.toIso8601String(),
+      'privateKeyPath': privateKeyPath,
+    };
   }
 }

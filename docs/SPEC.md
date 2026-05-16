@@ -157,7 +157,7 @@ MVP 不实现真正的并行运行时。数据模型为父任务、子任务、�
 
 ## 数据模型
 
-- `HostConfig`: id, name, host, port, username, authType, projectPath, tmuxSessionName, agentCommand, createdAt, updatedAt
+- `HostConfig`: id, name, host, port, username, authType, projectPath, tmuxSessionName, agentCommand, privateKeyPath, createdAt, updatedAt
 - `TaskSession`: id, title, hostId/host, projectPath, status, createdAt, startedAt, completedAt, parentTaskId, workerLabel, summary
 - `VoiceInput`: id, taskId, rawSttText, language, createdAt
 - `TaskDraft`: id, taskId, cleanedText, userEditedText, contextText, constraints, createdAt, updatedAt

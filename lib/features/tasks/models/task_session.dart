@@ -76,11 +76,12 @@ class TaskSession {
 
   factory TaskSession.fromJson(Map<String, Object?> json) {
     final hostJson = json['host'];
+    if (hostJson is! Map<String, Object?>) {
+      throw const FormatException('TaskSession JSON must include a valid host object.');
+    }
     return TaskSession(
       id: json['id'] as String? ?? '',
-      host: hostJson is Map<String, Object?>
-          ? HostConfig.fromJson(hostJson)
-          : HostConfig.mock(),
+      host: HostConfig.fromJson(hostJson),
       title: json['title'] as String? ?? '',
       status: TaskStatus.values.firstWhere(
         (status) => status.name == json['status'],

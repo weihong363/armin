@@ -1,5 +1,3 @@
-import 'dart:io';
-
 import 'package:flutter/material.dart';
 
 import '../../../app_state_scope.dart';
@@ -7,6 +5,7 @@ import '../../../core/models/task_status.dart';
 import '../../../shared/theme/armin_theme.dart';
 import '../../agent/services/agent_session_service.dart';
 import '../../history/screens/task_detail_screen.dart';
+import '../../voice/services/voice_service.dart';
 import '../models/execution_log.dart';
 import '../models/metric_event.dart';
 import '../models/prompt_record.dart';
@@ -19,8 +18,21 @@ import '../services/constraint_extractor.dart';
 import '../services/prompt_template_builder.dart';
 import '../services/speech_draft_cleaner.dart';
 
+enum _VoiceInteractionStatus {
+  idle,
+  listening,
+  transcribing,
+}
+
 class TaskDraftScreen extends StatefulWidget {
-  const TaskDraftScreen({super.key});
+  const TaskDraftScreen({
+    this.initialTaskText = '',
+    this.selectedHostId,
+    super.key,
+  });
+
+  final String initialTaskText;
+  final String? selectedHostId;
 
   @override
   State<TaskDraftScreen> createState() => _TaskDraftScreenState();
@@ -28,6 +40,7 @@ class TaskDraftScreen extends StatefulWidget {
 
 class _TaskDraftScreenState extends State<TaskDraftScreen> {
   final _taskController = TextEditingController();
+  final _projectPathController = TextEditingController();
   final _contextController = TextEditingController();
   final _secretNameController = TextEditingController();
   final _secretValueController = TextEditingController();
@@ -44,14 +57,27 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
 
   String _rawStt = '';
   String _cleanedDraft = '';
+  String _partialStt = '';
   String _promptPreview = '';
-  MockAgentScenario _scenario = MockAgentScenario.completed;
-  bool _isListening = false;
+  _VoiceInteractionStatus _voiceStatus = _VoiceInteractionStatus.idle;
   bool _isSending = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final initialText = widget.initialTaskText.trim();
+    if (initialText.isNotEmpty) {
+      _taskController.text = initialText;
+      _cleanedDraft = initialText;
+      _promptPreview = _buildPrompt();
+    }
+    // Initialize selected host from parameter or default
+  }
 
   @override
   void dispose() {
     _taskController.dispose();
+    _projectPathController.dispose();
     _contextController.dispose();
     _secretNameController.dispose();
     _secretValueController.dispose();
@@ -73,21 +99,24 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
         ],
       ),
       body: ListView(
-        padding: const EdgeInsets.fromLTRB(20, 12, 20, 112),
+        padding: const EdgeInsets.fromLTRB(20, 12, 20, 188),
         children: [
-          _VoiceCard(
-            isListening: _isListening,
-            onListen: _listen,
-          ),
-          if (_rawStt.isNotEmpty) ...[
-            const SizedBox(height: 12),
+          if (_rawStt.isNotEmpty || _partialStt.isNotEmpty) ...[
             _SurfaceCard(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('原始语音转写', style: Theme.of(context).textTheme.titleSmall),
+                  Text(
+                    _voiceStatus == _VoiceInteractionStatus.listening
+                        ? '实时语音转写'
+                        : '原始语音转写',
+                    style: Theme.of(context).textTheme.titleSmall,
+                  ),
                   const SizedBox(height: 8),
-                  Text(_rawStt, style: Theme.of(context).textTheme.bodySmall),
+                  Text(
+                    _partialStt.isNotEmpty ? _partialStt : _rawStt,
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
                 ],
               ),
             ),
@@ -103,6 +132,15 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
               hintText: '描述你要交给 Codex 的任务...',
               alignLabelWithHint: true,
               counterText: '36/1000',
+            ),
+            onChanged: (_) => _refreshPreview(),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _projectPathController,
+            decoration: const InputDecoration(
+              labelText: 'Project path',
+              hintText: '/path/to/repo',
             ),
             onChanged: (_) => _refreshPreview(),
           ),
@@ -164,30 +202,6 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
             ],
           ),
           const SizedBox(height: 16),
-          DropdownButtonFormField<MockAgentScenario>(
-            initialValue: _scenario,
-            decoration: const InputDecoration(labelText: 'Mock 执行结果'),
-            items: const [
-              DropdownMenuItem(
-                value: MockAgentScenario.completed,
-                child: Text('Completed'),
-              ),
-              DropdownMenuItem(
-                value: MockAgentScenario.needApproval,
-                child: Text('Needs approval'),
-              ),
-              DropdownMenuItem(
-                value: MockAgentScenario.failed,
-                child: Text('Failed'),
-              ),
-            ],
-            onChanged: (value) {
-              if (value != null) {
-                setState(() => _scenario = value);
-              }
-            },
-          ),
-          const SizedBox(height: 16),
           Text('敏感信息', style: Theme.of(context).textTheme.titleSmall),
           const SizedBox(height: 8),
           TextField(
@@ -221,44 +235,179 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
         ],
       ),
       bottomNavigationBar: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(20, 10, 20, 16),
-          child: Row(
-            children: [
-              Expanded(
-                child: OutlinedButton(
-                  onPressed: () => _showPromptPreview(context),
-                  child: const Text('预览 Prompt'),
+        child: DecoratedBox(
+          decoration: const BoxDecoration(
+            color: Colors.white,
+            border: Border(top: BorderSide(color: ArminTheme.border)),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 10, 20, 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _VoiceDock(
+                  status: _voiceStatus,
+                  onStart: _startListening,
+                  onStop: _stopListening,
                 ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: FilledButton.icon(
-                  icon: const Icon(Icons.send_outlined),
-                  label: Text(_isSending ? '发送中...' : '发送给 Codex'),
-                  onPressed: _isSending ? null : _send,
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: () => _showPromptPreview(context),
+                        child: const Text('预览 Prompt'),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: FilledButton.icon(
+                        icon: const Icon(Icons.send_outlined),
+                        label: Text(_isSending ? '发送中...' : '发送给 Codex'),
+                        onPressed: _isSending ? null : _send,
+                      ),
+                    ),
+                  ],
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
     );
   }
 
-  Future<void> _listen() async {
-    setState(() => _isListening = true);
-    final raw = await AppStateScope.of(context).voiceService.listenOnce();
+  Future<void> _startListening() async {
+    if (_isSending || _voiceStatus != _VoiceInteractionStatus.idle) {
+      return;
+    }
+
+    final voiceService = AppStateScope.of(context).voiceService;
+    if (!voiceService.isAvailable) {
+      _showVoiceUnavailable();
+      return;
+    }
+
+    setState(() {
+      _voiceStatus = _VoiceInteractionStatus.listening;
+      _partialStt = '';
+    });
+
+    try {
+      await voiceService.startListening(
+        onPartial: (partial) {
+          if (!mounted) {
+            return;
+          }
+          setState(() => _partialStt = partial);
+        },
+      );
+    } catch (e) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _voiceStatus = _VoiceInteractionStatus.idle;
+        _partialStt = '';
+      });
+      _showVoiceError(e);
+    }
+  }
+
+  Future<void> _stopListening() async {
+    if (_voiceStatus != _VoiceInteractionStatus.listening) {
+      return;
+    }
+
+    setState(() => _voiceStatus = _VoiceInteractionStatus.transcribing);
+
+    try {
+      final raw = await AppStateScope.of(context).voiceService.stopListening();
+
+      if (!mounted) {
+        return;
+      }
+
+      if (raw.trim().isEmpty) {
+        setState(() {
+          _voiceStatus = _VoiceInteractionStatus.idle;
+          _partialStt = '';
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('未检测到语音，请重试或手动输入'),
+            duration: Duration(seconds: 2),
+          ),
+        );
+        return;
+      }
+
+      _applyRecognizedSpeech(raw);
+    } catch (e) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _voiceStatus = _VoiceInteractionStatus.idle;
+        _partialStt = '';
+      });
+      _showVoiceError(e);
+    }
+  }
+
+  void _applyRecognizedSpeech(String raw) {
     final cleaned = _cleaner.clean(raw);
     final extracted = _extractor.extract(raw);
+    
     setState(() {
       _rawStt = raw;
-      _cleanedDraft = cleaned;
-      _taskController.text = cleaned;
+      _cleanedDraft = _appendText(_taskController.text, cleaned);
+      _taskController.text = _cleanedDraft;
+      _taskController.selection = TextSelection.collapsed(
+        offset: _taskController.text.length,
+      );
       _constraints.addAll(extracted);
-      _isListening = false;
+      _voiceStatus = _VoiceInteractionStatus.idle;
+      _partialStt = '';
       _promptPreview = _buildPrompt();
     });
+  }
+
+  String _appendText(String current, String value) {
+    final trimmedValue = value.trim();
+    if (trimmedValue.isEmpty) {
+      return current;
+    }
+
+    final trimmedCurrent = current.trim();
+    if (trimmedCurrent.isEmpty) {
+      return trimmedValue;
+    }
+    return '$trimmedCurrent\n$trimmedValue';
+  }
+
+  void _showVoiceUnavailable() {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('当前设备不支持语音，请手动输入')),
+    );
+  }
+
+  void _showVoiceError(Object error) {
+    final message = error is VoiceUnavailableException
+        ? error.message
+        : '语音识别失败：${error.toString()}';
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        duration: const Duration(seconds: 3),
+        action: SnackBarAction(
+          label: '手动输入',
+          onPressed: () {
+            FocusScope.of(context).requestFocus(FocusNode());
+          },
+        ),
+      ),
+    );
   }
 
   void _appendContext(String value) {
@@ -341,9 +490,16 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
 
   Future<void> _send() async {
     final taskText = _taskController.text.trim();
+    final projectPath = _projectPathController.text.trim();
     if (taskText.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Task description is required.')),
+      );
+      return;
+    }
+    if (projectPath.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Project path is required.')),
       );
       return;
     }
@@ -351,17 +507,32 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
     setState(() => _isSending = true);
     final state = AppStateScope.of(context);
     final host = state.defaultHost;
+    if (host == null) {
+      setState(() => _isSending = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('请先添加 SSH Host 配置。')),
+      );
+      return;
+    }
+    if (host.password.trim().isEmpty) {
+      setState(() => _isSending = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('请先在 Host 配置中填写 SSH password。')),
+      );
+      return;
+    }
+
     final now = DateTime.now();
     final taskId = 'task-${now.microsecondsSinceEpoch}';
     final prompt = _buildPrompt();
-    final privateKeyPem = await _privateKeyPemFor(host.privateKeyPath);
+    final taskHost = host.copyWith(projectPath: projectPath);
     final secretRecords = _secrets
         .map(
             (secret) => secret.toRedactedRecord(taskId: taskId, createdAt: now))
         .toList();
     var task = TaskSession(
       id: taskId,
-      host: host,
+      host: taskHost,
       title: _titleFrom(taskText),
       status: TaskStatus.running,
       createdAt: now,
@@ -419,93 +590,122 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
     );
     await state.saveTask(task);
 
-    await for (final update in state.agentSessionService.execute(
-      AgentExecutionRequest(
-        prompt: prompt,
-        scenario: _scenario,
-        hostId: host.id,
-        host: host.host,
-        port: host.port,
-        username: host.username,
-        projectPath: host.projectPath,
-        tmuxSessionName: host.tmuxSessionName,
-        agentCommand: host.agentCommand,
-        privateKeyPem: privateKeyPem,
-      ),
-    )) {
-      final updateAt = DateTime.now();
-      final rawLog = '${task.rawLog}${update.rawOutput}';
-      final executionLogs = [
-        ...task.executionLogs,
-        ExecutionLog(
-          id: 'log-${updateAt.microsecondsSinceEpoch}',
-          taskId: task.id,
-          rawOutput: update.rawOutput,
-          createdAt: updateAt,
+    try {
+      await for (final update in state.agentSessionService.execute(
+        AgentExecutionRequest(
+          prompt: prompt,
+          hostId: host.id,
+          host: host.host,
+          port: host.port,
+          username: host.username,
+          projectPath: projectPath,
+          tmuxSessionName: host.tmuxSessionName,
+          agentCommand: host.agentCommand,
+          password: host.password,
         ),
-      ];
-      if (update.approval != null) {
-        final approval = update.approval!;
-        task = task.copyWith(
-          status: TaskStatus.needApproval,
-          rawLog: rawLog,
-          approval: approval,
-          approvalRequests: [...task.approvalRequests, approval],
-          executionLogs: executionLogs,
-          updatedAt: updateAt,
-          shortSummary: approval.reason,
-          metricEvents: [
-            ...task.metricEvents,
-            MetricEvent.create(
-              taskId: task.id,
-              eventType: 'approval_requested',
-              payloadJson: '{"risk":"${approval.risk}"}',
-              now: updateAt,
-            ),
-          ],
-        );
-      } else if (update.result != null) {
-        final completedAt = DateTime.now();
-        final resultStatus = update.result!.status;
-        task = task.copyWith(
-          status: resultStatus == 'success'
-              ? TaskStatus.completed
-              : TaskStatus.failed,
-          rawLog: rawLog,
-          result: update.result,
-          updatedAt: completedAt,
-          completedAt: completedAt,
-          shortSummary: update.result!.summary,
-          summary: update.result!.summary,
-          executionLogs: executionLogs,
-          metricEvents: [
-            ...task.metricEvents,
-            MetricEvent.create(
-              taskId: task.id,
-              eventType: 'task_completed',
-              payloadJson: '{"result_status":"$resultStatus"}',
-              now: completedAt,
-            ),
-          ],
-          clearApproval: true,
-        );
-      } else {
-        task = task.copyWith(
-          rawLog: rawLog,
-          updatedAt: updateAt,
-          executionLogs: executionLogs,
-          metricEvents: [
-            ...task.metricEvents,
-            MetricEvent.create(
-              taskId: task.id,
-              eventType: 'agent_output',
-              payloadJson: '{"bytes":${update.rawOutput.length}}',
-              now: updateAt,
-            ),
-          ],
+      )) {
+        final updateAt = DateTime.now();
+        final rawLog = '${task.rawLog}${update.rawOutput}';
+        final executionLogs = [
+          ...task.executionLogs,
+          ExecutionLog(
+            id: 'log-${updateAt.microsecondsSinceEpoch}',
+            taskId: task.id,
+            rawOutput: update.rawOutput,
+            createdAt: updateAt,
+          ),
+        ];
+        if (update.approval != null) {
+          final approval = update.approval!;
+          task = task.copyWith(
+            status: TaskStatus.needApproval,
+            rawLog: rawLog,
+            approval: approval,
+            approvalRequests: [...task.approvalRequests, approval],
+            executionLogs: executionLogs,
+            updatedAt: updateAt,
+            shortSummary: approval.reason,
+            metricEvents: [
+              ...task.metricEvents,
+              MetricEvent.create(
+                taskId: task.id,
+                eventType: 'approval_requested',
+                payloadJson: '{"risk":"${approval.risk}"}',
+                now: updateAt,
+              ),
+            ],
+          );
+        } else if (update.result != null) {
+          final completedAt = DateTime.now();
+          final resultStatus = update.result!.status;
+          task = task.copyWith(
+            status: resultStatus == 'success'
+                ? TaskStatus.completed
+                : TaskStatus.failed,
+            rawLog: rawLog,
+            result: update.result,
+            updatedAt: completedAt,
+            completedAt: completedAt,
+            shortSummary: update.result!.summary,
+            summary: update.result!.summary,
+            executionLogs: executionLogs,
+            metricEvents: [
+              ...task.metricEvents,
+              MetricEvent.create(
+                taskId: task.id,
+                eventType: 'task_completed',
+                payloadJson: '{"result_status":"$resultStatus"}',
+                now: completedAt,
+              ),
+            ],
+            clearApproval: true,
+          );
+        } else {
+          task = task.copyWith(
+            rawLog: rawLog,
+            updatedAt: updateAt,
+            executionLogs: executionLogs,
+            metricEvents: [
+              ...task.metricEvents,
+              MetricEvent.create(
+                taskId: task.id,
+                eventType: 'agent_output',
+                payloadJson: '{"bytes":${update.rawOutput.length}}',
+                now: updateAt,
+              ),
+            ],
+          );
+        }
+        await state.saveTask(task);
+      }
+    } catch (e) {
+      final failedAt = DateTime.now();
+      final message = 'SSH 执行失败：${e.toString()}';
+      task = task.copyWith(
+        status: TaskStatus.failed,
+        rawLog: '${task.rawLog}$message\n',
+        updatedAt: failedAt,
+        completedAt: failedAt,
+        shortSummary: message,
+        summary: message,
+        executionLogs: [
+          ...task.executionLogs,
+          ExecutionLog(
+            id: 'log-${failedAt.microsecondsSinceEpoch}',
+            taskId: task.id,
+            rawOutput: '$message\n',
+            createdAt: failedAt,
+          ),
+        ],
+      );
+      await state.saveTask(task);
+      if (mounted) {
+        setState(() => _isSending = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(message)),
         );
       }
-      await state.saveTask(task);
+      return;
     }
 
     if (!mounted) {
@@ -529,34 +729,24 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
     }
     return '${trimmed.substring(0, 32)}...';
   }
-
-  Future<String?> _privateKeyPemFor(String rawPath) async {
-    final path = rawPath.trim();
-    if (path.isEmpty) {
-      return null;
-    }
-    final expandedPath = path.startsWith('~/')
-        ? '${Platform.environment['HOME'] ?? ''}/${path.substring(2)}'
-        : path;
-    final file = File(expandedPath);
-    if (!await file.exists()) {
-      return null;
-    }
-    return file.readAsString();
-  }
 }
 
-class _VoiceCard extends StatefulWidget {
-  const _VoiceCard({required this.isListening, required this.onListen});
+class _VoiceDock extends StatefulWidget {
+  const _VoiceDock({
+    required this.status,
+    required this.onStart,
+    required this.onStop,
+  });
 
-  final bool isListening;
-  final VoidCallback onListen;
+  final _VoiceInteractionStatus status;
+  final VoidCallback onStart;
+  final VoidCallback onStop;
 
   @override
-  State<_VoiceCard> createState() => _VoiceCardState();
+  State<_VoiceDock> createState() => _VoiceDockState();
 }
 
-class _VoiceCardState extends State<_VoiceCard>
+class _VoiceDockState extends State<_VoiceDock>
     with SingleTickerProviderStateMixin {
   late final AnimationController _controller;
 
@@ -567,18 +757,18 @@ class _VoiceCardState extends State<_VoiceCard>
       vsync: this,
       duration: const Duration(milliseconds: 900),
     );
-    if (widget.isListening) {
+    if (_isListening) {
       _controller.repeat(reverse: true);
     }
   }
 
   @override
-  void didUpdateWidget(covariant _VoiceCard oldWidget) {
+  void didUpdateWidget(covariant _VoiceDock oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (widget.isListening && !_controller.isAnimating) {
+    if (_isListening && !_controller.isAnimating) {
       _controller.repeat(reverse: true);
     }
-    if (!widget.isListening && _controller.isAnimating) {
+    if (!_isListening && _controller.isAnimating) {
       _controller.stop();
       _controller.value = 0;
     }
@@ -592,65 +782,85 @@ class _VoiceCardState extends State<_VoiceCard>
 
   @override
   Widget build(BuildContext context) {
-    return _SurfaceCard(
-      child: InkWell(
-        onTap: widget.isListening ? null : widget.onListen,
-        borderRadius: BorderRadius.circular(18),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 22),
-          child: Column(
-            children: [
-              AnimatedBuilder(
-                animation: _controller,
-                builder: (context, _) {
-                  final pulse = widget.isListening ? _controller.value : 0.0;
-                  return SizedBox(
-                    width: 132,
-                    height: 116,
-                    child: Stack(
-                      alignment: Alignment.center,
-                      children: [
-                        _PulseRing(size: 104 + pulse * 24, opacity: 0.18),
-                        _PulseRing(size: 88 + pulse * 18, opacity: 0.28),
-                        Container(
-                          width: 78,
-                          height: 78,
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            color: const Color(0xFFE4F4EF),
-                            border: Border.all(
-                              color: ArminTheme.mint.withValues(alpha: 0.55),
-                              width: 2,
-                            ),
-                          ),
-                          child: Center(
-                            child: _VoiceWaveform(
-                              progress:
-                                  widget.isListening ? _controller.value : 0.35,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  );
-                },
-              ),
-              const SizedBox(height: 10),
-              Text(
-                widget.isListening ? '正在听...' : '按住说话',
-                style: Theme.of(context).textTheme.titleMedium,
-              ),
-              const SizedBox(height: 4),
-              Text(
-                widget.isListening ? '正在生成语音波形' : '松开发送，或点击停止',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-            ],
+    final statusText = switch (widget.status) {
+      _VoiceInteractionStatus.idle => '准备录音',
+      _VoiceInteractionStatus.listening => '正在听',
+      _VoiceInteractionStatus.transcribing => '正在整理语音',
+    };
+    final buttonText = switch (widget.status) {
+      _VoiceInteractionStatus.idle => '按住说话',
+      _VoiceInteractionStatus.listening => '松开发送到草稿',
+      _VoiceInteractionStatus.transcribing => '正在整理语音',
+    };
+
+    return Row(
+      children: [
+        SizedBox(
+          width: 86,
+          child: Text(
+            statusText,
+            style: Theme.of(context).textTheme.bodySmall,
           ),
         ),
-      ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: GestureDetector(
+            key: const ValueKey('voice-hold-button'),
+            onTapDown: (_) => widget.onStart(),
+            onTapUp: (_) => widget.onStop(),
+            onTapCancel: widget.onStop,
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 180),
+              height: 58,
+              decoration: BoxDecoration(
+                color: _isListening ? ArminTheme.primary : ArminTheme.mint,
+                borderRadius: BorderRadius.circular(999),
+                border: Border.all(
+                  color: ArminTheme.primary.withValues(alpha: 0.28),
+                ),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  AnimatedBuilder(
+                    animation: _controller,
+                    builder: (context, _) {
+                      return SizedBox(
+                        width: 54,
+                        height: 34,
+                        child: Stack(
+                          alignment: Alignment.center,
+                          children: [
+                            if (_isListening)
+                              _PulseRing(
+                                size: 32 + _controller.value * 10,
+                                opacity: 0.18,
+                              ),
+                            _VoiceWaveform(
+                              progress: _isListening ? _controller.value : 0.35,
+                            ),
+                          ],
+                        ),
+                      );
+                    },
+                  ),
+                  const SizedBox(width: 10),
+                  Text(
+                    buttonText,
+                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                          color: _isListening ? Colors.white : ArminTheme.ink,
+                        ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ],
     );
   }
+
+  bool get _isListening => widget.status == _VoiceInteractionStatus.listening;
 }
 
 class _PulseRing extends StatelessWidget {

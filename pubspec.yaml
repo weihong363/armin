@@ -11,6 +11,7 @@ dependencies:
   flutter:
     sdk: flutter
   flutter_tts: ^4.2.5
+  flutter_secure_storage: ^9.2.2
   path_provider: ^2.1.5
   speech_to_text: ^7.3.0
 

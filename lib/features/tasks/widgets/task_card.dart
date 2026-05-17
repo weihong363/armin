@@ -58,7 +58,7 @@ class TaskCard extends StatelessWidget {
               ),
               const SizedBox(height: 10),
               Text(
-                '${task.host.name} / ${task.host.projectPath}',
+                _hostLabel(task),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: Theme.of(context).textTheme.bodySmall,
@@ -241,4 +241,12 @@ String _durationLabel(TaskSession task) {
     return '${duration.inSeconds}s';
   }
   return '${minutes}m ${seconds}s';
+}
+
+String _hostLabel(TaskSession task) {
+  final projectPath = task.host.projectPath.trim();
+  if (projectPath.isEmpty) {
+    return task.host.name;
+  }
+  return '${task.host.name} / $projectPath';
 }

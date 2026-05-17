@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:dartssh2/dartssh2.dart';
+import 'package:flutter/foundation.dart';
 
 import '../parsers/approval_parser.dart';
 import '../parsers/task_result_parser.dart';
@@ -22,6 +23,28 @@ class SSHAgentSessionService implements AgentSessionService {
   final ApprovalParser _approvalParser;
   final Duration _pollInterval;
   final int _maxPolls;
+
+  @override
+  Future<AgentConnectionTestResult> testConnection(
+    AgentConnectionTestRequest request,
+  ) async {
+    _validateConnectionTestRequest(request);
+    final client = await _connect(
+      host: request.host,
+      port: request.port,
+      username: request.username,
+      password: request.password,
+    );
+    try {
+      return AgentConnectionTestResult(
+        success: true,
+        message: 'SSH connected to ${request.username}@${request.host}.',
+      );
+    } finally {
+      client.close();
+      await client.done;
+    }
+  }
 
   @override
   Stream<AgentExecutionUpdate> execute(AgentExecutionRequest request) async* {
@@ -129,16 +152,33 @@ Keep previous findings. Do not restart the entire task unless necessary.
     String? privateKeyPassphrase,
   }) async {
     final socket = await SSHSocket.connect(host, port);
-    final identities = privateKeyPem == null || privateKeyPem.trim().isEmpty
-        ? null
-        : SSHKeyPair.fromPem(privateKeyPem, privateKeyPassphrase);
+    final authPlan = buildAuthPlan(
+      password: password,
+      privateKeyPem: privateKeyPem,
+      privateKeyPassphrase: privateKeyPassphrase,
+    );
     return SSHClient(
       socket,
       username: username,
-      identities: identities,
-      onPasswordRequest:
-          password == null || password.isEmpty ? null : () => password,
+      identities: authPlan.identities,
+      onPasswordRequest: authPlan.onPasswordRequest,
     );
+  }
+
+  @visibleForTesting
+  SSHAuthPlan buildAuthPlan({
+    String? password,
+    String? privateKeyPem,
+    String? privateKeyPassphrase,
+  }) {
+    final trimmedPassword = password?.trim() ?? '';
+    if (trimmedPassword.isNotEmpty) {
+      return SSHAuthPlan(
+        onPasswordRequest: () => password!,
+      );
+    }
+
+    throw ArgumentError('SSH password is required for Phase 2 execution.');
   }
 
   Future<void> _sendKeys(AgentControlRequest request, String text) async {
@@ -209,15 +249,25 @@ done
         request.projectPath.trim().isEmpty ||
         request.tmuxSessionName.trim().isEmpty ||
         request.agentCommand.trim().isEmpty ||
-        request.prompt.trim().isEmpty) {
+        request.prompt.trim().isEmpty ||
+        (request.password?.trim().isEmpty ?? true)) {
       throw ArgumentError('SSH execution request is missing required fields.');
+    }
+  }
+
+  void _validateConnectionTestRequest(AgentConnectionTestRequest request) {
+    if (request.host.trim().isEmpty ||
+        request.username.trim().isEmpty ||
+        request.password.trim().isEmpty) {
+      throw ArgumentError('SSH connection test is missing required fields.');
     }
   }
 
   void _validateControlRequest(AgentControlRequest request) {
     if (request.host.trim().isEmpty ||
         request.username.trim().isEmpty ||
-        request.tmuxSessionName.trim().isEmpty) {
+        request.tmuxSessionName.trim().isEmpty ||
+        (request.password?.trim().isEmpty ?? true)) {
       throw ArgumentError('SSH control request is missing required fields.');
     }
   }
@@ -225,4 +275,14 @@ done
   String _shellQuote(String value) {
     return "'${value.replaceAll("'", "'\"'\"'")}'";
   }
+}
+
+class SSHAuthPlan {
+  const SSHAuthPlan({
+    this.identities,
+    this.onPasswordRequest,
+  });
+
+  final List<SSHKeyPair>? identities;
+  final String Function()? onPasswordRequest;
 }

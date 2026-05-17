@@ -1,16 +1,9 @@
 import '../parsers/approval_request.dart';
 import '../parsers/task_result.dart';
 
-enum MockAgentScenario {
-  completed,
-  needApproval,
-  failed,
-}
-
 class AgentExecutionRequest {
   const AgentExecutionRequest({
     required this.prompt,
-    this.scenario = MockAgentScenario.completed,
     this.hostId = '',
     this.host = '',
     this.port = 22,
@@ -24,7 +17,6 @@ class AgentExecutionRequest {
   });
 
   final String prompt;
-  final MockAgentScenario scenario;
   final String hostId;
   final String host;
   final int port;
@@ -35,8 +27,6 @@ class AgentExecutionRequest {
   final String? password;
   final String? privateKeyPem;
   final String? privateKeyPassphrase;
-
-  bool get simulateApproval => scenario == MockAgentScenario.needApproval;
 }
 
 class AgentExecutionUpdate {
@@ -75,8 +65,36 @@ class AgentControlRequest {
   final String instruction;
 }
 
+class AgentConnectionTestRequest {
+  const AgentConnectionTestRequest({
+    required this.host,
+    required this.port,
+    required this.username,
+    required this.password,
+  });
+
+  final String host;
+  final int port;
+  final String username;
+  final String password;
+}
+
+class AgentConnectionTestResult {
+  const AgentConnectionTestResult({
+    required this.success,
+    required this.message,
+  });
+
+  final bool success;
+  final String message;
+}
+
 abstract class AgentSessionService {
   Stream<AgentExecutionUpdate> execute(AgentExecutionRequest request);
+
+  Future<AgentConnectionTestResult> testConnection(
+    AgentConnectionTestRequest request,
+  );
 
   Future<void> sendFollowUp(AgentControlRequest request);
 

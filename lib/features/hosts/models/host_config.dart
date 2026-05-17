@@ -16,26 +16,10 @@ class HostConfig {
     required this.agentCommand,
     required this.createdAt,
     required this.updatedAt,
+    this.password = '',
     this.privateKeyPath = '',
+    this.isDefault = false,
   });
-
-  factory HostConfig.mock() {
-    final now = DateTime.now();
-    return HostConfig(
-      id: 'host-local-mac',
-      name: 'Local Mac',
-      host: '192.168.1.10',
-      port: 22,
-      username: 'ironion',
-      authType: HostAuthType.privateKey,
-      projectPath: '/Users/ironion/workspace/armin',
-      tmuxSessionName: 'armin-codex',
-      agentCommand: 'codex',
-      createdAt: now,
-      updatedAt: now,
-      privateKeyPath: '~/.ssh/id_ed25519',
-    );
-  }
 
   factory HostConfig.fromJson(Map<String, Object?> json) {
     return HostConfig(
@@ -46,7 +30,7 @@ class HostConfig {
       username: json['username'] as String? ?? '',
       authType: HostAuthType.values.firstWhere(
         (type) => type.name == json['authType'],
-        orElse: () => HostAuthType.privateKey,
+        orElse: () => HostAuthType.password,
       ),
       projectPath: json['projectPath'] as String? ?? '',
       tmuxSessionName: json['tmuxSessionName'] as String? ?? 'armin-codex',
@@ -55,7 +39,9 @@ class HostConfig {
           DateTime.now(),
       updatedAt: DateTime.tryParse(json['updatedAt'] as String? ?? '') ??
           DateTime.now(),
+      password: '', // Password is loaded from secure storage separately
       privateKeyPath: json['privateKeyPath'] as String? ?? '',
+      isDefault: json['isDefault'] as bool? ?? false,
     );
   }
 
@@ -70,7 +56,11 @@ class HostConfig {
   final String agentCommand;
   final DateTime createdAt;
   final DateTime updatedAt;
+  /// Password is stored securely in platform keystore via SecurePasswordStore.
+  /// This field holds the decrypted password in memory after loading.
+  final String password;
   final String privateKeyPath;
+  final bool isDefault;
 
   String get address => host;
 
@@ -86,7 +76,9 @@ class HostConfig {
     String? agentCommand,
     DateTime? createdAt,
     DateTime? updatedAt,
+    String? password,
     String? privateKeyPath,
+    bool? isDefault,
   }) {
     return HostConfig(
       id: id ?? this.id,
@@ -100,7 +92,9 @@ class HostConfig {
       agentCommand: agentCommand ?? this.agentCommand,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
+      password: password ?? this.password,
       privateKeyPath: privateKeyPath ?? this.privateKeyPath,
+      isDefault: isDefault ?? this.isDefault,
     );
   }
 
@@ -117,7 +111,9 @@ class HostConfig {
       'agentCommand': agentCommand,
       'createdAt': createdAt.toIso8601String(),
       'updatedAt': updatedAt.toIso8601String(),
+      // Password is stored separately in secure storage, not in JSON.
       'privateKeyPath': privateKeyPath,
+      'isDefault': isDefault,
     };
   }
 }

@@ -309,6 +309,7 @@ class _TaskHomeScreenState extends State<TaskHomeScreen> {
   TaskSession? _currentTask(List<TaskSession> tasks) {
     for (final task in tasks) {
       if (task.status == TaskStatus.running ||
+          task.status == TaskStatus.paused ||
           task.status == TaskStatus.needApproval) {
         return task;
       }

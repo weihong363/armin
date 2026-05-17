@@ -284,25 +284,24 @@ class _LogPanel extends StatefulWidget {
 }
 
 class _LogPanelState extends State<_LogPanel> {
-  RuntimeControlState _controlState = RuntimeControlState.active;
-
   @override
   Widget build(BuildContext context) {
     final task = widget.task;
+    final controlState = _controlStateFromTask(task.status);
     return ListView(
       padding: const EdgeInsets.all(20),
       children: [
         _InfoCard(
           title: '运行控制',
           trailing: _MiniBadge(
-            label: _controlState.label,
-            color: _controlState.color,
+            label: controlState.label,
+            color: controlState.color,
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                'Phase 1 仅记录交互意图；真实 tmux 控制将在 Phase 2 接入。',
+                '通过 SSH/tmux 控制远端 Codex 会话。',
                 style: Theme.of(context).textTheme.bodySmall,
               ),
               const SizedBox(height: 14),
@@ -314,43 +313,36 @@ class _LogPanelState extends State<_LogPanel> {
                     icon: Icons.add_comment_outlined,
                     label: '追加指令',
                     tone: ControlTone.neutral,
-                    onPressed: () => _showFollowUpSheet(context),
+                    onPressed: controlState == RuntimeControlState.stopped
+                        ? null
+                        : () => _showFollowUpSheet(context),
                   ),
                   _ControlButton(
-                    icon: _controlState == RuntimeControlState.paused
+                    icon: controlState == RuntimeControlState.paused
                         ? Icons.play_arrow_outlined
                         : Icons.pause_outlined,
-                    label: _controlState == RuntimeControlState.paused
+                    label: controlState == RuntimeControlState.paused
                         ? '恢复'
                         : '暂停',
                     tone: ControlTone.neutral,
-                    onPressed: _controlState == RuntimeControlState.stopped
+                    onPressed: controlState == RuntimeControlState.stopped
                         ? null
                         : () async {
-                            if (_controlState == RuntimeControlState.paused) {
+                            if (controlState == RuntimeControlState.paused) {
                               await AppStateScope.of(context).resumeTask(task);
                             } else {
                               await AppStateScope.of(context).pauseTask(task);
                             }
-                            setState(() {
-                              _controlState =
-                                  _controlState == RuntimeControlState.paused
-                                      ? RuntimeControlState.active
-                                      : RuntimeControlState.paused;
-                            });
                           },
                   ),
                   _ControlButton(
                     icon: Icons.stop_rounded,
                     label: '停止',
                     tone: ControlTone.danger,
-                    onPressed: _controlState == RuntimeControlState.stopped
+                    onPressed: controlState == RuntimeControlState.stopped
                         ? null
                         : () async {
                             await AppStateScope.of(context).stopTask(task);
-                            setState(() {
-                              _controlState = RuntimeControlState.stopped;
-                            });
                           },
                   ),
                   _ControlButton(
@@ -424,6 +416,19 @@ class _LogPanelState extends State<_LogPanel> {
         ),
       ],
     );
+  }
+
+  RuntimeControlState _controlStateFromTask(TaskStatus status) {
+    return switch (status) {
+      TaskStatus.paused => RuntimeControlState.paused,
+      TaskStatus.stopped ||
+      TaskStatus.completed ||
+      TaskStatus.failed => RuntimeControlState.stopped,
+      TaskStatus.draft ||
+      TaskStatus.pending ||
+      TaskStatus.running ||
+      TaskStatus.needApproval => RuntimeControlState.active,
+    };
   }
 
   void _showFollowUpSheet(BuildContext context) {
@@ -873,6 +878,12 @@ String _timeLabel(DateTime value) {
 }
 
 String _finishedLabel(TaskSession task) {
+  if (task.status == TaskStatus.paused) {
+    return '已暂停';
+  }
+  if (task.status == TaskStatus.stopped) {
+    return task.completedAt == null ? '已停止' : '${_timeLabel(task.completedAt!)} 停止';
+  }
   if (task.completedAt == null) {
     return '进行中';
   }

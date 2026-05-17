@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter/foundation.dart';
 
+import '../../hosts/models/host_config.dart';
 import '../parsers/approval_parser.dart';
 import '../parsers/task_result_parser.dart';
 import 'agent_session_service.dart';
@@ -36,10 +37,29 @@ class SSHAgentSessionService implements AgentSessionService {
       password: request.password,
     );
     try {
+      final tmuxOutput = await client.run(_wrapRemoteCommand(
+        '${_tmuxCommand(request.tmuxCommand)} -V',
+        pathPrepend: request.pathPrepend,
+        shellWrapper: request.shellWrapper,
+      ));
+      final tmuxVersion = utf8.decode(tmuxOutput, allowMalformed: true).trim();
+
       return AgentConnectionTestResult(
         success: true,
-        message: 'SSH connected to ${request.username}@${request.host}.',
+        message: 'SSH connected to ${request.username}@${request.host}.\n'
+            'tmux version: $tmuxVersion',
       );
+    } catch (e) {
+      final errorMsg = e.toString().toLowerCase();
+      if (errorMsg.contains('tmux') || errorMsg.contains('not found')) {
+        return const AgentConnectionTestResult(
+          success: false,
+          message:
+              'SSH connected but tmux is not installed on the remote server.\n'
+              'Please install tmux: sudo apt install tmux (Ubuntu) or brew install tmux (macOS)',
+        );
+      }
+      rethrow;
     } finally {
       client.close();
       await client.done;
@@ -182,15 +202,31 @@ Keep previous findings. Do not restart the entire task unless necessary.
   }
 
   Future<void> _sendKeys(AgentControlRequest request, String text) async {
-    final command = 'tmux send-keys -t ${_shellQuote(request.tmuxSessionName)} '
+    final tmux = _tmuxCommand(request.tmuxCommand);
+    final command =
+        '$tmux send-keys -t ${_shellQuote(request.tmuxSessionName)} '
         '-- ${_shellQuote(text)} C-m';
-    await _runControlCommand(request, command);
+    await _runControlCommand(
+        request,
+        _wrapRemoteCommand(
+          command,
+          pathPrepend: request.pathPrepend,
+          shellWrapper: request.shellWrapper,
+        ));
   }
 
   Future<void> _sendRawKeys(AgentControlRequest request, String key) async {
-    final command = 'tmux send-keys -t ${_shellQuote(request.tmuxSessionName)} '
+    final tmux = _tmuxCommand(request.tmuxCommand);
+    final command =
+        '$tmux send-keys -t ${_shellQuote(request.tmuxSessionName)} '
         '${_shellQuote(key)}';
-    await _runControlCommand(request, command);
+    await _runControlCommand(
+        request,
+        _wrapRemoteCommand(
+          command,
+          pathPrepend: request.pathPrepend,
+          shellWrapper: request.shellWrapper,
+        ));
   }
 
   Future<void> _runControlCommand(
@@ -214,21 +250,22 @@ Keep previous findings. Do not restart the entire task unless necessary.
   }
 
   String _buildExecutionScript(AgentExecutionRequest request) {
+    final tmux = _tmuxCommand(request.tmuxCommand);
     final session = _shellQuote(request.tmuxSessionName);
     final projectPath = _shellQuote(request.projectPath);
     final agentCommand = _shellQuote(request.agentCommand);
     final prompt = _shellQuote(request.prompt);
     final delayMs = _pollInterval.inMilliseconds;
-    return '''
+    final script = '''
 set -eu
-if ! tmux has-session -t $session 2>/dev/null; then
-  tmux new-session -d -s $session -c $projectPath -- $agentCommand
+if ! $tmux has-session -t $session 2>/dev/null; then
+  $tmux new-session -d -s $session -c $projectPath -- $agentCommand
 fi
-tmux send-keys -t $session -- $prompt C-m
+$tmux send-keys -t $session -- $prompt C-m
 last_hash=""
 i=0
 while [ "\$i" -lt $_maxPolls ]; do
-  pane_output="\$(tmux capture-pane -p -t $session -S -2000)"
+  pane_output="\$($tmux capture-pane -p -t $session -S -2000)"
   current_hash="\$(printf "%s" "\$pane_output" | shasum | awk "{print \\\$1}")"
   if [ "\$current_hash" != "\$last_hash" ]; then
     printf "%s\\n" "\$pane_output"
@@ -241,6 +278,11 @@ while [ "\$i" -lt $_maxPolls ]; do
   sleep ${delayMs / 1000}
 done
 ''';
+    return _wrapRemoteCommand(
+      script,
+      pathPrepend: request.pathPrepend,
+      shellWrapper: request.shellWrapper,
+    );
   }
 
   void _validateExecutionRequest(AgentExecutionRequest request) {
@@ -249,6 +291,7 @@ done
         request.projectPath.trim().isEmpty ||
         request.tmuxSessionName.trim().isEmpty ||
         request.agentCommand.trim().isEmpty ||
+        request.tmuxCommand.trim().isEmpty ||
         request.prompt.trim().isEmpty ||
         (request.password?.trim().isEmpty ?? true)) {
       throw ArgumentError('SSH execution request is missing required fields.');
@@ -258,6 +301,7 @@ done
   void _validateConnectionTestRequest(AgentConnectionTestRequest request) {
     if (request.host.trim().isEmpty ||
         request.username.trim().isEmpty ||
+        request.tmuxCommand.trim().isEmpty ||
         request.password.trim().isEmpty) {
       throw ArgumentError('SSH connection test is missing required fields.');
     }
@@ -267,9 +311,57 @@ done
     if (request.host.trim().isEmpty ||
         request.username.trim().isEmpty ||
         request.tmuxSessionName.trim().isEmpty ||
+        request.tmuxCommand.trim().isEmpty ||
         (request.password?.trim().isEmpty ?? true)) {
       throw ArgumentError('SSH control request is missing required fields.');
     }
+  }
+
+  @visibleForTesting
+  String buildExecutionCommandForTest(AgentExecutionRequest request) {
+    return _buildExecutionScript(request);
+  }
+
+  @visibleForTesting
+  String buildRemoteTmuxCommand({
+    required String command,
+    String pathPrepend = '',
+    ShellWrapper shellWrapper = ShellWrapper.none,
+  }) {
+    return _wrapRemoteCommand(
+      command,
+      pathPrepend: pathPrepend,
+      shellWrapper: shellWrapper,
+    );
+  }
+
+  String _wrapRemoteCommand(
+    String command, {
+    required String pathPrepend,
+    required ShellWrapper shellWrapper,
+  }) {
+    final trimmedPath = pathPrepend.trim();
+    final commandWithPath = trimmedPath.isEmpty
+        ? command
+        : 'export PATH="${_doubleQuoteContent(trimmedPath)}:\$PATH";\n$command';
+    return switch (shellWrapper) {
+      ShellWrapper.none => commandWithPath,
+      ShellWrapper.shLogin => 'sh -lc ${_shellQuote(commandWithPath)}',
+      ShellWrapper.zshLogin => 'zsh -lc ${_shellQuote(commandWithPath)}',
+    };
+  }
+
+  String _tmuxCommand(String value) {
+    final command = value.trim().isEmpty ? 'tmux' : value.trim();
+    return _shellQuote(command);
+  }
+
+  String _doubleQuoteContent(String value) {
+    return value
+        .replaceAll('\\', r'\\')
+        .replaceAll('"', r'\"')
+        .replaceAll(r'$', r'\$')
+        .replaceAll('`', r'\`');
   }
 
   String _shellQuote(String value) {

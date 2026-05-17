@@ -19,6 +19,12 @@ void main() {
       machine.next(TaskStatus.needApproval, TaskStatus.running),
       TaskStatus.running,
     );
+    expect(machine.next(TaskStatus.running, TaskStatus.paused),
+        TaskStatus.paused);
+    expect(machine.next(TaskStatus.paused, TaskStatus.running),
+        TaskStatus.running);
+    expect(machine.next(TaskStatus.running, TaskStatus.stopped),
+        TaskStatus.stopped);
     expect(machine.next(TaskStatus.running, TaskStatus.completed),
         TaskStatus.completed);
   });

@@ -2,6 +2,8 @@ enum TaskStatus {
   draft,
   pending,
   running,
+  paused,
+  stopped,
   needApproval,
   completed,
   failed,
@@ -16,6 +18,10 @@ extension TaskStatusLabel on TaskStatus {
         return 'Pending';
       case TaskStatus.running:
         return 'Running';
+      case TaskStatus.paused:
+        return 'Paused';
+      case TaskStatus.stopped:
+        return 'Stopped';
       case TaskStatus.needApproval:
         return 'Needs approval';
       case TaskStatus.completed:

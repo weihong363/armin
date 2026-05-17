@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:armin/app_state_scope.dart';
 import 'package:armin/core/models/task_status.dart';
 import 'package:armin/core/services/armin_app_state.dart';
@@ -69,6 +71,27 @@ void main() {
     expect(store.savedTasks.last.host.projectPath, '/tmp/armin-task');
   });
 
+  testWidgets('send opens task detail before agent finishes', (tester) async {
+    final waitBeforeResult = Completer<void>();
+    final store = _TaskStore(hosts: [_host(password: 'secret-password')]);
+    final agent = _CaptureAgentSessionService(
+      waitBeforeResult: waitBeforeResult,
+    );
+    await _pumpScreen(tester, store: store, agent: agent);
+
+    await tester.enterText(find.byType(TextField).first, '执行真实任务');
+    await _enterProjectPath(tester, '/tmp/armin-task');
+    await tester.tap(find.text('发送给 Codex'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('任务详情'), findsOneWidget);
+    expect(agent.lastRequest, isNotNull);
+    expect(store.savedTasks.last.status, TaskStatus.running);
+
+    waitBeforeResult.complete();
+    await tester.pumpAndSettle();
+  });
+
   testWidgets('SSH failure marks task failed and keeps raw log',
       (tester) async {
     final store = _TaskStore(hosts: [_host(password: 'secret-password')]);
@@ -83,7 +106,25 @@ void main() {
     expect(store.savedTasks, isNotEmpty);
     expect(store.savedTasks.last.status, TaskStatus.failed);
     expect(store.savedTasks.last.rawLog, contains('ssh failed'));
-    expect(find.textContaining('SSH 执行失败'), findsOneWidget);
+    expect(store.savedTasks.last.shortSummary, contains('SSH 执行失败'));
+  });
+
+  testWidgets('done update without result marks task failed', (tester) async {
+    final store = _TaskStore(hosts: [_host(password: 'secret-password')]);
+    final agent = _CaptureAgentSessionService(doneWithoutResult: true);
+    await _pumpScreen(tester, store: store, agent: agent);
+
+    await tester.enterText(find.byType(TextField).first, '执行真实任务');
+    await _enterProjectPath(tester, '/tmp/armin-task');
+    await tester.tap(find.text('发送给 Codex'));
+    await tester.pumpAndSettle();
+
+    expect(store.savedTasks, isNotEmpty);
+    expect(store.savedTasks.last.status, TaskStatus.failed);
+    expect(
+      store.savedTasks.last.shortSummary,
+      contains('SSH session ended without structured result'),
+    );
   });
 }
 
@@ -166,9 +207,15 @@ class _TaskStore implements TaskHistoryStore {
 }
 
 class _CaptureAgentSessionService implements AgentSessionService {
-  _CaptureAgentSessionService({this.error});
+  _CaptureAgentSessionService({
+    this.error,
+    this.doneWithoutResult = false,
+    this.waitBeforeResult,
+  });
 
   final Object? error;
+  final bool doneWithoutResult;
+  final Completer<void>? waitBeforeResult;
   AgentExecutionRequest? lastRequest;
 
   @override
@@ -183,6 +230,16 @@ class _CaptureAgentSessionService implements AgentSessionService {
     lastRequest = request;
     if (error != null) {
       throw error!;
+    }
+    if (doneWithoutResult) {
+      yield const AgentExecutionUpdate(
+        rawOutput: 'SSH session ended without structured result.',
+        done: true,
+      );
+      return;
+    }
+    if (waitBeforeResult != null) {
+      await waitBeforeResult!.future;
     }
     yield const AgentExecutionUpdate(
       rawOutput: 'done',

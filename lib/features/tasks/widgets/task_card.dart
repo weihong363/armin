@@ -139,7 +139,7 @@ class _FeaturedTaskCard extends StatelessWidget {
               ClipRRect(
                 borderRadius: BorderRadius.circular(999),
                 child: LinearProgressIndicator(
-                  value: task.status == TaskStatus.completed ? 1 : 0.34,
+                  value: _progressValue(task.status),
                   minHeight: 8,
                   color: ArminTheme.mint,
                   backgroundColor: Colors.white.withValues(alpha: 0.22),
@@ -192,6 +192,8 @@ class _DarkBadge extends StatelessWidget {
   Widget build(BuildContext context) {
     final label = switch (status) {
       TaskStatus.running => '运行中',
+      TaskStatus.paused => '已暂停',
+      TaskStatus.stopped => '已停止',
       TaskStatus.completed => '已完成',
       TaskStatus.needApproval => '需确认',
       TaskStatus.failed => '失败',
@@ -241,6 +243,16 @@ String _durationLabel(TaskSession task) {
     return '${duration.inSeconds}s';
   }
   return '${minutes}m ${seconds}s';
+}
+
+double _progressValue(TaskStatus status) {
+  return switch (status) {
+    TaskStatus.completed => 1,
+    TaskStatus.failed || TaskStatus.stopped => 1,
+    TaskStatus.paused => 0.5,
+    TaskStatus.running || TaskStatus.needApproval => 0.34,
+    TaskStatus.pending || TaskStatus.draft => 0,
+  };
 }
 
 String _hostLabel(TaskSession task) {

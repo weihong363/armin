@@ -3,6 +3,12 @@ enum HostAuthType {
   privateKey,
 }
 
+enum ShellWrapper {
+  none,
+  shLogin,
+  zshLogin,
+}
+
 class HostConfig {
   const HostConfig({
     required this.id,
@@ -19,6 +25,9 @@ class HostConfig {
     this.password = '',
     this.privateKeyPath = '',
     this.isDefault = false,
+    this.tmuxCommand = 'tmux',
+    this.pathPrepend = '',
+    this.shellWrapper = ShellWrapper.none,
   });
 
   factory HostConfig.fromJson(Map<String, Object?> json) {
@@ -42,6 +51,12 @@ class HostConfig {
       password: '', // Password is loaded from secure storage separately
       privateKeyPath: json['privateKeyPath'] as String? ?? '',
       isDefault: json['isDefault'] as bool? ?? false,
+      tmuxCommand: json['tmuxCommand'] as String? ?? 'tmux',
+      pathPrepend: json['pathPrepend'] as String? ?? '',
+      shellWrapper: ShellWrapper.values.firstWhere(
+        (wrapper) => wrapper.name == json['shellWrapper'],
+        orElse: () => ShellWrapper.none,
+      ),
     );
   }
 
@@ -56,11 +71,15 @@ class HostConfig {
   final String agentCommand;
   final DateTime createdAt;
   final DateTime updatedAt;
+
   /// Password is stored securely in platform keystore via SecurePasswordStore.
   /// This field holds the decrypted password in memory after loading.
   final String password;
   final String privateKeyPath;
   final bool isDefault;
+  final String tmuxCommand;
+  final String pathPrepend;
+  final ShellWrapper shellWrapper;
 
   String get address => host;
 
@@ -79,6 +98,9 @@ class HostConfig {
     String? password,
     String? privateKeyPath,
     bool? isDefault,
+    String? tmuxCommand,
+    String? pathPrepend,
+    ShellWrapper? shellWrapper,
   }) {
     return HostConfig(
       id: id ?? this.id,
@@ -95,6 +117,9 @@ class HostConfig {
       password: password ?? this.password,
       privateKeyPath: privateKeyPath ?? this.privateKeyPath,
       isDefault: isDefault ?? this.isDefault,
+      tmuxCommand: tmuxCommand ?? this.tmuxCommand,
+      pathPrepend: pathPrepend ?? this.pathPrepend,
+      shellWrapper: shellWrapper ?? this.shellWrapper,
     );
   }
 
@@ -114,6 +139,9 @@ class HostConfig {
       // Password is stored separately in secure storage, not in JSON.
       'privateKeyPath': privateKeyPath,
       'isDefault': isDefault,
+      'tmuxCommand': tmuxCommand,
+      'pathPrepend': pathPrepend,
+      'shellWrapper': shellWrapper.name,
     };
   }
 }

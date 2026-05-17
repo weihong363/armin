@@ -1,7 +1,10 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../../app_state_scope.dart';
 import '../../../core/models/task_status.dart';
+import '../../../core/services/armin_app_state.dart';
 import '../../../shared/theme/armin_theme.dart';
 import '../../agent/services/agent_session_service.dart';
 import '../../history/screens/task_detail_screen.dart';
@@ -322,7 +325,9 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
     setState(() => _voiceStatus = _VoiceInteractionStatus.transcribing);
 
     try {
-      final raw = await AppStateScope.of(context).voiceService.stopListening();
+      final stoppedRaw =
+          await AppStateScope.of(context).voiceService.stopListening();
+      final raw = stoppedRaw.trim().isNotEmpty ? stoppedRaw : _partialStt;
 
       if (!mounted) {
         return;
@@ -358,7 +363,7 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
   void _applyRecognizedSpeech(String raw) {
     final cleaned = _cleaner.clean(raw);
     final extracted = _extractor.extract(raw);
-    
+
     setState(() {
       _rawStt = raw;
       _cleanedDraft = _appendText(_taskController.text, cleaned);
@@ -530,7 +535,7 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
         .map(
             (secret) => secret.toRedactedRecord(taskId: taskId, createdAt: now))
         .toList();
-    var task = TaskSession(
+    final task = TaskSession(
       id: taskId,
       host: taskHost,
       title: _titleFrom(taskText),
@@ -589,137 +594,204 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
       ],
     );
     await state.saveTask(task);
+    unawaited(_runAgentExecution(
+      state,
+      task,
+      AgentExecutionRequest(
+        prompt: prompt,
+        hostId: host.id,
+        host: host.host,
+        port: host.port,
+        username: host.username,
+        projectPath: projectPath,
+        tmuxSessionName: host.tmuxSessionName,
+        agentCommand: host.agentCommand,
+        tmuxCommand: host.tmuxCommand,
+        pathPrepend: host.pathPrepend,
+        shellWrapper: host.shellWrapper,
+        password: host.password,
+      ),
+    ));
 
+    setState(() => _isSending = false);
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute<void>(
+        builder: (_) => TaskDetailScreen(taskId: task.id),
+      ),
+    );
+  }
+
+  Future<void> _runAgentExecution(
+    ArminAppState state,
+    TaskSession initialTask,
+    AgentExecutionRequest request,
+  ) async {
+    var task = initialTask;
     try {
-      await for (final update in state.agentSessionService.execute(
-        AgentExecutionRequest(
-          prompt: prompt,
-          hostId: host.id,
-          host: host.host,
-          port: host.port,
-          username: host.username,
-          projectPath: projectPath,
-          tmuxSessionName: host.tmuxSessionName,
-          agentCommand: host.agentCommand,
-          password: host.password,
-        ),
-      )) {
-        final updateAt = DateTime.now();
-        final rawLog = '${task.rawLog}${update.rawOutput}';
-        final executionLogs = [
-          ...task.executionLogs,
-          ExecutionLog(
-            id: 'log-${updateAt.microsecondsSinceEpoch}',
-            taskId: task.id,
-            rawOutput: update.rawOutput,
-            createdAt: updateAt,
-          ),
-        ];
-        if (update.approval != null) {
-          final approval = update.approval!;
-          task = task.copyWith(
-            status: TaskStatus.needApproval,
-            rawLog: rawLog,
-            approval: approval,
-            approvalRequests: [...task.approvalRequests, approval],
-            executionLogs: executionLogs,
-            updatedAt: updateAt,
-            shortSummary: approval.reason,
-            metricEvents: [
-              ...task.metricEvents,
-              MetricEvent.create(
-                taskId: task.id,
-                eventType: 'approval_requested',
-                payloadJson: '{"risk":"${approval.risk}"}',
-                now: updateAt,
-              ),
-            ],
-          );
-        } else if (update.result != null) {
-          final completedAt = DateTime.now();
-          final resultStatus = update.result!.status;
-          task = task.copyWith(
-            status: resultStatus == 'success'
-                ? TaskStatus.completed
-                : TaskStatus.failed,
-            rawLog: rawLog,
-            result: update.result,
-            updatedAt: completedAt,
-            completedAt: completedAt,
-            shortSummary: update.result!.summary,
-            summary: update.result!.summary,
-            executionLogs: executionLogs,
-            metricEvents: [
-              ...task.metricEvents,
-              MetricEvent.create(
-                taskId: task.id,
-                eventType: 'task_completed',
-                payloadJson: '{"result_status":"$resultStatus"}',
-                now: completedAt,
-              ),
-            ],
-            clearApproval: true,
-          );
-        } else {
-          task = task.copyWith(
-            rawLog: rawLog,
-            updatedAt: updateAt,
-            executionLogs: executionLogs,
-            metricEvents: [
-              ...task.metricEvents,
-              MetricEvent.create(
-                taskId: task.id,
-                eventType: 'agent_output',
-                payloadJson: '{"bytes":${update.rawOutput.length}}',
-                now: updateAt,
-              ),
-            ],
-          );
+      await for (final update in state.agentSessionService.execute(request)) {
+        final latest = _latestTask(state, task.id) ?? task;
+        if (latest.status == TaskStatus.stopped) {
+          return;
         }
+        task = _taskWithExecutionUpdate(latest, update);
         await state.saveTask(task);
       }
+      if (task.status == TaskStatus.completed) {
+        await state.voiceService.speakSummary(task.shortSummary);
+      }
     } catch (e) {
+      final latest = _latestTask(state, task.id) ?? task;
+      if (latest.status == TaskStatus.stopped) {
+        return;
+      }
       final failedAt = DateTime.now();
       final message = 'SSH 执行失败：${e.toString()}';
-      task = task.copyWith(
+      await state.saveTask(
+        latest.copyWith(
+          status: TaskStatus.failed,
+          rawLog: '${latest.rawLog}$message\n',
+          updatedAt: failedAt,
+          completedAt: failedAt,
+          shortSummary: message,
+          summary: message,
+          executionLogs: [
+            ...latest.executionLogs,
+            ExecutionLog(
+              id: 'log-${failedAt.microsecondsSinceEpoch}',
+              taskId: latest.id,
+              rawOutput: '$message\n',
+              createdAt: failedAt,
+            ),
+          ],
+          metricEvents: [
+            ...latest.metricEvents,
+            MetricEvent.create(
+              taskId: latest.id,
+              eventType: 'task_failed',
+              payloadJson: '{"reason":"ssh_execution_error"}',
+              now: failedAt,
+            ),
+          ],
+          clearApproval: true,
+        ),
+      );
+    }
+  }
+
+  TaskSession? _latestTask(ArminAppState state, String taskId) {
+    for (final task in state.tasks) {
+      if (task.id == taskId) {
+        return task;
+      }
+    }
+    return null;
+  }
+
+  TaskSession _taskWithExecutionUpdate(
+    TaskSession task,
+    AgentExecutionUpdate update,
+  ) {
+    final updateAt = DateTime.now();
+    final rawLog = '${task.rawLog}${update.rawOutput}';
+    final executionLogs = [
+      ...task.executionLogs,
+      ExecutionLog(
+        id: 'log-${updateAt.microsecondsSinceEpoch}',
+        taskId: task.id,
+        rawOutput: update.rawOutput,
+        createdAt: updateAt,
+      ),
+    ];
+
+    if (update.approval != null) {
+      final approval = update.approval!;
+      return task.copyWith(
+        status: TaskStatus.needApproval,
+        rawLog: rawLog,
+        approval: approval,
+        approvalRequests: [...task.approvalRequests, approval],
+        executionLogs: executionLogs,
+        updatedAt: updateAt,
+        shortSummary: approval.reason,
+        metricEvents: [
+          ...task.metricEvents,
+          MetricEvent.create(
+            taskId: task.id,
+            eventType: 'approval_requested',
+            payloadJson: '{"risk":"${approval.risk}"}',
+            now: updateAt,
+          ),
+        ],
+      );
+    }
+
+    if (update.result != null) {
+      final completedAt = DateTime.now();
+      final resultStatus = update.result!.status;
+      return task.copyWith(
+        status: resultStatus == 'success'
+            ? TaskStatus.completed
+            : TaskStatus.failed,
+        rawLog: rawLog,
+        result: update.result,
+        updatedAt: completedAt,
+        completedAt: completedAt,
+        shortSummary: update.result!.summary,
+        summary: update.result!.summary,
+        executionLogs: executionLogs,
+        metricEvents: [
+          ...task.metricEvents,
+          MetricEvent.create(
+            taskId: task.id,
+            eventType: 'task_completed',
+            payloadJson: '{"result_status":"$resultStatus"}',
+            now: completedAt,
+          ),
+        ],
+        clearApproval: true,
+      );
+    }
+
+    if (update.done) {
+      final failedAt = DateTime.now();
+      final message = update.rawOutput.trim().isEmpty
+          ? 'Codex CLI ended without a structured task result.'
+          : update.rawOutput.trim();
+      return task.copyWith(
         status: TaskStatus.failed,
-        rawLog: '${task.rawLog}$message\n',
+        rawLog: rawLog,
         updatedAt: failedAt,
         completedAt: failedAt,
         shortSummary: message,
         summary: message,
-        executionLogs: [
-          ...task.executionLogs,
-          ExecutionLog(
-            id: 'log-${failedAt.microsecondsSinceEpoch}',
+        executionLogs: executionLogs,
+        metricEvents: [
+          ...task.metricEvents,
+          MetricEvent.create(
             taskId: task.id,
-            rawOutput: '$message\n',
-            createdAt: failedAt,
+            eventType: 'task_failed',
+            payloadJson: '{"reason":"missing_structured_result"}',
+            now: failedAt,
           ),
         ],
+        clearApproval: true,
       );
-      await state.saveTask(task);
-      if (mounted) {
-        setState(() => _isSending = false);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(message)),
-        );
-      }
-      return;
     }
 
-    if (!mounted) {
-      return;
-    }
-    setState(() => _isSending = false);
-    await state.voiceService.speakSummary(task.shortSummary);
-    if (mounted) {
-      Navigator.of(context).pushReplacement(
-        MaterialPageRoute<void>(
-          builder: (_) => TaskDetailScreen(taskId: task.id),
+    return task.copyWith(
+      rawLog: rawLog,
+      updatedAt: updateAt,
+      executionLogs: executionLogs,
+      metricEvents: [
+        ...task.metricEvents,
+        MetricEvent.create(
+          taskId: task.id,
+          eventType: 'agent_output',
+          payloadJson: '{"bytes":${update.rawOutput.length}}',
+          now: updateAt,
         ),
-      );
-    }
+      ],
+    );
   }
 
   String _titleFrom(String taskText) {

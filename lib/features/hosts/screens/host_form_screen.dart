@@ -23,9 +23,12 @@ class _HostFormScreenState extends State<HostFormScreen> {
   late final TextEditingController _usernameController;
   late final TextEditingController _passwordController;
   late final TextEditingController _tmuxController;
+  late final TextEditingController _tmuxCommandController;
+  late final TextEditingController _pathPrependController;
   late final TextEditingController _agentCommandController;
   bool _isTestingConnection = false;
   bool _setAsDefault = false;
+  ShellWrapper _shellWrapper = ShellWrapper.none;
 
   @override
   void initState() {
@@ -42,9 +45,16 @@ class _HostFormScreenState extends State<HostFormScreen> {
     _tmuxController = TextEditingController(
       text: host?.tmuxSessionName ?? 'armin-codex',
     );
+    _tmuxCommandController = TextEditingController(
+      text: host?.tmuxCommand ?? 'tmux',
+    );
+    _pathPrependController = TextEditingController(
+      text: host?.pathPrepend ?? '',
+    );
     _agentCommandController = TextEditingController(
       text: host?.agentCommand ?? 'codex',
     );
+    _shellWrapper = host?.shellWrapper ?? ShellWrapper.none;
     // If editing existing host, use its isDefault; if creating new, default to true
     _setAsDefault = host?.isDefault ?? true;
   }
@@ -62,6 +72,8 @@ class _HostFormScreenState extends State<HostFormScreen> {
     _usernameController.dispose();
     _passwordController.dispose();
     _tmuxController.dispose();
+    _tmuxCommandController.dispose();
+    _pathPrependController.dispose();
     _agentCommandController.dispose();
     super.dispose();
   }
@@ -73,7 +85,7 @@ class _HostFormScreenState extends State<HostFormScreen> {
     // If only one host (or creating the first), it's automatically default and cannot be changed
     final isSingleHost = hostCount <= 1;
     final canToggleDefault = !isSingleHost;
-    
+
     return Scaffold(
       appBar:
           AppBar(title: Text(widget.host == null ? 'Add Host' : 'Edit Host')),
@@ -98,14 +110,13 @@ class _HostFormScreenState extends State<HostFormScreen> {
               obscureText: true,
             ),
             _field(_tmuxController, 'tmux session name'),
+            _commandEnvironmentSection(),
             _field(_agentCommandController, 'Agent command'),
             const SizedBox(height: 12),
             SwitchListTile(
               title: const Text('设为默认 Host'),
               subtitle: Text(
-                isSingleHost
-                    ? '唯一主机，自动设为默认'
-                    : '新建任务时将自动使用此主机',
+                isSingleHost ? '唯一主机，自动设为默认' : '新建任务时将自动使用此主机',
               ),
               value: _setAsDefault,
               onChanged: canToggleDefault
@@ -125,6 +136,7 @@ class _HostFormScreenState extends State<HostFormScreen> {
               'Phase 2 uses password auth first. Password is kept in memory only for this MVP. TODO: persist it with Android Keystore / EncryptedSharedPreferences.',
               style: Theme.of(context).textTheme.bodySmall,
             ),
+            const SizedBox(height: 12),
             const SizedBox(height: 24),
             OutlinedButton.icon(
               icon: _isTestingConnection
@@ -175,6 +187,60 @@ class _HostFormScreenState extends State<HostFormScreen> {
     );
   }
 
+  Widget _commandEnvironmentSection() {
+    return Card(
+      margin: const EdgeInsets.only(bottom: 12),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '远程命令环境配置',
+              style: Theme.of(context).textTheme.titleSmall,
+            ),
+            const SizedBox(height: 12),
+            _field(_tmuxCommandController, 'tmux command path'),
+            _field(
+              _pathPrependController,
+              'optional PATH prepend',
+              required: false,
+            ),
+            DropdownButtonFormField<ShellWrapper>(
+              initialValue: _shellWrapper,
+              decoration:
+                  const InputDecoration(labelText: 'optional shell wrapper'),
+              items: const [
+                DropdownMenuItem(
+                  value: ShellWrapper.none,
+                  child: Text('none'),
+                ),
+                DropdownMenuItem(
+                  value: ShellWrapper.shLogin,
+                  child: Text('sh -lc'),
+                ),
+                DropdownMenuItem(
+                  value: ShellWrapper.zshLogin,
+                  child: Text('zsh -lc'),
+                ),
+              ],
+              onChanged: (value) {
+                if (value != null) {
+                  setState(() => _shellWrapper = value);
+                }
+              },
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'If tmux works in your SSH app but not in Armin, set the tmux path or prepend PATH here.',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Future<void> _testConnection() async {
     final host = _ipAddress();
     final username = _usernameController.text.trim();
@@ -200,6 +266,11 @@ class _HostFormScreenState extends State<HostFormScreen> {
                   port: port,
                   username: username,
                   password: password,
+                  tmuxCommand: _tmuxCommandController.text.trim().isEmpty
+                      ? 'tmux'
+                      : _tmuxCommandController.text.trim(),
+                  pathPrepend: _pathPrependController.text.trim(),
+                  shellWrapper: _shellWrapper,
                 ),
               );
       if (!mounted) {
@@ -257,11 +328,16 @@ class _HostFormScreenState extends State<HostFormScreen> {
       updatedAt: now,
       password: _passwordController.text,
       isDefault: shouldBeDefault,
+      tmuxCommand: _tmuxCommandController.text.trim().isEmpty
+          ? 'tmux'
+          : _tmuxCommandController.text.trim(),
+      pathPrepend: _pathPrependController.text.trim(),
+      shellWrapper: _shellWrapper,
     );
 
     // First save the host
     await state.saveHost(host);
-    
+
     // If setting as default and there are multiple hosts, update all hosts
     if (shouldBeDefault && hostCount > 0) {
       await state.setDefaultHost(host.id);

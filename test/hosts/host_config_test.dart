@@ -25,6 +25,9 @@ void main() {
     expect(host.authType, HostAuthType.password);
     expect(host.projectPath, isEmpty);
     expect(host.privateKeyPath, isEmpty);
+    expect(host.tmuxCommand, 'tmux');
+    expect(host.pathPrepend, isEmpty);
+    expect(host.shellWrapper, ShellWrapper.none);
   });
 
   test('unknown auth type falls back to password', () {
@@ -59,5 +62,31 @@ void main() {
 
     expect(host.password, 'secret-password');
     expect(host.toJson().containsKey('password'), isFalse);
+  });
+
+  test('tmux command environment round trips through JSON', () {
+    final now = DateTime(2026, 5, 17);
+    final host = HostConfig(
+      id: 'host-1',
+      name: 'Dev',
+      host: '127.0.0.1',
+      port: 22,
+      username: 'ironion',
+      authType: HostAuthType.password,
+      projectPath: '',
+      tmuxSessionName: 'armin-codex',
+      agentCommand: 'codex',
+      createdAt: now,
+      updatedAt: now,
+      tmuxCommand: '/opt/homebrew/bin/tmux',
+      pathPrepend: '/opt/homebrew/bin:/usr/local/bin',
+      shellWrapper: ShellWrapper.zshLogin,
+    );
+
+    final reloaded = HostConfig.fromJson(host.toJson());
+
+    expect(reloaded.tmuxCommand, '/opt/homebrew/bin/tmux');
+    expect(reloaded.pathPrepend, '/opt/homebrew/bin:/usr/local/bin');
+    expect(reloaded.shellWrapper, ShellWrapper.zshLogin);
   });
 }

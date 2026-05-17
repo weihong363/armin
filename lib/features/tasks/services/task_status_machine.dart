@@ -13,11 +13,19 @@ class TaskStatusMachine {
     TaskStatus.draft: {TaskStatus.pending},
     TaskStatus.pending: {TaskStatus.running, TaskStatus.failed},
     TaskStatus.running: {
+      TaskStatus.paused,
+      TaskStatus.stopped,
       TaskStatus.needApproval,
       TaskStatus.completed,
       TaskStatus.failed,
     },
-    TaskStatus.needApproval: {TaskStatus.running, TaskStatus.failed},
+    TaskStatus.paused: {TaskStatus.running, TaskStatus.stopped, TaskStatus.failed},
+    TaskStatus.needApproval: {
+      TaskStatus.running,
+      TaskStatus.stopped,
+      TaskStatus.failed,
+    },
+    TaskStatus.stopped: {},
     TaskStatus.completed: {},
     TaskStatus.failed: {},
   };

@@ -15,6 +15,8 @@ class StatusBadge extends StatelessWidget {
       TaskStatus.failed => Colors.red.shade700,
       TaskStatus.needApproval => Colors.orange.shade800,
       TaskStatus.running => ArminTheme.primary,
+      TaskStatus.paused => Colors.orange.shade700,
+      TaskStatus.stopped => Colors.red.shade700,
       TaskStatus.pending => Colors.blueGrey.shade700,
       TaskStatus.draft => Colors.grey.shade700,
     };
@@ -23,6 +25,8 @@ class StatusBadge extends StatelessWidget {
       TaskStatus.failed => '失败',
       TaskStatus.needApproval => '需确认',
       TaskStatus.running => '运行中',
+      TaskStatus.paused => '已暂停',
+      TaskStatus.stopped => '已停止',
       TaskStatus.pending => '等待中',
       TaskStatus.draft => '草稿',
     };

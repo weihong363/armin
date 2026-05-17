@@ -47,6 +47,9 @@ void main() {
     expect(saved.projectPath, isEmpty);
     expect(saved.password, 'secret-password');
     expect(saved.privateKeyPath, isEmpty);
+    expect(saved.tmuxCommand, 'tmux');
+    expect(saved.pathPrepend, isEmpty);
+    expect(saved.shellWrapper, ShellWrapper.none);
   });
 
   testWidgets('host form only shows password auth fields', (tester) async {
@@ -65,6 +68,11 @@ void main() {
     expect(find.text('Auth type'), findsNothing);
     expect(find.text('Private key path'), findsNothing);
     expect(find.widgetWithText(TextFormField, 'SSH password'), findsOneWidget);
+    expect(
+      find.text(
+          'If tmux works in your SSH app but not in Armin, set the tmux path or prepend PATH here.'),
+      findsOneWidget,
+    );
   });
 
   testWidgets('host form tests SSH connection with current password',
@@ -98,6 +106,9 @@ void main() {
     expect(agent.lastRequest?.host, '127.0.0.1');
     expect(agent.lastRequest?.username, 'ironion');
     expect(agent.lastRequest?.password, 'secret-password');
+    expect(agent.lastRequest?.tmuxCommand, 'tmux');
+    expect(agent.lastRequest?.pathPrepend, isEmpty);
+    expect(agent.lastRequest?.shellWrapper, ShellWrapper.none);
     expect(find.text('SSH connection succeeded.'), findsOneWidget);
   });
 

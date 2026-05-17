@@ -1,3 +1,4 @@
+import '../../hosts/models/host_config.dart';
 import '../parsers/approval_request.dart';
 import '../parsers/task_result.dart';
 
@@ -11,6 +12,9 @@ class AgentExecutionRequest {
     this.projectPath = '',
     this.tmuxSessionName = 'armin-codex',
     this.agentCommand = 'codex',
+    this.tmuxCommand = 'tmux',
+    this.pathPrepend = '',
+    this.shellWrapper = ShellWrapper.none,
     this.password,
     this.privateKeyPem,
     this.privateKeyPassphrase,
@@ -24,6 +28,9 @@ class AgentExecutionRequest {
   final String projectPath;
   final String tmuxSessionName;
   final String agentCommand;
+  final String tmuxCommand;
+  final String pathPrepend;
+  final ShellWrapper shellWrapper;
   final String? password;
   final String? privateKeyPem;
   final String? privateKeyPassphrase;
@@ -49,6 +56,9 @@ class AgentControlRequest {
     required this.port,
     required this.username,
     required this.tmuxSessionName,
+    this.tmuxCommand = 'tmux',
+    this.pathPrepend = '',
+    this.shellWrapper = ShellWrapper.none,
     this.password,
     this.privateKeyPem,
     this.privateKeyPassphrase,
@@ -59,6 +69,9 @@ class AgentControlRequest {
   final int port;
   final String username;
   final String tmuxSessionName;
+  final String tmuxCommand;
+  final String pathPrepend;
+  final ShellWrapper shellWrapper;
   final String? password;
   final String? privateKeyPem;
   final String? privateKeyPassphrase;
@@ -71,12 +84,18 @@ class AgentConnectionTestRequest {
     required this.port,
     required this.username,
     required this.password,
+    this.tmuxCommand = 'tmux',
+    this.pathPrepend = '',
+    this.shellWrapper = ShellWrapper.none,
   });
 
   final String host;
   final int port;
   final String username;
   final String password;
+  final String tmuxCommand;
+  final String pathPrepend;
+  final ShellWrapper shellWrapper;
 }
 
 class AgentConnectionTestResult {

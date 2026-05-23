@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:armin/core/storage/json_task_history_store.dart';
 import 'package:armin/core/storage/secure_password_store.dart';
 import 'package:armin/features/hosts/models/host_config.dart';
+import 'package:armin/features/projects/models/project_path_config.dart';
 
 import 'mock_secure_storage.dart';
 
@@ -85,5 +86,34 @@ void main() {
     final hosts = await reloaded.loadHosts();
     final reloadedHost = hosts.firstWhere((item) => item.id == 'host-2');
     expect(reloadedHost.password, 'super-secret-password');
+  });
+
+  test('JsonTaskHistoryStore persists project paths', () async {
+    final tempDir = await Directory.systemTemp.createTemp('armin-store-test');
+    addTearDown(() => tempDir.delete(recursive: true));
+    final store = JsonTaskHistoryStore(
+      file: File('${tempDir.path}/history.json'),
+      passwordStore: SecurePasswordStore(storage: MockSecureStorage()),
+    );
+    final now = DateTime(2026, 5, 18);
+    final projectPath = ProjectPathConfig(
+      id: 'project-1',
+      name: 'Armin',
+      path: '/Users/ironion/workspace/armin',
+      createdAt: now,
+      updatedAt: now,
+      isDefault: true,
+    );
+
+    await store.saveProjectPath(projectPath);
+    final reloaded = JsonTaskHistoryStore(
+      file: File('${tempDir.path}/history.json'),
+      passwordStore: SecurePasswordStore(storage: MockSecureStorage()),
+    );
+
+    final projectPaths = await reloaded.loadProjectPaths();
+    expect(projectPaths.single.name, 'Armin');
+    expect(projectPaths.single.path, '/Users/ironion/workspace/armin');
+    expect(projectPaths.single.isDefault, isTrue);
   });
 }

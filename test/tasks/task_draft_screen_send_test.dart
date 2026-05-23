@@ -7,6 +7,7 @@ import 'package:armin/core/storage/task_history_store.dart';
 import 'package:armin/features/agent/parsers/task_result.dart';
 import 'package:armin/features/agent/services/agent_session_service.dart';
 import 'package:armin/features/hosts/models/host_config.dart';
+import 'package:armin/features/projects/models/project_path_config.dart';
 import 'package:armin/features/tasks/models/task_session.dart';
 import 'package:armin/features/tasks/screens/task_draft_screen.dart';
 import '../features/voice/services/mock_voice_service.dart';
@@ -31,7 +32,6 @@ void main() {
     await _pumpScreen(tester, store: store, agent: agent);
 
     await tester.enterText(find.byType(TextField).first, '执行真实任务');
-    await _enterProjectPath(tester, '/tmp/armin-task');
     await tester.tap(find.text('发送给 Codex'));
     await tester.pumpAndSettle();
 
@@ -42,7 +42,10 @@ void main() {
 
   testWidgets('send requires project path before creating task',
       (tester) async {
-    final store = _TaskStore(hosts: [_host(password: 'secret-password')]);
+    final store = _TaskStore(
+      hosts: [_host(password: 'secret-password')],
+      projectPaths: const [],
+    );
     final agent = _CaptureAgentSessionService();
     await _pumpScreen(tester, store: store, agent: agent);
 
@@ -52,7 +55,7 @@ void main() {
 
     expect(agent.lastRequest, isNull);
     expect(store.savedTasks, isEmpty);
-    expect(find.text('Project path is required.'), findsOneWidget);
+    expect(find.text('请先配置并选择 Project Path。'), findsOneWidget);
   });
 
   testWidgets('send passes SSH password to agent request', (tester) async {
@@ -61,7 +64,6 @@ void main() {
     await _pumpScreen(tester, store: store, agent: agent);
 
     await tester.enterText(find.byType(TextField).first, '执行真实任务');
-    await _enterProjectPath(tester, '/tmp/armin-task');
     await tester.tap(find.text('发送给 Codex'));
     await tester.pumpAndSettle();
 
@@ -69,6 +71,22 @@ void main() {
     expect(agent.lastRequest?.projectPath, '/tmp/armin-task');
     expect(agent.lastRequest?.privateKeyPem, isNull);
     expect(store.savedTasks.last.host.projectPath, '/tmp/armin-task');
+  });
+
+  testWidgets('send normalizes home based project path', (tester) async {
+    final store = _TaskStore(
+      hosts: [_host(password: 'secret-password')],
+      projectPaths: [_projectPath(path: '~workspace/momo')],
+    );
+    final agent = _CaptureAgentSessionService();
+    await _pumpScreen(tester, store: store, agent: agent);
+
+    await tester.enterText(find.byType(TextField).first, '执行真实任务');
+    await tester.tap(find.text('发送给 Codex'));
+    await tester.pumpAndSettle();
+
+    expect(agent.lastRequest?.projectPath, '~/workspace/momo');
+    expect(store.savedTasks.last.host.projectPath, '~/workspace/momo');
   });
 
   testWidgets('send opens task detail before agent finishes', (tester) async {
@@ -80,13 +98,15 @@ void main() {
     await _pumpScreen(tester, store: store, agent: agent);
 
     await tester.enterText(find.byType(TextField).first, '执行真实任务');
-    await _enterProjectPath(tester, '/tmp/armin-task');
     await tester.tap(find.text('发送给 Codex'));
     await tester.pumpAndSettle();
 
     expect(find.text('任务详情'), findsOneWidget);
     expect(agent.lastRequest, isNotNull);
     expect(store.savedTasks.last.status, TaskStatus.running);
+    expect(agent.lastRequest!.tmuxSessionName, startsWith('armin-codex-'));
+    expect(store.savedTasks.last.host.tmuxSessionName,
+        agent.lastRequest!.tmuxSessionName);
 
     waitBeforeResult.complete();
     await tester.pumpAndSettle();
@@ -99,7 +119,6 @@ void main() {
     await _pumpScreen(tester, store: store, agent: agent);
 
     await tester.enterText(find.byType(TextField).first, '执行真实任务');
-    await _enterProjectPath(tester, '/tmp/armin-task');
     await tester.tap(find.text('发送给 Codex'));
     await tester.pumpAndSettle();
 
@@ -109,30 +128,20 @@ void main() {
     expect(store.savedTasks.last.shortSummary, contains('SSH 执行失败'));
   });
 
-  testWidgets('done update without result marks task failed', (tester) async {
+  testWidgets('done update without result marks task turn idle',
+      (tester) async {
     final store = _TaskStore(hosts: [_host(password: 'secret-password')]);
     final agent = _CaptureAgentSessionService(doneWithoutResult: true);
     await _pumpScreen(tester, store: store, agent: agent);
 
     await tester.enterText(find.byType(TextField).first, '执行真实任务');
-    await _enterProjectPath(tester, '/tmp/armin-task');
     await tester.tap(find.text('发送给 Codex'));
     await tester.pumpAndSettle();
 
     expect(store.savedTasks, isNotEmpty);
-    expect(store.savedTasks.last.status, TaskStatus.failed);
-    expect(
-      store.savedTasks.last.shortSummary,
-      contains('SSH session ended without structured result'),
-    );
+    expect(store.savedTasks.last.status, TaskStatus.turnIdle);
+    expect(store.savedTasks.last.completedAt, isNull);
   });
-}
-
-Future<void> _enterProjectPath(WidgetTester tester, String value) async {
-  await tester.enterText(
-    find.widgetWithText(TextField, 'Project path'),
-    value,
-  );
 }
 
 Future<void> _pumpScreen(
@@ -174,9 +183,14 @@ HostConfig _host({required String password}) {
 }
 
 class _TaskStore implements TaskHistoryStore {
-  _TaskStore({required List<HostConfig> hosts}) : _hosts = hosts;
+  _TaskStore({
+    required List<HostConfig> hosts,
+    List<ProjectPathConfig>? projectPaths,
+  })  : _hosts = hosts,
+        _projectPaths = projectPaths?.toList() ?? [_projectPath()];
 
   final List<HostConfig> _hosts;
+  final List<ProjectPathConfig> _projectPaths;
   final List<TaskSession> savedTasks = [];
 
   @override
@@ -204,6 +218,43 @@ class _TaskStore implements TaskHistoryStore {
     }
     savedTasks.add(task);
   }
+
+  @override
+  Future<void> deleteTask(String taskId) async {
+    savedTasks.removeWhere((task) => task.id == taskId);
+  }
+
+  @override
+  Future<List<ProjectPathConfig>> loadProjectPaths() async {
+    return List.unmodifiable(_projectPaths);
+  }
+
+  @override
+  Future<void> saveProjectPath(ProjectPathConfig projectPath) async {
+    final index = _projectPaths.indexWhere((item) => item.id == projectPath.id);
+    if (index >= 0) {
+      _projectPaths[index] = projectPath;
+      return;
+    }
+    _projectPaths.add(projectPath);
+  }
+
+  @override
+  Future<void> deleteProjectPath(String projectPathId) async {
+    _projectPaths.removeWhere((item) => item.id == projectPathId);
+  }
+}
+
+ProjectPathConfig _projectPath({String path = '/tmp/armin-task'}) {
+  final now = DateTime(2026, 5, 17);
+  return ProjectPathConfig(
+    id: 'project-1',
+    name: 'Armin',
+    path: path,
+    createdAt: now,
+    updatedAt: now,
+    isDefault: true,
+  );
 }
 
 class _CaptureAgentSessionService implements AgentSessionService {
@@ -233,7 +284,7 @@ class _CaptureAgentSessionService implements AgentSessionService {
     }
     if (doneWithoutResult) {
       yield const AgentExecutionUpdate(
-        rawOutput: 'SSH session ended without structured result.',
+        rawOutput: 'SSH session ended without readable result.',
         done: true,
       );
       return;
@@ -266,4 +317,7 @@ class _CaptureAgentSessionService implements AgentSessionService {
 
   @override
   Future<void> stop(AgentControlRequest request) async {}
+
+  @override
+  Future<void> cleanup(AgentControlRequest request) async {}
 }

@@ -1,15 +1,13 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 
 import '../../../app_state_scope.dart';
 import '../../../core/models/task_status.dart';
-import '../../../core/services/armin_app_state.dart';
 import '../../../shared/theme/armin_theme.dart';
 import '../../agent/services/agent_session_service.dart';
 import '../../history/screens/task_detail_screen.dart';
+import '../../projects/models/project_path_config.dart';
+import '../../projects/screens/project_path_list_screen.dart';
 import '../../voice/services/voice_service.dart';
-import '../models/execution_log.dart';
 import '../models/metric_event.dart';
 import '../models/prompt_record.dart';
 import '../models/secret_entry.dart';
@@ -43,7 +41,6 @@ class TaskDraftScreen extends StatefulWidget {
 
 class _TaskDraftScreenState extends State<TaskDraftScreen> {
   final _taskController = TextEditingController();
-  final _projectPathController = TextEditingController();
   final _contextController = TextEditingController();
   final _secretNameController = TextEditingController();
   final _secretValueController = TextEditingController();
@@ -64,6 +61,7 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
   String _promptPreview = '';
   _VoiceInteractionStatus _voiceStatus = _VoiceInteractionStatus.idle;
   bool _isSending = false;
+  String? _selectedProjectPathId;
 
   @override
   void initState() {
@@ -74,13 +72,11 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
       _cleanedDraft = initialText;
       _promptPreview = _buildPrompt();
     }
-    // Initialize selected host from parameter or default
   }
 
   @override
   void dispose() {
     _taskController.dispose();
-    _projectPathController.dispose();
     _contextController.dispose();
     _secretNameController.dispose();
     _secretValueController.dispose();
@@ -90,6 +86,8 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final state = AppStateScope.of(context);
+    final selectedProjectPath = _selectedProjectPath(state.projectPaths);
     return Scaffold(
       appBar: AppBar(
         title: const Text('新建任务'),
@@ -139,14 +137,50 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
             onChanged: (_) => _refreshPreview(),
           ),
           const SizedBox(height: 12),
-          TextField(
-            controller: _projectPathController,
-            decoration: const InputDecoration(
-              labelText: 'Project path',
-              hintText: '/path/to/repo',
-            ),
-            onChanged: (_) => _refreshPreview(),
+          Row(
+            children: [
+              Expanded(
+                child: DropdownButtonFormField<String>(
+                  key: const ValueKey('project-path-selector'),
+                  initialValue: selectedProjectPath?.id,
+                  decoration: const InputDecoration(
+                    labelText: 'Project path',
+                  ),
+                  items: [
+                    for (final projectPath in state.projectPaths)
+                      DropdownMenuItem(
+                        value: projectPath.id,
+                        child:
+                            Text('${projectPath.name} · ${projectPath.path}'),
+                      ),
+                  ],
+                  onChanged: (value) {
+                    setState(() => _selectedProjectPathId = value);
+                    _refreshPreview();
+                  },
+                ),
+              ),
+              const SizedBox(width: 8),
+              IconButton.filledTonal(
+                tooltip: 'Project Path 设置',
+                icon: const Icon(Icons.folder_open_outlined),
+                onPressed: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => const ProjectPathListScreen(),
+                    ),
+                  );
+                },
+              ),
+            ],
           ),
+          if (state.projectPaths.isEmpty) ...[
+            const SizedBox(height: 8),
+            Text(
+              '请先添加 Project Path，然后在这里选择执行目录。',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ],
           const SizedBox(height: 12),
           Wrap(
             spacing: 8,
@@ -495,22 +529,24 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
 
   Future<void> _send() async {
     final taskText = _taskController.text.trim();
-    final projectPath = _projectPathController.text.trim();
     if (taskText.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Task description is required.')),
       );
       return;
     }
+
+    final state = AppStateScope.of(context);
+    final project = _selectedProjectPath(state.projectPaths);
+    final projectPath = normalizeRemoteProjectPath(project?.path ?? '');
     if (projectPath.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Project path is required.')),
+        const SnackBar(content: Text('请先配置并选择 Project Path。')),
       );
       return;
     }
 
     setState(() => _isSending = true);
-    final state = AppStateScope.of(context);
     final host = state.defaultHost;
     if (host == null) {
       setState(() => _isSending = false);
@@ -530,7 +566,11 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
     final now = DateTime.now();
     final taskId = 'task-${now.microsecondsSinceEpoch}';
     final prompt = _buildPrompt();
-    final taskHost = host.copyWith(projectPath: projectPath);
+    final tmuxSessionName = _taskTmuxSessionName(host.tmuxSessionName, taskId);
+    final taskHost = host.copyWith(
+      projectPath: projectPath,
+      tmuxSessionName: tmuxSessionName,
+    );
     final secretRecords = _secrets
         .map(
             (secret) => secret.toRedactedRecord(taskId: taskId, createdAt: now))
@@ -594,8 +634,10 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
       ],
     );
     await state.saveTask(task);
-    unawaited(_runAgentExecution(
-      state,
+    if (!mounted) {
+      return;
+    }
+    state.startTaskExecution(
       task,
       AgentExecutionRequest(
         prompt: prompt,
@@ -604,14 +646,14 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
         port: host.port,
         username: host.username,
         projectPath: projectPath,
-        tmuxSessionName: host.tmuxSessionName,
+        tmuxSessionName: tmuxSessionName,
         agentCommand: host.agentCommand,
         tmuxCommand: host.tmuxCommand,
         pathPrepend: host.pathPrepend,
         shellWrapper: host.shellWrapper,
         password: host.password,
       ),
-    ));
+    );
 
     setState(() => _isSending = false);
     Navigator.of(context).pushReplacement(
@@ -621,177 +663,27 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
     );
   }
 
-  Future<void> _runAgentExecution(
-    ArminAppState state,
-    TaskSession initialTask,
-    AgentExecutionRequest request,
-  ) async {
-    var task = initialTask;
-    try {
-      await for (final update in state.agentSessionService.execute(request)) {
-        final latest = _latestTask(state, task.id) ?? task;
-        if (latest.status == TaskStatus.stopped) {
-          return;
+  ProjectPathConfig? _selectedProjectPath(List<ProjectPathConfig> items) {
+    if (items.isEmpty) {
+      return null;
+    }
+    final selectedId = _selectedProjectPathId;
+    if (selectedId != null) {
+      for (final item in items) {
+        if (item.id == selectedId) {
+          return item;
         }
-        task = _taskWithExecutionUpdate(latest, update);
-        await state.saveTask(task);
       }
-      if (task.status == TaskStatus.completed) {
-        await state.voiceService.speakSummary(task.shortSummary);
-      }
-    } catch (e) {
-      final latest = _latestTask(state, task.id) ?? task;
-      if (latest.status == TaskStatus.stopped) {
-        return;
-      }
-      final failedAt = DateTime.now();
-      final message = 'SSH 执行失败：${e.toString()}';
-      await state.saveTask(
-        latest.copyWith(
-          status: TaskStatus.failed,
-          rawLog: '${latest.rawLog}$message\n',
-          updatedAt: failedAt,
-          completedAt: failedAt,
-          shortSummary: message,
-          summary: message,
-          executionLogs: [
-            ...latest.executionLogs,
-            ExecutionLog(
-              id: 'log-${failedAt.microsecondsSinceEpoch}',
-              taskId: latest.id,
-              rawOutput: '$message\n',
-              createdAt: failedAt,
-            ),
-          ],
-          metricEvents: [
-            ...latest.metricEvents,
-            MetricEvent.create(
-              taskId: latest.id,
-              eventType: 'task_failed',
-              payloadJson: '{"reason":"ssh_execution_error"}',
-              now: failedAt,
-            ),
-          ],
-          clearApproval: true,
-        ),
-      );
     }
+    final defaultPath = AppStateScope.of(context).defaultProjectPath;
+    _selectedProjectPathId = defaultPath?.id ?? items.first.id;
+    return defaultPath ?? items.first;
   }
 
-  TaskSession? _latestTask(ArminAppState state, String taskId) {
-    for (final task in state.tasks) {
-      if (task.id == taskId) {
-        return task;
-      }
-    }
-    return null;
-  }
-
-  TaskSession _taskWithExecutionUpdate(
-    TaskSession task,
-    AgentExecutionUpdate update,
-  ) {
-    final updateAt = DateTime.now();
-    final rawLog = '${task.rawLog}${update.rawOutput}';
-    final executionLogs = [
-      ...task.executionLogs,
-      ExecutionLog(
-        id: 'log-${updateAt.microsecondsSinceEpoch}',
-        taskId: task.id,
-        rawOutput: update.rawOutput,
-        createdAt: updateAt,
-      ),
-    ];
-
-    if (update.approval != null) {
-      final approval = update.approval!;
-      return task.copyWith(
-        status: TaskStatus.needApproval,
-        rawLog: rawLog,
-        approval: approval,
-        approvalRequests: [...task.approvalRequests, approval],
-        executionLogs: executionLogs,
-        updatedAt: updateAt,
-        shortSummary: approval.reason,
-        metricEvents: [
-          ...task.metricEvents,
-          MetricEvent.create(
-            taskId: task.id,
-            eventType: 'approval_requested',
-            payloadJson: '{"risk":"${approval.risk}"}',
-            now: updateAt,
-          ),
-        ],
-      );
-    }
-
-    if (update.result != null) {
-      final completedAt = DateTime.now();
-      final resultStatus = update.result!.status;
-      return task.copyWith(
-        status: resultStatus == 'success'
-            ? TaskStatus.completed
-            : TaskStatus.failed,
-        rawLog: rawLog,
-        result: update.result,
-        updatedAt: completedAt,
-        completedAt: completedAt,
-        shortSummary: update.result!.summary,
-        summary: update.result!.summary,
-        executionLogs: executionLogs,
-        metricEvents: [
-          ...task.metricEvents,
-          MetricEvent.create(
-            taskId: task.id,
-            eventType: 'task_completed',
-            payloadJson: '{"result_status":"$resultStatus"}',
-            now: completedAt,
-          ),
-        ],
-        clearApproval: true,
-      );
-    }
-
-    if (update.done) {
-      final failedAt = DateTime.now();
-      final message = update.rawOutput.trim().isEmpty
-          ? 'Codex CLI ended without a structured task result.'
-          : update.rawOutput.trim();
-      return task.copyWith(
-        status: TaskStatus.failed,
-        rawLog: rawLog,
-        updatedAt: failedAt,
-        completedAt: failedAt,
-        shortSummary: message,
-        summary: message,
-        executionLogs: executionLogs,
-        metricEvents: [
-          ...task.metricEvents,
-          MetricEvent.create(
-            taskId: task.id,
-            eventType: 'task_failed',
-            payloadJson: '{"reason":"missing_structured_result"}',
-            now: failedAt,
-          ),
-        ],
-        clearApproval: true,
-      );
-    }
-
-    return task.copyWith(
-      rawLog: rawLog,
-      updatedAt: updateAt,
-      executionLogs: executionLogs,
-      metricEvents: [
-        ...task.metricEvents,
-        MetricEvent.create(
-          taskId: task.id,
-          eventType: 'agent_output',
-          payloadJson: '{"bytes":${update.rawOutput.length}}',
-          now: updateAt,
-        ),
-      ],
-    );
+  String _taskTmuxSessionName(String baseName, String taskId) {
+    final safeBase = baseName.trim().isEmpty ? 'armin-codex' : baseName.trim();
+    final suffix = taskId.replaceFirst('task-', '');
+    return '$safeBase-$suffix';
   }
 
   String _titleFrom(String taskText) {

@@ -1,6 +1,7 @@
 import '../../hosts/models/host_config.dart';
 import '../parsers/approval_request.dart';
 import '../parsers/task_result.dart';
+import 'native_output_observer.dart';
 
 class AgentExecutionRequest {
   const AgentExecutionRequest({
@@ -18,6 +19,7 @@ class AgentExecutionRequest {
     this.password,
     this.privateKeyPem,
     this.privateKeyPassphrase,
+    this.attachOnly = false,
   });
 
   final String prompt;
@@ -34,17 +36,28 @@ class AgentExecutionRequest {
   final String? password;
   final String? privateKeyPem;
   final String? privateKeyPassphrase;
+  final bool attachOnly;
 }
 
 class AgentExecutionUpdate {
   const AgentExecutionUpdate({
     required this.rawOutput,
+    this.cleanedOutput,
+    this.observerState = NativeOutputObserverState.running,
+    this.turnIdle = false,
+    this.runtimeLost = false,
+    this.needsAttention = false,
     this.result,
     this.approval,
     this.done = false,
   });
 
   final String rawOutput;
+  final String? cleanedOutput;
+  final NativeOutputObserverState observerState;
+  final bool turnIdle;
+  final bool runtimeLost;
+  final bool needsAttention;
   final TaskResult? result;
   final ApprovalRequest? approval;
   final bool done;
@@ -85,6 +98,7 @@ class AgentConnectionTestRequest {
     required this.username,
     required this.password,
     this.tmuxCommand = 'tmux',
+    this.agentCommand = 'codex',
     this.pathPrepend = '',
     this.shellWrapper = ShellWrapper.none,
   });
@@ -94,6 +108,7 @@ class AgentConnectionTestRequest {
   final String username;
   final String password;
   final String tmuxCommand;
+  final String agentCommand;
   final String pathPrepend;
   final ShellWrapper shellWrapper;
 }
@@ -122,4 +137,6 @@ abstract class AgentSessionService {
   Future<void> resume(AgentControlRequest request);
 
   Future<void> stop(AgentControlRequest request);
+
+  Future<void> cleanup(AgentControlRequest request);
 }

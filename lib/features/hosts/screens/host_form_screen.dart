@@ -29,6 +29,7 @@ class _HostFormScreenState extends State<HostFormScreen> {
   bool _isTestingConnection = false;
   bool _setAsDefault = false;
   ShellWrapper _shellWrapper = ShellWrapper.none;
+  HostMachineType _machineType = HostMachineType.generic;
 
   @override
   void initState() {
@@ -55,6 +56,7 @@ class _HostFormScreenState extends State<HostFormScreen> {
       text: host?.agentCommand ?? 'codex',
     );
     _shellWrapper = host?.shellWrapper ?? ShellWrapper.none;
+    _machineType = host?.machineType ?? HostMachineType.generic;
     // If editing existing host, use its isDefault; if creating new, default to true
     _setAsDefault = host?.isDefault ?? true;
   }
@@ -200,6 +202,34 @@ class _HostFormScreenState extends State<HostFormScreen> {
               style: Theme.of(context).textTheme.titleSmall,
             ),
             const SizedBox(height: 12),
+            DropdownButtonFormField<HostMachineType>(
+              initialValue: _machineType,
+              decoration: const InputDecoration(labelText: 'Host type'),
+              items: [
+                for (final type in HostMachineType.values)
+                  DropdownMenuItem(
+                    value: type,
+                    child: Text(type.label),
+                  ),
+              ],
+              onChanged: (value) {
+                if (value == null) {
+                  return;
+                }
+                setState(() {
+                  _machineType = value;
+                  _tmuxCommandController.text = value.defaultTmuxCommand;
+                  _pathPrependController.text = value.defaultPathPrepend;
+                  _agentCommandController.text = value.defaultAgentCommand;
+                });
+              },
+            ),
+            const SizedBox(height: 6),
+            Text(
+              '${_machineType.description} You can still override tmux path and PATH below.',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            const SizedBox(height: 12),
             _field(_tmuxCommandController, 'tmux command path'),
             _field(
               _pathPrependController,
@@ -269,6 +299,9 @@ class _HostFormScreenState extends State<HostFormScreen> {
                   tmuxCommand: _tmuxCommandController.text.trim().isEmpty
                       ? 'tmux'
                       : _tmuxCommandController.text.trim(),
+                  agentCommand: _agentCommandController.text.trim().isEmpty
+                      ? 'codex'
+                      : _agentCommandController.text.trim(),
                   pathPrepend: _pathPrependController.text.trim(),
                   shellWrapper: _shellWrapper,
                 ),
@@ -333,6 +366,7 @@ class _HostFormScreenState extends State<HostFormScreen> {
           : _tmuxCommandController.text.trim(),
       pathPrepend: _pathPrependController.text.trim(),
       shellWrapper: _shellWrapper,
+      machineType: _machineType,
     );
 
     // First save the host

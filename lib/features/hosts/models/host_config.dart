@@ -9,6 +9,65 @@ enum ShellWrapper {
   zshLogin,
 }
 
+enum HostMachineType {
+  generic,
+  macAppleSilicon,
+  macIntel,
+  linux,
+}
+
+extension HostMachineTypeDefaults on HostMachineType {
+  String get label {
+    return switch (this) {
+      HostMachineType.generic => 'Generic / custom',
+      HostMachineType.macAppleSilicon => 'macOS Apple Silicon',
+      HostMachineType.macIntel => 'macOS Intel',
+      HostMachineType.linux => 'Linux',
+    };
+  }
+
+  String get defaultTmuxCommand {
+    return switch (this) {
+      HostMachineType.generic => 'tmux',
+      HostMachineType.macAppleSilicon => '/opt/homebrew/bin/tmux',
+      HostMachineType.macIntel => '/usr/local/bin/tmux',
+      HostMachineType.linux => '/usr/bin/tmux',
+    };
+  }
+
+  String get defaultPathPrepend {
+    return switch (this) {
+      HostMachineType.generic => '',
+      HostMachineType.macAppleSilicon =>
+        '/opt/homebrew/bin:/usr/local/bin:\$HOME/.npm-global/bin:\$HOME/.npm-packages/bin',
+      HostMachineType.macIntel =>
+        '/usr/local/bin:\$HOME/.npm-global/bin:\$HOME/.npm-packages/bin',
+      HostMachineType.linux =>
+        '/usr/bin:\$HOME/.npm-global/bin:\$HOME/.npm-packages/bin',
+    };
+  }
+
+  String get defaultAgentCommand {
+    return switch (this) {
+      HostMachineType.generic => 'codex',
+      HostMachineType.macAppleSilicon => r'$HOME/.npm-global/bin/codex',
+      HostMachineType.macIntel => r'$HOME/.npm-global/bin/codex',
+      HostMachineType.linux => r'$HOME/.npm-global/bin/codex',
+    };
+  }
+
+  String get description {
+    return switch (this) {
+      HostMachineType.generic => 'Uses tmux from the remote shell PATH.',
+      HostMachineType.macAppleSilicon =>
+        'Homebrew tools are usually under /opt/homebrew/bin.',
+      HostMachineType.macIntel =>
+        'Homebrew tools are usually under /usr/local/bin.',
+      HostMachineType.linux => 'System tools are usually under /usr/bin.',
+    };
+  }
+}
+
 class HostConfig {
   const HostConfig({
     required this.id,
@@ -28,6 +87,7 @@ class HostConfig {
     this.tmuxCommand = 'tmux',
     this.pathPrepend = '',
     this.shellWrapper = ShellWrapper.none,
+    this.machineType = HostMachineType.generic,
   });
 
   factory HostConfig.fromJson(Map<String, Object?> json) {
@@ -57,6 +117,10 @@ class HostConfig {
         (wrapper) => wrapper.name == json['shellWrapper'],
         orElse: () => ShellWrapper.none,
       ),
+      machineType: HostMachineType.values.firstWhere(
+        (type) => type.name == json['machineType'],
+        orElse: () => HostMachineType.generic,
+      ),
     );
   }
 
@@ -80,6 +144,7 @@ class HostConfig {
   final String tmuxCommand;
   final String pathPrepend;
   final ShellWrapper shellWrapper;
+  final HostMachineType machineType;
 
   String get address => host;
 
@@ -101,6 +166,7 @@ class HostConfig {
     String? tmuxCommand,
     String? pathPrepend,
     ShellWrapper? shellWrapper,
+    HostMachineType? machineType,
   }) {
     return HostConfig(
       id: id ?? this.id,
@@ -120,6 +186,7 @@ class HostConfig {
       tmuxCommand: tmuxCommand ?? this.tmuxCommand,
       pathPrepend: pathPrepend ?? this.pathPrepend,
       shellWrapper: shellWrapper ?? this.shellWrapper,
+      machineType: machineType ?? this.machineType,
     );
   }
 
@@ -142,6 +209,7 @@ class HostConfig {
       'tmuxCommand': tmuxCommand,
       'pathPrepend': pathPrepend,
       'shellWrapper': shellWrapper.name,
+      'machineType': machineType.name,
     };
   }
 }

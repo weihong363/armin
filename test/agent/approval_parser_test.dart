@@ -17,4 +17,36 @@ NEED_APPROVAL_END
     expect(approval.command, 'rm -rf build');
     expect(approval.risk, 'high');
   });
+
+  test('ignores template placeholder approval block', () {
+    final approval = ApprovalParser().parse('''
+NEED_APPROVAL_START
+reason: ...
+command: ...
+risk: low | medium | high
+NEED_APPROVAL_END
+''');
+
+    expect(approval, isNull);
+  });
+
+  test('uses latest real approval block', () {
+    final approval = ApprovalParser().parse('''
+NEED_APPROVAL_START
+reason: ...
+command: ...
+risk: low | medium | high
+NEED_APPROVAL_END
+noise
+NEED_APPROVAL_START
+reason: needs install
+command: npm install
+risk: medium
+NEED_APPROVAL_END
+''');
+
+    expect(approval, isNotNull);
+    expect(approval!.reason, 'needs install');
+    expect(approval.command, 'npm install');
+  });
 }

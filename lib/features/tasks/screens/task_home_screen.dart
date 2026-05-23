@@ -5,6 +5,7 @@ import '../../../core/models/task_status.dart';
 import '../../../shared/theme/armin_theme.dart';
 import '../../history/screens/task_detail_screen.dart';
 import '../../hosts/screens/host_list_screen.dart';
+import '../../projects/screens/project_path_list_screen.dart';
 import '../../voice/services/voice_service.dart';
 import '../models/task_session.dart';
 import '../services/speech_draft_cleaner.dart';
@@ -83,6 +84,18 @@ class _TaskHomeScreenState extends State<TaskHomeScreen> {
                               ],
                             ),
                           ),
+                          IconButton.filledTonal(
+                            tooltip: 'Projects',
+                            icon: const Icon(Icons.folder_outlined),
+                            onPressed: () {
+                              Navigator.of(context).push(
+                                MaterialPageRoute<void>(
+                                  builder: (_) => const ProjectPathListScreen(),
+                                ),
+                              );
+                            },
+                          ),
+                          const SizedBox(width: 8),
                           IconButton.filledTonal(
                             tooltip: 'Hosts',
                             icon: const Icon(Icons.settings_outlined),
@@ -310,7 +323,9 @@ class _TaskHomeScreenState extends State<TaskHomeScreen> {
     for (final task in tasks) {
       if (task.status == TaskStatus.running ||
           task.status == TaskStatus.paused ||
-          task.status == TaskStatus.needApproval) {
+          task.status == TaskStatus.needApproval ||
+          task.status == TaskStatus.turnIdle ||
+          task.status == TaskStatus.needAttention) {
         return task;
       }
     }

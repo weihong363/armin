@@ -28,6 +28,7 @@ void main() {
     expect(host.tmuxCommand, 'tmux');
     expect(host.pathPrepend, isEmpty);
     expect(host.shellWrapper, ShellWrapper.none);
+    expect(host.machineType, HostMachineType.generic);
   });
 
   test('unknown auth type falls back to password', () {
@@ -81,6 +82,7 @@ void main() {
       tmuxCommand: '/opt/homebrew/bin/tmux',
       pathPrepend: '/opt/homebrew/bin:/usr/local/bin',
       shellWrapper: ShellWrapper.zshLogin,
+      machineType: HostMachineType.macAppleSilicon,
     );
 
     final reloaded = HostConfig.fromJson(host.toJson());
@@ -88,5 +90,34 @@ void main() {
     expect(reloaded.tmuxCommand, '/opt/homebrew/bin/tmux');
     expect(reloaded.pathPrepend, '/opt/homebrew/bin:/usr/local/bin');
     expect(reloaded.shellWrapper, ShellWrapper.zshLogin);
+    expect(reloaded.machineType, HostMachineType.macAppleSilicon);
+  });
+
+  test('host machine types document default tmux command paths', () {
+    expect(
+      HostMachineType.macAppleSilicon.defaultTmuxCommand,
+      '/opt/homebrew/bin/tmux',
+    );
+    expect(
+      HostMachineType.macAppleSilicon.defaultPathPrepend,
+      '/opt/homebrew/bin:/usr/local/bin:\$HOME/.npm-global/bin:\$HOME/.npm-packages/bin',
+    );
+    expect(
+      HostMachineType.macAppleSilicon.defaultAgentCommand,
+      r'$HOME/.npm-global/bin/codex',
+    );
+    expect(HostMachineType.macIntel.defaultTmuxCommand, '/usr/local/bin/tmux');
+    expect(
+      HostMachineType.macIntel.defaultPathPrepend,
+      '/usr/local/bin:\$HOME/.npm-global/bin:\$HOME/.npm-packages/bin',
+    );
+    expect(HostMachineType.linux.defaultTmuxCommand, '/usr/bin/tmux');
+    expect(
+      HostMachineType.linux.defaultPathPrepend,
+      '/usr/bin:\$HOME/.npm-global/bin:\$HOME/.npm-packages/bin',
+    );
+    expect(HostMachineType.generic.defaultTmuxCommand, 'tmux');
+    expect(HostMachineType.generic.defaultPathPrepend, isEmpty);
+    expect(HostMachineType.generic.defaultAgentCommand, 'codex');
   });
 }

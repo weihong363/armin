@@ -6,7 +6,7 @@ import 'package:armin/features/agent/services/agent_session_service.dart';
 class MockAgentSessionService implements AgentSessionService {
   MockAgentSessionService({
     TaskResultParser? resultParser,
-  })  : _resultParser = resultParser ?? TaskResultParser();
+  }) : _resultParser = resultParser ?? TaskResultParser();
 
   final TaskResultParser _resultParser;
 
@@ -28,7 +28,7 @@ class MockAgentSessionService implements AgentSessionService {
         rawOutput: 'Mock agent is reading files.\n');
     await Future<void>.delayed(const Duration(seconds: 1));
     await Future<void>.delayed(const Duration(seconds: 1));
-    
+
     final resultOutput = '''
 TASK_RESULT_START
 status: success
@@ -61,4 +61,7 @@ TASK_RESULT_END
 
   @override
   Future<void> stop(AgentControlRequest request) async {}
+
+  @override
+  Future<void> cleanup(AgentControlRequest request) async {}
 }

@@ -5,6 +5,7 @@ import '../features/agent/services/mock_agent_session_service.dart';
 import '../features/voice/services/mock_voice_service.dart';
 import 'package:armin/features/hosts/models/host_config.dart';
 import 'package:armin/features/hosts/screens/host_list_screen.dart';
+import 'package:armin/features/projects/models/project_path_config.dart';
 import 'package:armin/features/tasks/models/task_session.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -80,4 +81,16 @@ class _HostStore implements TaskHistoryStore {
 
   @override
   Future<void> saveTask(TaskSession task) async {}
+
+  @override
+  Future<void> deleteTask(String taskId) async {}
+
+  @override
+  Future<List<ProjectPathConfig>> loadProjectPaths() async => [];
+
+  @override
+  Future<void> saveProjectPath(ProjectPathConfig projectPath) async {}
+
+  @override
+  Future<void> deleteProjectPath(String projectPathId) async {}
 }

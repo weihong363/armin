@@ -90,13 +90,139 @@ class DeviceVoiceService implements VoiceService {
 
   @override
   Future<void> speakSummary(String summary) async {
-    final text = summary.trim();
-    if (text.isEmpty) {
+    final segments = buildSpeechSegmentsForTest(summary);
+    if (segments.isEmpty) {
       return;
     }
-    await _flutterTts.setLanguage('zh-CN');
-    await _flutterTts.setSpeechRate(0.48);
-    await _flutterTts.speak(text);
+    await _flutterTts.awaitSpeakCompletion(true);
+    await _flutterTts.setVolume(1.0);
+    for (final segment in segments) {
+      final profile = speechProfileForTest(segment.languageCode);
+      try {
+        await _flutterTts.setLanguage(segment.languageCode);
+      } catch (_) {
+        await _flutterTts.setLanguage('zh-CN');
+      }
+      await _flutterTts.setSpeechRate(profile.speechRate);
+      await _flutterTts.setPitch(profile.pitch);
+      await _flutterTts.speak(segment.text);
+    }
+  }
+
+  @visibleForTesting
+  static List<SpeechSummarySegment> buildSpeechSegmentsForTest(
+    String summary,
+  ) {
+    final text = cleanSpeechSummaryForTest(summary);
+    if (text.isEmpty) {
+      return const [];
+    }
+    return text
+        .split(RegExp(r'(?<=[。！？.!?])\s+|\n+'))
+        .map((part) => part.trim())
+        .where((part) => part.isNotEmpty)
+        .map(
+          (part) => SpeechSummarySegment(
+            text: part,
+            languageCode: _isEnglishDominant(part) ? 'en-US' : 'zh-CN',
+          ),
+        )
+        .toList(growable: false);
+  }
+
+  @visibleForTesting
+  static String cleanSpeechSummaryForTest(String summary) {
+    final withoutBlocks = summary
+        .replaceAll(RegExp(r'```[\s\S]*?```'), '\n')
+        .replaceAllMapped(RegExp(r'`([^`]+)`'), (match) => match.group(1)!);
+    final lines = withoutBlocks
+        .replaceAll('\r', '\n')
+        .split('\n')
+        .map((line) => line.trim())
+        .where((line) => line.isNotEmpty && !_isSpeechNoiseLine(line))
+        .map(_cleanSpeechLine)
+        .where((line) => line.isNotEmpty)
+        .toList();
+    return _joinSpeechLines(lines);
+  }
+
+  @visibleForTesting
+  static SpeechVoiceProfile speechProfileForTest(String languageCode) {
+    return languageCode == 'en-US'
+        ? const SpeechVoiceProfile(speechRate: 0.54, pitch: 1.0)
+        : const SpeechVoiceProfile(speechRate: 0.58, pitch: 0.98);
+  }
+
+  static String _cleanSpeechLine(String line) {
+    return line
+        .replaceFirst(RegExp(r'^[•*-]\s+'), '')
+        .replaceAll(RegExp(r'https?://\S+'), '')
+        .trim();
+  }
+
+  static bool _isSpeechNoiseLine(String line) {
+    final lower = line.toLowerCase();
+    return lower.startsWith('```') ||
+        lower.startsWith('import ') ||
+        lower.startsWith('class ') ||
+        lower.startsWith('final ') ||
+        lower.startsWith('const ') ||
+        lower.startsWith('var ') ||
+        lower.startsWith('return ') ||
+        lower.startsWith('await ') ||
+        lower.startsWith('npm ') ||
+        lower.startsWith('flutter ') ||
+        lower.startsWith('dart ') ||
+        lower.startsWith('git ') ||
+        lower.startsWith('ssh ') ||
+        lower.startsWith('tmux ') ||
+        lower == 'explored' ||
+        lower.startsWith('search ') ||
+        lower.startsWith('list ') ||
+        lower.startsWith('ran ') ||
+        lower.contains(' to view transcript') ||
+        lower.startsWith('path:') ||
+        lower.startsWith('file:') ||
+        lower.contains('://') ||
+        lower.contains('/users/') ||
+        lower.contains('/workspace/') ||
+        lower.contains('package:') ||
+        lower.contains('stack trace') ||
+        lower.contains('exception') ||
+        _looksLikeCode(line);
+  }
+
+  static bool _looksLikeCode(String line) {
+    final symbols = RegExp(r'[{};=<>]').allMatches(line).length;
+    if (symbols >= 2) {
+      return true;
+    }
+    return RegExp(r'\w+\([^)]*\)').hasMatch(line) &&
+        !RegExp(r'[\u4e00-\u9fff]').hasMatch(line);
+  }
+
+  static bool _isEnglishDominant(String text) {
+    final letters = RegExp(r'[A-Za-z]').allMatches(text).length;
+    final chinese = RegExp(r'[\u4e00-\u9fff]').allMatches(text).length;
+    return letters > 0 && letters >= chinese * 2;
+  }
+
+  static String _joinSpeechLines(List<String> lines) {
+    final buffer = StringBuffer();
+    for (final line in lines) {
+      if (buffer.isEmpty) {
+        buffer.write(line);
+        continue;
+      }
+      final previous = buffer.toString().trimRight();
+      final separator = RegExp(r'[。！？.!?]$').hasMatch(previous) ? ' ' : '。';
+      buffer
+        ..clear()
+        ..write(previous)
+        ..write(separator)
+        ..write(line);
+    }
+    return buffer.toString().trim();
   }
 
   Future<void> _ensureAvailable() async {
@@ -119,4 +245,26 @@ class DeviceVoiceService implements VoiceService {
 
     throw const VoiceUnavailableException('当前设备不支持语音，请手动输入');
   }
+}
+
+@visibleForTesting
+class SpeechSummarySegment {
+  const SpeechSummarySegment({
+    required this.text,
+    required this.languageCode,
+  });
+
+  final String text;
+  final String languageCode;
+}
+
+@visibleForTesting
+class SpeechVoiceProfile {
+  const SpeechVoiceProfile({
+    required this.speechRate,
+    required this.pitch,
+  });
+
+  final double speechRate;
+  final double pitch;
 }

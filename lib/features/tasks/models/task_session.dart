@@ -77,16 +77,14 @@ class TaskSession {
   factory TaskSession.fromJson(Map<String, Object?> json) {
     final hostJson = json['host'];
     if (hostJson is! Map<String, Object?>) {
-      throw const FormatException('TaskSession JSON must include a valid host object.');
+      throw const FormatException(
+          'TaskSession JSON must include a valid host object.');
     }
     return TaskSession(
       id: json['id'] as String? ?? '',
       host: HostConfig.fromJson(hostJson),
       title: json['title'] as String? ?? '',
-      status: TaskStatus.values.firstWhere(
-        (status) => status.name == json['status'],
-        orElse: () => TaskStatus.pending,
-      ),
+      status: _statusFromJson(json['status']),
       createdAt: _date(json['createdAt']),
       updatedAt: _date(json['updatedAt']),
       startedAt: _nullableDate(json['startedAt']),
@@ -222,6 +220,14 @@ class TaskSession {
 
 DateTime _date(Object? value) {
   return DateTime.tryParse(value as String? ?? '') ?? DateTime.now();
+}
+
+TaskStatus _statusFromJson(Object? value) {
+  final name = value as String? ?? '';
+  return TaskStatus.values.firstWhere(
+    (status) => status.name == name,
+    orElse: () => TaskStatus.pending,
+  );
 }
 
 DateTime? _nullableDate(Object? value) {

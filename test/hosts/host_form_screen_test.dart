@@ -50,6 +50,7 @@ void main() {
     expect(saved.tmuxCommand, 'tmux');
     expect(saved.pathPrepend, isEmpty);
     expect(saved.shellWrapper, ShellWrapper.none);
+    expect(saved.machineType, HostMachineType.generic);
   });
 
   testWidgets('host form only shows password auth fields', (tester) async {
@@ -71,6 +72,47 @@ void main() {
     expect(
       find.text(
           'If tmux works in your SSH app but not in Armin, set the tmux path or prepend PATH here.'),
+      findsOneWidget,
+    );
+    expect(find.text('Host type'), findsOneWidget);
+  });
+
+  testWidgets('host type applies default tmux command path', (tester) async {
+    final state = ArminAppState(
+      store: InMemoryTaskHistoryStore(),
+      agentSessionService: MockAgentSessionService(),
+      voiceService: MockVoiceService(),
+    );
+    await tester.pumpWidget(
+      AppStateScope(
+        state: state,
+        child: const MaterialApp(home: HostFormScreen()),
+      ),
+    );
+
+    await tester.scrollUntilVisible(
+      find.text('Host type'),
+      240,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(find.text('Generic / custom'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('macOS Apple Silicon').last);
+    await tester.pumpAndSettle();
+
+    expect(
+      find.widgetWithText(TextFormField, '/opt/homebrew/bin/tmux'),
+      findsOneWidget,
+    );
+    expect(
+      find.widgetWithText(
+        TextFormField,
+        '/opt/homebrew/bin:/usr/local/bin:\$HOME/.npm-global/bin:\$HOME/.npm-packages/bin',
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.widgetWithText(TextFormField, r'$HOME/.npm-global/bin/codex'),
       findsOneWidget,
     );
   });
@@ -107,6 +149,7 @@ void main() {
     expect(agent.lastRequest?.username, 'ironion');
     expect(agent.lastRequest?.password, 'secret-password');
     expect(agent.lastRequest?.tmuxCommand, 'tmux');
+    expect(agent.lastRequest?.agentCommand, 'codex');
     expect(agent.lastRequest?.pathPrepend, isEmpty);
     expect(agent.lastRequest?.shellWrapper, ShellWrapper.none);
     expect(find.text('SSH connection succeeded.'), findsOneWidget);
@@ -184,4 +227,7 @@ class _ConnectionTestAgent implements AgentSessionService {
 
   @override
   Future<void> stop(AgentControlRequest request) async {}
+
+  @override
+  Future<void> cleanup(AgentControlRequest request) async {}
 }

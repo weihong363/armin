@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 
 import '../../features/hosts/models/host_config.dart';
+import '../../features/projects/models/project_path_config.dart';
 import '../../features/tasks/models/task_session.dart';
 import 'secure_password_store.dart';
 import 'task_history_store.dart';
@@ -18,6 +19,7 @@ class JsonTaskHistoryStore implements TaskHistoryStore {
 
   List<HostConfig>? _hosts;
   List<TaskSession>? _tasks;
+  List<ProjectPathConfig>? _projectPaths;
 
   @override
   Future<List<HostConfig>> loadHosts() async {
@@ -39,6 +41,12 @@ class JsonTaskHistoryStore implements TaskHistoryStore {
   Future<List<TaskSession>> loadTasks() async {
     await _ensureLoaded();
     return List.unmodifiable(_tasks!);
+  }
+
+  @override
+  Future<List<ProjectPathConfig>> loadProjectPaths() async {
+    await _ensureLoaded();
+    return List.unmodifiable(_projectPaths!);
   }
 
   @override
@@ -67,8 +75,35 @@ class JsonTaskHistoryStore implements TaskHistoryStore {
     await _persist();
   }
 
+  @override
+  Future<void> deleteTask(String taskId) async {
+    await _ensureLoaded();
+    _tasks!.removeWhere((item) => item.id == taskId);
+    await _persist();
+  }
+
+  @override
+  Future<void> saveProjectPath(ProjectPathConfig projectPath) async {
+    await _ensureLoaded();
+    final index =
+        _projectPaths!.indexWhere((item) => item.id == projectPath.id);
+    if (index >= 0) {
+      _projectPaths![index] = projectPath;
+    } else {
+      _projectPaths!.add(projectPath);
+    }
+    await _persist();
+  }
+
+  @override
+  Future<void> deleteProjectPath(String projectPathId) async {
+    await _ensureLoaded();
+    _projectPaths!.removeWhere((item) => item.id == projectPathId);
+    await _persist();
+  }
+
   Future<void> _ensureLoaded() async {
-    if (_hosts != null && _tasks != null) {
+    if (_hosts != null && _tasks != null && _projectPaths != null) {
       return;
     }
 
@@ -76,6 +111,7 @@ class JsonTaskHistoryStore implements TaskHistoryStore {
     if (!await file.exists()) {
       _hosts = [];
       _tasks = [];
+      _projectPaths = [];
       await _persist();
       return;
     }
@@ -84,6 +120,7 @@ class JsonTaskHistoryStore implements TaskHistoryStore {
     if (content.trim().isEmpty) {
       _hosts = [];
       _tasks = [];
+      _projectPaths = [];
       return;
     }
 
@@ -94,6 +131,8 @@ class JsonTaskHistoryStore implements TaskHistoryStore {
 
     _hosts = _decodeList(json['hosts'], HostConfig.fromJson);
     _tasks = _decodeList(json['tasks'], TaskSession.fromJson);
+    _projectPaths =
+        _decodeList(json['projectPaths'], ProjectPathConfig.fromJson);
   }
 
   Future<void> _persist() async {
@@ -103,6 +142,7 @@ class JsonTaskHistoryStore implements TaskHistoryStore {
       'schemaVersion': 1,
       'hosts': _hosts!.map((host) => host.toJson()).toList(),
       'tasks': _tasks!.map((task) => task.toJson()).toList(),
+      'projectPaths': _projectPaths!.map((item) => item.toJson()).toList(),
     });
     await file.writeAsString(content);
   }

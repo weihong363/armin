@@ -16,7 +16,7 @@ void main() {
   test('pauseTask persists paused status', () async {
     final task = _task(status: TaskStatus.running);
     final store = _TaskStore(task);
-    final agent = _ControlAgent();
+    final agent = _ControlAgent()..capturedLog = 'latest pane output';
     final state = ArminAppState(
       store: store,
       agentSessionService: agent,
@@ -73,7 +73,7 @@ void main() {
   test('stopTask persists stopped status', () async {
     final task = _task(status: TaskStatus.running);
     final store = _TaskStore(task);
-    final agent = _ControlAgent();
+    final agent = _ControlAgent()..capturedLog = 'latest pane output';
     final state = ArminAppState(
       store: store,
       agentSessionService: agent,
@@ -87,6 +87,8 @@ void main() {
     expect(agent.cleanedUp, isTrue);
     expect(store.task!.status, TaskStatus.stopped);
     expect(store.task!.completedAt, isNotNull);
+    expect(store.task!.rawLog, contains('Final captured output'));
+    expect(store.task!.rawLog, contains('latest pane output'));
     expect(store.task!.rawLog, contains('Task stopped by user.'));
   });
 
@@ -175,7 +177,7 @@ void main() {
     expect(agent.lastExecuteRequest?.prompt, isEmpty);
   });
 
-  test('disconnectTask cancels active execution and records failed status',
+  test('disconnectTask detaches observer without cleanup or failing task',
       () async {
     final task = _task(status: TaskStatus.running);
     final store = _TaskStore(task);
@@ -194,9 +196,53 @@ void main() {
     await state.disconnectTask(task);
 
     expect(agent.cancelled, isTrue);
-    expect(store.task!.status, TaskStatus.failed);
-    expect(store.task!.rawLog, contains('Disconnected from SSH session'));
-    expect(store.task!.shortSummary, contains('用户已断开连接'));
+    expect(agent.cleanedUp, isFalse);
+    expect(store.task!.status, TaskStatus.observerDetached);
+    expect(store.task!.completedAt, isNull);
+    expect(store.task!.rawLog, contains('Observer detached by user'));
+    expect(store.task!.shortSummary, contains('已断开手机监听'));
+  });
+
+  test('reconnectTask uses attach-only request and returns to running',
+      () async {
+    final task = _task(status: TaskStatus.observerDetached);
+    final store = _TaskStore(task);
+    final agent = _ControlAgent();
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: agent,
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await state.reconnectTask(task);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(store.task!.status, TaskStatus.running);
+    expect(agent.lastExecuteRequest?.attachOnly, isTrue);
+    expect(
+        agent.lastExecuteRequest?.tmuxSessionName, task.host.tmuxSessionName);
+  });
+
+  test('sendFollowUp sends clean prompt and relistens current tmux session',
+      () async {
+    final task = _task(status: TaskStatus.turnIdle);
+    final store = _TaskStore(task);
+    final agent = _ControlAgent();
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: agent,
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await state.sendFollowUp(task, '只输出 pets 名字');
+    await Future<void>.delayed(Duration.zero);
+
+    expect(agent.lastFollowUp, '只输出 pets 名字');
+    expect(agent.lastFollowUp, isNot(contains('RUNTIME_UPDATE:')));
+    expect(store.task!.status, TaskStatus.running);
+    expect(agent.lastExecuteRequest?.attachOnly, isTrue);
   });
 
   test('completed execution cleans up tmux session after result is saved',
@@ -221,6 +267,30 @@ void main() {
     expect(agent.cleanedUp, isTrue);
   });
 
+  test('completed execution speaks final summary after saving result',
+      () async {
+    final task = _task(status: TaskStatus.running);
+    final store = _TaskStore(task);
+    final agent = _CompletingAgent();
+    final voice = _CapturingVoiceService();
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: agent,
+      voiceService: voice,
+    );
+    await state.load();
+
+    state.startTaskExecution(
+      task,
+      const AgentExecutionRequest(prompt: 'Task'),
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    expect(store.task!.status, TaskStatus.completed);
+    expect(voice.spokenSummaries.single, contains('任务已完成'));
+    expect(voice.spokenSummaries.single, contains('done'));
+  });
+
   test('turn idle update does not complete or clean up task', () async {
     final task = _task(status: TaskStatus.running);
     final store = _TaskStore(task);
@@ -243,6 +313,74 @@ void main() {
     expect(agent.cleanedUp, isFalse);
   });
 
+  test('turn idle output is spoken once for repeated same summary', () async {
+    final task = _task(status: TaskStatus.running);
+    final store = _TaskStore(task);
+    final voice = _CapturingVoiceService();
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: _RepeatedTurnIdleAgent(),
+      voiceService: voice,
+    );
+    await state.load();
+
+    state.startTaskExecution(
+      task,
+      const AgentExecutionRequest(prompt: 'Task'),
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    expect(store.task!.status, TaskStatus.turnIdle);
+    expect(voice.spokenSummaries, hasLength(1));
+    expect(voice.spokenSummaries.single, contains('本轮输出已暂停'));
+  });
+
+  test('approval request is spoken when attention speech is enabled', () async {
+    final task = _task(status: TaskStatus.running);
+    final store = _TaskStore(task);
+    final voice = _CapturingVoiceService();
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: _ApprovalAgent(),
+      voiceService: voice,
+    );
+    await state.load();
+
+    state.startTaskExecution(
+      task,
+      const AgentExecutionRequest(prompt: 'Task'),
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    expect(store.task!.status, TaskStatus.needApproval);
+    expect(voice.spokenSummaries.single, contains('需要你确认一个操作'));
+    expect(voice.spokenSummaries.single, isNot(contains('rm -rf')));
+  });
+
+  test('speech settings can disable attention speech', () async {
+    final task = _task(status: TaskStatus.running);
+    final store = _TaskStore(task);
+    final voice = _CapturingVoiceService();
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: _TurnIdleAgent(),
+      voiceService: voice,
+    );
+    await state.load();
+    state.updateSpeechSettings(
+      state.speechSettings.copyWith(speakAttention: false),
+    );
+
+    state.startTaskExecution(
+      task,
+      const AgentExecutionRequest(prompt: 'Task'),
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    expect(store.task!.status, TaskStatus.turnIdle);
+    expect(voice.spokenSummaries, isEmpty);
+  });
+
   test('user marked completed cleans up tmux session', () async {
     final task = _task(status: TaskStatus.turnIdle);
     final store = _TaskStore(task);
@@ -259,6 +397,27 @@ void main() {
     expect(store.task!.status, TaskStatus.userCompleted);
     expect(store.task!.completedAt, isNotNull);
     expect(agent.cleanedUp, isTrue);
+  });
+
+  test('missing tmux session surfaces ended session summary', () async {
+    final task = _task(status: TaskStatus.running);
+    final store = _TaskStore(task);
+    final agent = _MissingSessionAgent();
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: agent,
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    state.startTaskExecution(
+      task,
+      const AgentExecutionRequest(prompt: 'Task'),
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    expect(store.task!.status, TaskStatus.runtimeLost);
+    expect(store.task!.shortSummary, '远端会话不存在，可能已结束');
   });
 
   test('failed execution cleans up tmux session after error is saved',
@@ -282,6 +441,28 @@ void main() {
     expect(store.task!.status, TaskStatus.failed);
     expect(store.task!.rawLog, contains('ssh failed'));
     expect(agent.cleanedUp, isTrue);
+  });
+
+  test('failed execution speaks failure summary', () async {
+    final task = _task(status: TaskStatus.running);
+    final store = _TaskStore(task);
+    final voice = _CapturingVoiceService();
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: _FailingAgent(),
+      voiceService: voice,
+    );
+    await state.load();
+
+    state.startTaskExecution(
+      task,
+      const AgentExecutionRequest(prompt: 'Task'),
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    expect(store.task!.status, TaskStatus.failed);
+    expect(voice.spokenSummaries.single, contains('任务失败'));
+    expect(voice.spokenSummaries.single, contains('建议先查看失败原因'));
   });
 }
 
@@ -365,6 +546,7 @@ class _ControlAgent implements AgentSessionService {
   bool resumed = false;
   bool stopped = false;
   bool cleanedUp = false;
+  String capturedLog = '';
   String? lastFollowUp;
   AgentControlRequest? lastResumeRequest;
   AgentExecutionRequest? lastExecuteRequest;
@@ -399,6 +581,11 @@ class _ControlAgent implements AgentSessionService {
   @override
   Future<void> cleanup(AgentControlRequest request) async {
     cleanedUp = true;
+  }
+
+  @override
+  Future<String> captureLog(AgentControlRequest request) async {
+    return capturedLog;
   }
 
   @override
@@ -446,6 +633,48 @@ class _TurnIdleAgent extends _ControlAgent {
   }
 }
 
+class _MissingSessionAgent extends _ControlAgent {
+  @override
+  Stream<AgentExecutionUpdate> execute(AgentExecutionRequest request) async* {
+    yield const AgentExecutionUpdate(
+      rawOutput: '',
+      cleanedOutput: 'Armin could not find tmux session armin-12345678.',
+      runtimeLost: true,
+      done: true,
+    );
+  }
+}
+
+class _RepeatedTurnIdleAgent extends _ControlAgent {
+  @override
+  Stream<AgentExecutionUpdate> execute(AgentExecutionRequest request) async* {
+    yield const AgentExecutionUpdate(
+      rawOutput: 'hello',
+      cleanedOutput: 'hello',
+      turnIdle: true,
+    );
+    yield const AgentExecutionUpdate(
+      rawOutput: 'hello',
+      cleanedOutput: 'hello',
+      turnIdle: true,
+    );
+  }
+}
+
+class _ApprovalAgent extends _ControlAgent {
+  @override
+  Stream<AgentExecutionUpdate> execute(AgentExecutionRequest request) async* {
+    yield const AgentExecutionUpdate(
+      rawOutput: 'approval',
+      approval: ApprovalRequest(
+        reason: '删除临时构建产物，风险中等。',
+        command: 'rm -rf build',
+        risk: 'medium',
+      ),
+    );
+  }
+}
+
 class _HangingAgent extends _ControlAgent {
   bool cancelled = false;
 
@@ -471,6 +700,28 @@ class _SilentVoiceService implements VoiceService {
 
   @override
   Future<void> speakSummary(String summary) async {}
+
+  @override
+  Future<void> startListening(
+      {void Function(String partial)? onPartial}) async {}
+
+  @override
+  Future<String> stopListening() async => '';
+}
+
+class _CapturingVoiceService implements VoiceService {
+  final List<String> spokenSummaries = [];
+
+  @override
+  bool get isAvailable => true;
+
+  @override
+  Future<String> listenOnce() async => '';
+
+  @override
+  Future<void> speakSummary(String summary) async {
+    spokenSummaries.add(summary);
+  }
 
   @override
   Future<void> startListening(

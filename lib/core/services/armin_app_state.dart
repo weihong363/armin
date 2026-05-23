@@ -11,6 +11,7 @@ import '../../features/tasks/models/execution_log.dart';
 import '../../features/tasks/models/metric_event.dart';
 import '../../features/tasks/models/task_session.dart';
 import '../../features/voice/services/device_voice_service.dart';
+import '../../features/voice/services/task_speech_policy.dart';
 import '../../features/voice/services/voice_service.dart';
 import '../models/task_status.dart';
 import '../storage/json_task_history_store.dart';
@@ -21,7 +22,10 @@ class ArminAppState extends ChangeNotifier {
     required TaskHistoryStore store,
     required this.agentSessionService,
     required this.voiceService,
-  }) : _store = store;
+    TaskSpeechPolicy? taskSpeechPolicy,
+    this.speechSettings = const TaskSpeechSettings(),
+  })  : _store = store,
+        _taskSpeechPolicy = taskSpeechPolicy ?? const TaskSpeechPolicy();
 
   ArminAppState.phase2({
     TaskHistoryStore? store,
@@ -29,11 +33,15 @@ class ArminAppState extends ChangeNotifier {
     VoiceService? voiceService,
   })  : _store = store ?? JsonTaskHistoryStore(),
         agentSessionService = agentSessionService ?? SSHAgentSessionService(),
-        voiceService = voiceService ?? DeviceVoiceService();
+        voiceService = voiceService ?? DeviceVoiceService(),
+        _taskSpeechPolicy = const TaskSpeechPolicy(),
+        speechSettings = const TaskSpeechSettings();
 
   final TaskHistoryStore _store;
   final AgentSessionService agentSessionService;
   final VoiceService voiceService;
+  final TaskSpeechPolicy _taskSpeechPolicy;
+  TaskSpeechSettings speechSettings;
 
   List<HostConfig> hosts = const [];
   List<TaskSession> tasks = const [];
@@ -41,6 +49,7 @@ class ArminAppState extends ChangeNotifier {
   bool ready = false;
   final Map<String, StreamSubscription<AgentExecutionUpdate>>
       _runningExecutions = {};
+  final Map<String, String> _lastSpokenHashes = {};
 
   Future<void> load() async {
     hosts = await _store.loadHosts();
@@ -89,6 +98,15 @@ class ArminAppState extends ChangeNotifier {
   Future<void> saveTask(TaskSession task) async {
     await _store.saveTask(task);
     tasks = await _store.loadTasks();
+    notifyListeners();
+  }
+
+  void updateSpeechSettings(TaskSpeechSettings settings) {
+    speechSettings = settings;
+    if (voiceService is DeviceVoiceService) {
+      (voiceService as DeviceVoiceService)
+          .updateVoiceStyle(settings.voiceStyle);
+    }
     notifyListeners();
   }
 
@@ -146,6 +164,18 @@ class ArminAppState extends ChangeNotifier {
         _attachRequest(_latestTask(task.id) ?? latest));
   }
 
+  Future<void> reconnectTask(TaskSession task) async {
+    final latest = _latestTask(task.id) ?? task;
+    await _saveControlledTask(
+      latest,
+      status: TaskStatus.running,
+      logMessage: 'Observer reconnected by user.',
+      eventType: 'observer_reconnected',
+    );
+    startTaskExecution(_latestTask(task.id) ?? latest,
+        _attachRequest(_latestTask(task.id) ?? latest));
+  }
+
   Future<void> pauseTask(TaskSession task) async {
     await agentSessionService.pause(await _controlRequest(task));
     await _saveControlledTask(
@@ -165,13 +195,26 @@ class ArminAppState extends ChangeNotifier {
   }
 
   Future<void> stopTask(TaskSession task) async {
-    await agentSessionService.stop(await _controlRequest(task));
+    final request = await _controlRequest(task);
+    final finalLog = await _captureLogBestEffort(request);
+    final taskWithFinalLog = finalLog.trim().isEmpty
+        ? task
+        : await _appendRawLog(task, 'Final captured output:\n$finalLog\n');
+    await agentSessionService.stop(request);
     await _saveControlledTask(
-      task,
+      taskWithFinalLog,
       status: TaskStatus.stopped,
       logMessage: 'Task stopped by user.',
       completed: true,
     );
+  }
+
+  Future<String> _captureLogBestEffort(AgentControlRequest request) async {
+    try {
+      return await agentSessionService.captureLog(request);
+    } catch (_) {
+      return '';
+    }
   }
 
   Future<void> markTaskCompleted(TaskSession task) async {
@@ -218,11 +261,14 @@ class ArminAppState extends ChangeNotifier {
         }
         final latest = _latestTask(task.id) ?? task;
         if (_isTerminal(latest.status)) {
-          await disconnectTask(latest, markFailed: false);
+          await disconnectTask(latest,
+              markFailed: false, recordDetached: false);
           return;
         }
-        task = _taskWithExecutionUpdate(latest, update);
+        final previousTask = latest;
+        task = _taskWithExecutionUpdate(previousTask, update);
         await saveTask(task);
+        await _speakTaskUpdate(previousTask, task);
       },
       onError: (Object error) async {
         _runningExecutions.remove(task.id);
@@ -230,16 +276,14 @@ class ArminAppState extends ChangeNotifier {
         if (_isTerminal(latest.status)) {
           return;
         }
-        await _saveFailedExecution(latest, error);
-        await _cleanupTaskSession(_latestTask(latest.id) ?? latest);
+        final failedTask = await _saveFailedExecution(latest, error);
+        await _speakTaskUpdate(latest, failedTask);
+        await _cleanupTaskSession(_latestTask(latest.id) ?? failedTask);
       },
       onDone: () async {
         _runningExecutions.remove(task.id);
         if (_isTerminal(task.status)) {
           await _cleanupTaskSession(task);
-        }
-        if (task.status == TaskStatus.completed) {
-          await voiceService.speakSummary(task.shortSummary);
         }
       },
     );
@@ -248,22 +292,34 @@ class ArminAppState extends ChangeNotifier {
 
   Future<void> disconnectTask(
     TaskSession task, {
-    bool markFailed = true,
+    bool markFailed = false,
+    bool recordDetached = true,
   }) async {
     final subscription = _runningExecutions.remove(task.id);
     if (subscription != null) {
       unawaited(subscription.cancel());
     }
     if (!markFailed) {
+      if (!recordDetached) {
+        return;
+      }
+      await _saveControlledTask(
+        task,
+        status: TaskStatus.observerDetached,
+        logMessage:
+            'Observer detached by user. Remote tmux session may still be running.',
+        shortSummary: '已断开手机监听，远端 Codex 可能仍在运行',
+        eventType: 'observer_detached',
+      );
       return;
     }
     await _saveControlledTask(
       task,
       status: TaskStatus.failed,
       logMessage:
-          'Disconnected from SSH session by user. Remote task may still be running.',
+          'Observer detached by user. Remote task may still be running.',
       completed: true,
-      shortSummary: '用户已断开连接，远端任务可能仍在运行',
+      shortSummary: '用户已断开监听，远端任务可能仍在运行',
     );
   }
 
@@ -395,6 +451,25 @@ Apply this decision to the pending approval request.
     );
   }
 
+  Future<TaskSession> _appendRawLog(TaskSession task, String rawOutput) async {
+    final now = DateTime.now();
+    final updated = task.copyWith(
+      rawLog: '${task.rawLog}$rawOutput',
+      updatedAt: now,
+      executionLogs: [
+        ...task.executionLogs,
+        ExecutionLog(
+          id: 'log-${now.microsecondsSinceEpoch}',
+          taskId: task.id,
+          rawOutput: rawOutput,
+          createdAt: now,
+        ),
+      ],
+    );
+    await saveTask(updated);
+    return updated;
+  }
+
   TaskSession? _latestTask(String taskId) {
     for (final task in tasks) {
       if (task.id == taskId) {
@@ -471,12 +546,13 @@ Apply this decision to the pending approval request.
 
     if (update.runtimeLost) {
       final failedAt = DateTime.now();
+      final runtimeLostSummary = _runtimeLostSummary(update.cleanedOutput);
       return task.copyWith(
         status: TaskStatus.runtimeLost,
         rawLog: rawLog,
         updatedAt: failedAt,
         completedAt: failedAt,
-        shortSummary: '远端运行时可能已断开',
+        shortSummary: runtimeLostSummary,
         summary: update.cleanedOutput,
         executionLogs: executionLogs,
         metricEvents: [
@@ -545,38 +621,69 @@ Apply this decision to the pending approval request.
     );
   }
 
-  Future<void> _saveFailedExecution(TaskSession task, Object error) async {
+  String _runtimeLostSummary(String? cleanedOutput) {
+    final output = cleanedOutput?.toLowerCase() ?? '';
+    if (output.contains('could not find tmux session') ||
+        output.contains('could not capture tmux pane')) {
+      return '远端会话不存在，可能已结束';
+    }
+    return '远端运行时可能已断开';
+  }
+
+  Future<TaskSession> _saveFailedExecution(
+      TaskSession task, Object error) async {
     final failedAt = DateTime.now();
     final message = 'SSH 执行失败：${error.toString()}';
-    await saveTask(
-      task.copyWith(
-        status: TaskStatus.failed,
-        rawLog: '${task.rawLog}$message\n',
-        updatedAt: failedAt,
-        completedAt: failedAt,
-        shortSummary: message,
-        summary: message,
-        executionLogs: [
-          ...task.executionLogs,
-          ExecutionLog(
-            id: 'log-${failedAt.microsecondsSinceEpoch}',
-            taskId: task.id,
-            rawOutput: '$message\n',
-            createdAt: failedAt,
-          ),
-        ],
-        metricEvents: [
-          ...task.metricEvents,
-          MetricEvent.create(
-            taskId: task.id,
-            eventType: 'task_failed',
-            payloadJson: '{"reason":"ssh_execution_error"}',
-            now: failedAt,
-          ),
-        ],
-        clearApproval: true,
-      ),
+    final failedTask = task.copyWith(
+      status: TaskStatus.failed,
+      rawLog: '${task.rawLog}$message\n',
+      updatedAt: failedAt,
+      completedAt: failedAt,
+      shortSummary: message,
+      summary: message,
+      executionLogs: [
+        ...task.executionLogs,
+        ExecutionLog(
+          id: 'log-${failedAt.microsecondsSinceEpoch}',
+          taskId: task.id,
+          rawOutput: '$message\n',
+          createdAt: failedAt,
+        ),
+      ],
+      metricEvents: [
+        ...task.metricEvents,
+        MetricEvent.create(
+          taskId: task.id,
+          eventType: 'task_failed',
+          payloadJson: '{"reason":"ssh_execution_error"}',
+          now: failedAt,
+        ),
+      ],
+      clearApproval: true,
     );
+    await saveTask(failedTask);
+    return failedTask;
+  }
+
+  Future<void> _speakTaskUpdate(
+    TaskSession previous,
+    TaskSession current,
+  ) async {
+    final decision = _taskSpeechPolicy.decide(
+      previous: previous,
+      current: current,
+      settings: speechSettings,
+    );
+    if (!decision.shouldSpeak ||
+        _lastSpokenHashes[current.id] == decision.hash) {
+      return;
+    }
+    _lastSpokenHashes[current.id] = decision.hash;
+    try {
+      await voiceService.speakSummary(decision.text);
+    } catch (error) {
+      debugPrint('Task speech failed: $error');
+    }
   }
 
   bool _isTerminal(TaskStatus status) {
@@ -657,7 +764,8 @@ Apply this decision to the pending approval request.
       TaskStatus.paused ||
       TaskStatus.needApproval ||
       TaskStatus.turnIdle ||
-      TaskStatus.needAttention =>
+      TaskStatus.needAttention ||
+      TaskStatus.observerDetached =>
         currentCompletedAt,
     };
   }

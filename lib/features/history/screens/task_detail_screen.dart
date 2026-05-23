@@ -188,6 +188,7 @@ class TaskDetailScreen extends StatelessWidget {
         task.status == TaskStatus.needApproval ||
         task.status == TaskStatus.turnIdle ||
         task.status == TaskStatus.needAttention ||
+        task.status == TaskStatus.observerDetached ||
         task.status == TaskStatus.pending;
   }
 }
@@ -288,7 +289,8 @@ class _SummaryBannerState extends State<_SummaryBanner> {
             task.status == TaskStatus.paused ||
             task.status == TaskStatus.needApproval ||
             task.status == TaskStatus.turnIdle ||
-            task.status == TaskStatus.needAttention);
+            task.status == TaskStatus.needAttention ||
+            task.status == TaskStatus.observerDetached);
   }
 }
 
@@ -535,7 +537,8 @@ class _LogPanelState extends State<_LogPanel> {
                     icon: Icons.check_circle_outline,
                     label: '标记完成',
                     tone: ControlTone.neutral,
-                    onPressed: controlState == RuntimeControlState.stopped
+                    onPressed: controlState == RuntimeControlState.stopped ||
+                            controlState == RuntimeControlState.detached
                         ? null
                         : () async {
                             await _runControlAction(
@@ -567,7 +570,8 @@ class _LogPanelState extends State<_LogPanel> {
                         ? '恢复'
                         : '暂停',
                     tone: ControlTone.neutral,
-                    onPressed: controlState == RuntimeControlState.stopped
+                    onPressed: controlState == RuntimeControlState.stopped ||
+                            controlState == RuntimeControlState.detached
                         ? null
                         : () async {
                             await _runControlAction(
@@ -592,10 +596,25 @@ class _LogPanelState extends State<_LogPanel> {
                           },
                   ),
                   _ControlButton(
+                    icon: Icons.sensors_outlined,
+                    label: '重新监听',
+                    tone: ControlTone.neutral,
+                    onPressed: controlState == RuntimeControlState.detached
+                        ? () async {
+                            await _runControlAction(
+                              context,
+                              () =>
+                                  AppStateScope.of(context).reconnectTask(task),
+                            );
+                          }
+                        : null,
+                  ),
+                  _ControlButton(
                     icon: Icons.link_off_outlined,
-                    label: '断开连接',
+                    label: '断开监听',
                     tone: ControlTone.danger,
-                    onPressed: controlState == RuntimeControlState.stopped
+                    onPressed: controlState == RuntimeControlState.stopped ||
+                            controlState == RuntimeControlState.detached
                         ? null
                         : () async {
                             await _runControlAction(
@@ -737,6 +756,7 @@ class _LogPanelState extends State<_LogPanel> {
       TaskStatus.completed ||
       TaskStatus.failed =>
         RuntimeControlState.stopped,
+      TaskStatus.observerDetached => RuntimeControlState.detached,
       TaskStatus.draft ||
       TaskStatus.pending ||
       TaskStatus.running ||
@@ -827,7 +847,7 @@ class _LogPanelState extends State<_LogPanel> {
                   minLines: 3,
                   maxLines: 5,
                   decoration: const InputDecoration(
-                    hintText: '例如：先别查接口，优先看前端事件绑定。',
+                    hintText: '继续补充你的要求...',
                   ),
                 ),
                 const SizedBox(height: 12),
@@ -843,7 +863,7 @@ class _LogPanelState extends State<_LogPanel> {
                     }
                   },
                   icon: const Icon(Icons.send_outlined),
-                  label: const Text('记录为 Phase 1 占位'),
+                  label: const Text('发送追加指令'),
                 ),
               ],
             ),
@@ -1189,6 +1209,7 @@ class _MiniBadge extends StatelessWidget {
 enum RuntimeControlState {
   active,
   paused,
+  detached,
   stopped,
 }
 
@@ -1197,6 +1218,7 @@ extension RuntimeControlStateLabel on RuntimeControlState {
     return switch (this) {
       RuntimeControlState.active => '运行中',
       RuntimeControlState.paused => '已暂停',
+      RuntimeControlState.detached => '已断开监听',
       RuntimeControlState.stopped => '已停止',
     };
   }
@@ -1205,6 +1227,7 @@ extension RuntimeControlStateLabel on RuntimeControlState {
     return switch (this) {
       RuntimeControlState.active => ArminTheme.primary,
       RuntimeControlState.paused => Colors.orange,
+      RuntimeControlState.detached => Colors.blueGrey,
       RuntimeControlState.stopped => Colors.red,
     };
   }
@@ -1260,6 +1283,9 @@ String _finishedLabel(TaskSession task) {
   if (task.status == TaskStatus.needAttention) {
     return '需处理';
   }
+  if (task.status == TaskStatus.observerDetached) {
+    return '监听已断开';
+  }
   if (task.status == TaskStatus.paused) {
     return '已暂停';
   }
@@ -1284,6 +1310,7 @@ String _timelineResultTitle(TaskStatus status) {
     TaskStatus.needApproval => '等待确认',
     TaskStatus.turnIdle => '等待用户继续',
     TaskStatus.needAttention => '需要处理',
+    TaskStatus.observerDetached => '监听已断开',
     TaskStatus.runtimeLost => '运行时丢失',
     _ => '接收结果',
   };
@@ -1316,6 +1343,8 @@ String _eventLabel(String eventType) {
     'approval_requested' => '请求确认',
     'turn_idle' => '等待继续',
     'need_attention' => '需要处理',
+    'observer_detached' => '断开监听',
+    'observer_reconnected' => '重新监听',
     'runtime_lost' => '运行丢失',
     'user_mark_completed' => '用户确认完成',
     'user_mark_failed' => '用户标记失败',
@@ -1332,6 +1361,8 @@ IconData _eventIcon(String eventType) {
     'approval_requested' => Icons.verified_user_outlined,
     'turn_idle' => Icons.pause_circle_outline,
     'need_attention' => Icons.priority_high_outlined,
+    'observer_detached' => Icons.link_off_outlined,
+    'observer_reconnected' => Icons.sensors_outlined,
     'runtime_lost' => Icons.signal_wifi_connected_no_internet_4_outlined,
     'user_mark_completed' => Icons.check_circle_outline,
     'user_mark_failed' => Icons.report_gmailerrorred_outlined,
@@ -1345,6 +1376,8 @@ Color _eventColor(String eventType) {
     'approval_requested' => Colors.orange.shade800,
     'turn_idle' => Colors.teal.shade700,
     'need_attention' => Colors.orange.shade800,
+    'observer_detached' => Colors.blueGrey.shade700,
+    'observer_reconnected' => ArminTheme.primary,
     'runtime_lost' => Colors.red.shade800,
     'user_mark_completed' => Colors.green.shade700,
     'user_mark_failed' => Colors.red.shade700,

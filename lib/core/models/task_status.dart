@@ -7,6 +7,7 @@ enum TaskStatus {
   needApproval,
   turnIdle,
   needAttention,
+  observerDetached,
   runtimeLost,
   userCompleted,
   userFailed,
@@ -33,6 +34,8 @@ extension TaskStatusLabel on TaskStatus {
         return 'Turn idle';
       case TaskStatus.needAttention:
         return 'Needs attention';
+      case TaskStatus.observerDetached:
+        return 'Observer detached';
       case TaskStatus.runtimeLost:
         return 'Runtime lost';
       case TaskStatus.userCompleted:

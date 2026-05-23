@@ -50,9 +50,8 @@ class HostListScreen extends StatelessWidget {
                   ],
                 ),
               );
-              
-              if (shouldDelete == true) {
-                // Delete immediately so the widget can be removed from tree
+
+              if (shouldDelete == true && context.mounted) {
                 final appState = AppStateScope.of(context);
                 await appState.deleteHost(host.id);
                 if (context.mounted) {
@@ -64,7 +63,7 @@ class HostListScreen extends StatelessWidget {
                   );
                 }
               }
-              
+
               return shouldDelete;
             },
             onDismissed: (direction) {

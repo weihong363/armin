@@ -680,10 +680,10 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
     return defaultPath ?? items.first;
   }
 
-  String _taskTmuxSessionName(String baseName, String taskId) {
-    final safeBase = baseName.trim().isEmpty ? 'armin-codex' : baseName.trim();
-    final suffix = taskId.replaceFirst('task-', '');
-    return '$safeBase-$suffix';
+  String _taskTmuxSessionName(String _, String taskId) {
+    final id = taskId.replaceFirst('task-', '');
+    final shortId = id.length <= 8 ? id : id.substring(id.length - 8);
+    return 'armin-$shortId';
   }
 
   String _titleFrom(String taskText) {

@@ -18,6 +18,7 @@ class TaskStatusMachine {
       TaskStatus.needApproval,
       TaskStatus.turnIdle,
       TaskStatus.needAttention,
+      TaskStatus.observerDetached,
       TaskStatus.runtimeLost,
       TaskStatus.userCompleted,
       TaskStatus.userFailed,
@@ -44,7 +45,14 @@ class TaskStatusMachine {
     TaskStatus.needAttention: {
       TaskStatus.running,
       TaskStatus.stopped,
+      TaskStatus.observerDetached,
       TaskStatus.userCompleted,
+      TaskStatus.userFailed,
+      TaskStatus.runtimeLost,
+    },
+    TaskStatus.observerDetached: {
+      TaskStatus.running,
+      TaskStatus.stopped,
       TaskStatus.userFailed,
       TaskStatus.runtimeLost,
     },

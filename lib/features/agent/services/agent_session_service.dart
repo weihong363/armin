@@ -139,4 +139,6 @@ abstract class AgentSessionService {
   Future<void> stop(AgentControlRequest request);
 
   Future<void> cleanup(AgentControlRequest request);
+
+  Future<String> captureLog(AgentControlRequest request);
 }

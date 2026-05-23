@@ -255,7 +255,8 @@ class _FeaturedTaskCardState extends State<_FeaturedTaskCard> {
             task.status == TaskStatus.paused ||
             task.status == TaskStatus.needApproval ||
             task.status == TaskStatus.turnIdle ||
-            task.status == TaskStatus.needAttention);
+            task.status == TaskStatus.needAttention ||
+            task.status == TaskStatus.observerDetached);
   }
 }
 
@@ -275,6 +276,7 @@ class _DarkBadge extends StatelessWidget {
       TaskStatus.needApproval => '需确认',
       TaskStatus.turnIdle => '等待继续',
       TaskStatus.needAttention => '需处理',
+      TaskStatus.observerDetached => '已断开监听',
       TaskStatus.runtimeLost => '运行丢失',
       TaskStatus.failed => '失败',
       TaskStatus.userFailed => '失败',
@@ -338,6 +340,7 @@ double _progressValue(TaskStatus status) {
     TaskStatus.paused => 0.5,
     TaskStatus.running || TaskStatus.needApproval => 0.34,
     TaskStatus.turnIdle || TaskStatus.needAttention => 0.72,
+    TaskStatus.observerDetached => 0.72,
     TaskStatus.pending || TaskStatus.draft => 0,
   };
 }
@@ -348,6 +351,7 @@ String _progressLabel(TaskStatus status) {
     TaskStatus.needApproval => '等待确认',
     TaskStatus.turnIdle => '等待继续',
     TaskStatus.needAttention => '需处理',
+    TaskStatus.observerDetached => '已断开监听',
     TaskStatus.paused => '已暂停',
     TaskStatus.completed => '100%',
     TaskStatus.userCompleted => '100%',
@@ -367,7 +371,8 @@ String _durationPrefix(TaskSession task) {
           task.status == TaskStatus.paused ||
           task.status == TaskStatus.needApproval ||
           task.status == TaskStatus.turnIdle ||
-          task.status == TaskStatus.needAttention)) {
+          task.status == TaskStatus.needAttention ||
+          task.status == TaskStatus.observerDetached)) {
     return '已运行';
   }
   return '总耗时';

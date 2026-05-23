@@ -13,18 +13,22 @@ class DeviceVoiceService implements VoiceService {
     FlutterTts? flutterTts,
     Duration listenTimeout = const Duration(seconds: 8),
     String localeId = 'zh_CN',
+    SpeechVoiceStyle voiceStyle = SpeechVoiceStyle.clearFemale,
   })  : _speechToText = speechToText ?? SpeechToText(),
         _flutterTts = flutterTts ?? FlutterTts(),
         _listenTimeout = listenTimeout,
-        _localeId = localeId;
+        _localeId = localeId,
+        _voiceStyle = voiceStyle;
 
   final SpeechToText _speechToText;
   final FlutterTts _flutterTts;
   final Duration _listenTimeout;
   final String _localeId;
+  SpeechVoiceStyle _voiceStyle;
   bool? _available;
   bool _isListening = false;
   String _latestWords = '';
+  final Set<String> _selectedVoiceLanguages = {};
 
   @override
   bool get isAvailable => _available != false;
@@ -103,10 +107,20 @@ class DeviceVoiceService implements VoiceService {
       } catch (_) {
         await _flutterTts.setLanguage('zh-CN');
       }
-      await _flutterTts.setSpeechRate(profile.speechRate);
-      await _flutterTts.setPitch(profile.pitch);
+      await _selectPreferredVoice(segment.languageCode);
+      final styledProfile = profile.forStyle(_voiceStyle);
+      await _flutterTts.setSpeechRate(styledProfile.speechRate);
+      await _flutterTts.setPitch(styledProfile.pitch);
       await _flutterTts.speak(segment.text);
     }
+  }
+
+  void updateVoiceStyle(SpeechVoiceStyle style) {
+    if (_voiceStyle == style) {
+      return;
+    }
+    _voiceStyle = style;
+    _selectedVoiceLanguages.clear();
   }
 
   @visibleForTesting
@@ -132,8 +146,11 @@ class DeviceVoiceService implements VoiceService {
 
   @visibleForTesting
   static String cleanSpeechSummaryForTest(String summary) {
-    final withoutBlocks = summary
-        .replaceAll(RegExp(r'```[\s\S]*?```'), '\n')
+    return cleanSpeechSummary(summary);
+  }
+
+  static String cleanSpeechSummary(String summary) {
+    final withoutBlocks = _removeFencedCode(summary)
         .replaceAllMapped(RegExp(r'`([^`]+)`'), (match) => match.group(1)!);
     final lines = withoutBlocks
         .replaceAll('\r', '\n')
@@ -149,8 +166,16 @@ class DeviceVoiceService implements VoiceService {
   @visibleForTesting
   static SpeechVoiceProfile speechProfileForTest(String languageCode) {
     return languageCode == 'en-US'
-        ? const SpeechVoiceProfile(speechRate: 0.54, pitch: 1.0)
-        : const SpeechVoiceProfile(speechRate: 0.58, pitch: 0.98);
+        ? const SpeechVoiceProfile(speechRate: 0.58, pitch: 1.04)
+        : const SpeechVoiceProfile(speechRate: 0.65, pitch: 1.06);
+  }
+
+  @visibleForTesting
+  static Map<String, String>? preferredVoiceForTest(
+    List<Map<String, String>> voices,
+    String languageCode,
+  ) {
+    return _preferredVoice(voices, languageCode);
   }
 
   static String _cleanSpeechLine(String line) {
@@ -158,6 +183,25 @@ class DeviceVoiceService implements VoiceService {
         .replaceFirst(RegExp(r'^[•*-]\s+'), '')
         .replaceAll(RegExp(r'https?://\S+'), '')
         .trim();
+  }
+
+  static String _removeFencedCode(String text) {
+    final lines = text.replaceAll('\r', '\n').split('\n');
+    final kept = <String>[];
+    var inBlock = false;
+    for (final line in lines) {
+      final fenceCount = RegExp('```').allMatches(line).length;
+      if (fenceCount > 0) {
+        if (fenceCount.isOdd) {
+          inBlock = !inBlock;
+        }
+        continue;
+      }
+      if (!inBlock) {
+        kept.add(line);
+      }
+    }
+    return kept.join('\n');
   }
 
   static bool _isSpeechNoiseLine(String line) {
@@ -245,6 +289,89 @@ class DeviceVoiceService implements VoiceService {
 
     throw const VoiceUnavailableException('当前设备不支持语音，请手动输入');
   }
+
+  Future<void> _selectPreferredVoice(String languageCode) async {
+    if (_selectedVoiceLanguages.contains(languageCode)) {
+      return;
+    }
+    _selectedVoiceLanguages.add(languageCode);
+    try {
+      final voices = await _flutterTts.getVoices;
+      if (voices is! List) {
+        return;
+      }
+      final normalized = voices
+          .whereType<Map>()
+          .map((voice) => voice.map(
+                (key, value) => MapEntry('$key', '$value'),
+              ))
+          .toList(growable: false);
+      final preferred = _preferredVoice(normalized, languageCode);
+      if (preferred != null) {
+        await _flutterTts.setVoice(preferred);
+      }
+    } catch (_) {
+      // Voice catalog support varies by platform; language fallback is enough.
+    }
+  }
+
+  static Map<String, String>? _preferredVoice(
+    List<Map<String, String>> voices,
+    String languageCode,
+  ) {
+    final requested = languageCode.toLowerCase().replaceAll('_', '-');
+    final candidates = voices.where((voice) {
+      final locale = (voice['locale'] ?? voice['language'] ?? '')
+          .toLowerCase()
+          .replaceAll('_', '-');
+      return locale == requested ||
+          locale.startsWith(requested.split('-').first);
+    }).toList();
+    if (candidates.isEmpty) {
+      return null;
+    }
+    candidates.sort((a, b) => _voiceScore(b).compareTo(_voiceScore(a)));
+    return candidates.first;
+  }
+
+  static int _voiceScore(Map<String, String> voice) {
+    final text =
+        '${voice['name'] ?? ''} ${voice['gender'] ?? ''}'.toLowerCase();
+    var score = 0;
+    for (final marker in _femaleVoiceMarkers) {
+      if (text.contains(marker)) {
+        score += 3;
+      }
+    }
+    for (final marker in _clearVoiceMarkers) {
+      if (text.contains(marker)) {
+        score += 2;
+      }
+    }
+    return score;
+  }
+
+  static const _femaleVoiceMarkers = [
+    'female',
+    'woman',
+    'xiaoxiao',
+    'tingting',
+    'mei',
+    'siri female',
+  ];
+
+  static const _clearVoiceMarkers = [
+    'premium',
+    'enhanced',
+    'neural',
+    'clear',
+  ];
+}
+
+enum SpeechVoiceStyle {
+  systemDefault,
+  clearFemale,
+  fastFemale,
 }
 
 @visibleForTesting
@@ -267,4 +394,18 @@ class SpeechVoiceProfile {
 
   final double speechRate;
   final double pitch;
+
+  SpeechVoiceProfile forStyle(SpeechVoiceStyle style) {
+    return switch (style) {
+      SpeechVoiceStyle.systemDefault => SpeechVoiceProfile(
+          speechRate: speechRate - 0.05,
+          pitch: pitch - 0.04,
+        ),
+      SpeechVoiceStyle.clearFemale => this,
+      SpeechVoiceStyle.fastFemale => SpeechVoiceProfile(
+          speechRate: speechRate + 0.06,
+          pitch: pitch + 0.01,
+        ),
+    };
+  }
 }

@@ -57,9 +57,29 @@ Ran jq -r '.pet_id' output/hatch-pet/*/pet_request.json
     final zhProfile = DeviceVoiceService.speechProfileForTest('zh-CN');
     final enProfile = DeviceVoiceService.speechProfileForTest('en-US');
 
-    expect(zhProfile.speechRate, greaterThan(0.5));
-    expect(zhProfile.pitch, lessThanOrEqualTo(1.0));
-    expect(enProfile.speechRate, greaterThan(0.5));
-    expect(enProfile.pitch, 1.0);
+    expect(zhProfile.speechRate, inInclusiveRange(0.62, 0.68));
+    expect(zhProfile.pitch, inInclusiveRange(1.03, 1.08));
+    expect(enProfile.speechRate, greaterThan(0.55));
+    expect(enProfile.pitch, greaterThan(1.0));
+  });
+
+  test('fast female style increases speech pace', () {
+    final base = DeviceVoiceService.speechProfileForTest('zh-CN');
+    final fast = base.forStyle(SpeechVoiceStyle.fastFemale);
+
+    expect(fast.speechRate, greaterThan(base.speechRate));
+    expect(fast.pitch, greaterThan(base.pitch));
+  });
+
+  test('preferred voice favors Chinese female clear voices', () {
+    final voice = DeviceVoiceService.preferredVoiceForTest(
+      const [
+        {'name': 'System Male', 'locale': 'zh-CN', 'gender': 'male'},
+        {'name': 'XiaoXiao Neural', 'locale': 'zh_CN', 'gender': 'female'},
+      ],
+      'zh-CN',
+    );
+
+    expect(voice?['name'], 'XiaoXiao Neural');
   });
 }

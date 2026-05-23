@@ -8,6 +8,7 @@ class MockVoiceService implements VoiceService {
 
   final String recognizedText;
   final bool available;
+  final List<String> spokenSummaries = [];
   String _latestWords = '';
 
   @override
@@ -37,6 +38,6 @@ class MockVoiceService implements VoiceService {
 
   @override
   Future<void> speakSummary(String summary) async {
-    return;
+    spokenSummaries.add(summary);
   }
 }

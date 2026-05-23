@@ -104,7 +104,8 @@ void main() {
     expect(find.text('任务详情'), findsOneWidget);
     expect(agent.lastRequest, isNotNull);
     expect(store.savedTasks.last.status, TaskStatus.running);
-    expect(agent.lastRequest!.tmuxSessionName, startsWith('armin-codex-'));
+    expect(agent.lastRequest!.tmuxSessionName, startsWith('armin-'));
+    expect(agent.lastRequest!.tmuxSessionName.length, lessThanOrEqualTo(14));
     expect(store.savedTasks.last.host.tmuxSessionName,
         agent.lastRequest!.tmuxSessionName);
 
@@ -320,4 +321,7 @@ class _CaptureAgentSessionService implements AgentSessionService {
 
   @override
   Future<void> cleanup(AgentControlRequest request) async {}
+
+  @override
+  Future<String> captureLog(AgentControlRequest request) async => '';
 }

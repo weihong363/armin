@@ -278,4 +278,23 @@ decision: approved
     expect(update, startsWith('APPROVAL_DECISION:'));
     expect(update, isNot(contains('RUNTIME_UPDATE:')));
   });
+
+  test('regular follow-up is sent as clean prompt', () {
+    final service = SSHAgentSessionService();
+
+    const request = AgentControlRequest(
+      host: '127.0.0.1',
+      port: 22,
+      username: 'ironion',
+      tmuxSessionName: 'armin-codex',
+      password: 'secret-password',
+      instruction: '只输出 pets 名字',
+    );
+
+    final update = service.buildFollowUpTextForTest(request);
+
+    expect(update, '只输出 pets 名字');
+    expect(update, isNot(contains('RUNTIME_UPDATE:')));
+    expect(update, isNot(contains('New instruction:')));
+  });
 }

@@ -134,6 +134,19 @@ class SSHAgentSessionService implements AgentSessionService {
             return;
           }
           final fullOutput = output.toString();
+          if (_isMissingTmuxSession(fullOutput)) {
+            controller.add(
+              AgentExecutionUpdate(
+                rawOutput: '',
+                cleanedOutput: _cleaner.clean(fullOutput),
+                observerState: NativeOutputObserverState.runtimeLost,
+                runtimeLost: true,
+                done: true,
+              ),
+            );
+            await controller.close();
+            return;
+          }
           final approval = _approvalParser.parse(fullOutput);
           final result = _resultParser.parse(fullOutput);
           if (approval != null || result != null) {
@@ -188,6 +201,11 @@ class SSHAgentSessionService implements AgentSessionService {
         '$trimmed\n';
   }
 
+  bool _isMissingTmuxSession(String output) {
+    return output.contains('Armin could not find tmux session') ||
+        output.contains('Armin could not capture tmux pane because session');
+  }
+
   @override
   Future<void> sendFollowUp(AgentControlRequest request) async {
     _validateControlRequest(request);
@@ -198,15 +216,7 @@ class SSHAgentSessionService implements AgentSessionService {
     final instruction = request.instruction.trimLeft();
     return instruction.startsWith('APPROVAL_DECISION:')
         ? request.instruction
-        : '''
-RUNTIME_UPDATE:
-The user updated the task constraints.
-
-New instruction:
-- ${request.instruction}
-
-Keep previous findings. Do not restart the entire task unless necessary.
-''';
+        : request.instruction.trim();
   }
 
   @override
@@ -231,6 +241,23 @@ Keep previous findings. Do not restart the entire task unless necessary.
   Future<void> cleanup(AgentControlRequest request) async {
     _validateControlRequest(request);
     await _killSession(request);
+  }
+
+  @override
+  Future<String> captureLog(AgentControlRequest request) async {
+    _validateControlRequest(request);
+    final tmux = _tmuxCommand(request.tmuxCommand);
+    final command = '$tmux capture-pane -p -t '
+        '${_shellQuote(request.tmuxSessionName)} -S -200 2>/dev/null || true';
+    final output = await _runControlCommand(
+      request,
+      _wrapRemoteCommand(
+        command,
+        pathPrepend: request.pathPrepend,
+        shellWrapper: request.shellWrapper,
+      ),
+    );
+    return output.trim();
   }
 
   Future<SSHClient> _connect({
@@ -331,7 +358,7 @@ Keep previous findings. Do not restart the entire task unless necessary.
         ));
   }
 
-  Future<void> _runControlCommand(
+  Future<String> _runControlCommand(
     AgentControlRequest request,
     String command,
   ) async {
@@ -344,7 +371,8 @@ Keep previous findings. Do not restart the entire task unless necessary.
       privateKeyPassphrase: request.privateKeyPassphrase,
     );
     try {
-      await client.run(command);
+      final output = await client.run(command);
+      return utf8.decode(output, allowMalformed: true);
     } finally {
       client.close();
       await client.done;

@@ -33,6 +33,10 @@ void main() {
         TaskStatus.running);
     expect(machine.next(TaskStatus.turnIdle, TaskStatus.userCompleted),
         TaskStatus.userCompleted);
+    expect(machine.next(TaskStatus.running, TaskStatus.observerDetached),
+        TaskStatus.observerDetached);
+    expect(machine.next(TaskStatus.observerDetached, TaskStatus.running),
+        TaskStatus.running);
   });
 
   test('rejects invalid task status transitions', () {

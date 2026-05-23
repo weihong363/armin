@@ -29,7 +29,7 @@ class MockAgentSessionService implements AgentSessionService {
     await Future<void>.delayed(const Duration(seconds: 1));
     await Future<void>.delayed(const Duration(seconds: 1));
 
-    final resultOutput = '''
+    const resultOutput = '''
 TASK_RESULT_START
 status: success
 summary: Mock Phase 1 execution completed.
@@ -64,4 +64,7 @@ TASK_RESULT_END
 
   @override
   Future<void> cleanup(AgentControlRequest request) async {}
+
+  @override
+  Future<String> captureLog(AgentControlRequest request) async => '';
 }

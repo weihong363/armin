@@ -230,4 +230,7 @@ class _ConnectionTestAgent implements AgentSessionService {
 
   @override
   Future<void> cleanup(AgentControlRequest request) async {}
+
+  @override
+  Future<String> captureLog(AgentControlRequest request) async => '';
 }

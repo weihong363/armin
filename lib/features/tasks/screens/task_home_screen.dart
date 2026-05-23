@@ -6,6 +6,7 @@ import '../../../shared/theme/armin_theme.dart';
 import '../../history/screens/task_detail_screen.dart';
 import '../../hosts/screens/host_list_screen.dart';
 import '../../projects/screens/project_path_list_screen.dart';
+import '../../voice/screens/voice_settings_screen.dart';
 import '../../voice/services/voice_service.dart';
 import '../models/task_session.dart';
 import '../services/speech_draft_cleaner.dart';
@@ -210,6 +211,12 @@ class _TaskHomeScreenState extends State<TaskHomeScreen> {
                 builder: (_) => const HostListScreen(),
               ),
             );
+          } else if (index == 3) {
+            Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => const VoiceSettingsScreen(),
+              ),
+            );
           }
         },
       ),
@@ -325,7 +332,8 @@ class _TaskHomeScreenState extends State<TaskHomeScreen> {
           task.status == TaskStatus.paused ||
           task.status == TaskStatus.needApproval ||
           task.status == TaskStatus.turnIdle ||
-          task.status == TaskStatus.needAttention) {
+          task.status == TaskStatus.needAttention ||
+          task.status == TaskStatus.observerDetached) {
         return task;
       }
     }

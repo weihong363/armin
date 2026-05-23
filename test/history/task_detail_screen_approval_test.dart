@@ -43,10 +43,42 @@ void main() {
 
     await tester.tap(find.text('日志'));
     await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.text('Approval Requests'),
+      300,
+      scrollable: find.byType(Scrollable).last,
+    );
+    await tester.pumpAndSettle();
 
     expect(find.text('已允许'), findsOneWidget);
     expect(find.text('允许'), findsNothing);
     expect(find.text('拒绝'), findsNothing);
+  });
+
+  testWidgets('detached task shows relisten controls', (tester) async {
+    final task = _task().copyWith(status: TaskStatus.observerDetached);
+    final state = ArminAppState(
+      store: _TaskStore(task),
+      agentSessionService: const _NoopAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await tester.pumpWidget(
+      AppStateScope(
+        state: state,
+        child: const MaterialApp(
+          home: TaskDetailScreen(taskId: 'task-1'),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('日志'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('重新监听'), findsOneWidget);
+    expect(find.text('断开监听'), findsOneWidget);
+    expect(find.text('断开连接'), findsNothing);
   });
 }
 
@@ -133,6 +165,9 @@ class _NoopAgent implements AgentSessionService {
 
   @override
   Future<void> cleanup(AgentControlRequest request) async {}
+
+  @override
+  Future<String> captureLog(AgentControlRequest request) async => '';
 
   @override
   Future<AgentConnectionTestResult> testConnection(

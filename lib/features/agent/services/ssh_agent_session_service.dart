@@ -30,6 +30,7 @@ class SSHAgentSessionService implements AgentSessionService {
   final Duration _pollInterval;
   final int _maxPolls;
   final CodexOutputCleaner _cleaner;
+  static const int _settledStablePolls = 20;
 
   @override
   Future<AgentConnectionTestResult> testConnection(
@@ -127,6 +128,7 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
       final command = _buildExecutionScript(request);
       final session = await client.execute(command);
       final output = StringBuffer();
+      final observer = NativeOutputObserver(cleaner: _cleaner);
       late final StreamSubscription<Uint8List> stdoutSub;
       late final StreamSubscription<Uint8List> stderrSub;
       late final StreamController<AgentExecutionUpdate> controller;
@@ -142,22 +144,12 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
       stdoutSub = session.stdout.listen((chunk) {
         final text = utf8.decode(chunk, allowMalformed: true);
         output.write(text);
-        controller.add(
-          AgentExecutionUpdate(
-            rawOutput: text,
-            cleanedOutput: _cleaner.clean(text),
-          ),
-        );
+        controller.add(_buildStreamingUpdate(text, output, observer));
       });
       stderrSub = session.stderr.listen((chunk) {
         final text = utf8.decode(chunk, allowMalformed: true);
         output.write(text);
-        controller.add(
-          AgentExecutionUpdate(
-            rawOutput: text,
-            cleanedOutput: _cleaner.clean(text),
-          ),
-        );
+        controller.add(_buildStreamingUpdate(text, output, observer));
       });
 
       unawaited(
@@ -198,8 +190,7 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
               ),
             );
           } else {
-            final snapshot = NativeOutputObserver(cleaner: _cleaner)
-                .observeSettled(fullOutput);
+            final snapshot = observer.observeSettled(fullOutput);
             controller.add(
               AgentExecutionUpdate(
                 rawOutput: '',
@@ -222,6 +213,21 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
       client.close();
       await client.done;
     }
+  }
+
+  AgentExecutionUpdate _buildStreamingUpdate(
+    String chunk,
+    StringBuffer output,
+    NativeOutputObserver observer,
+  ) {
+    final snapshot = observer.observe(output.toString());
+    return AgentExecutionUpdate(
+      rawOutput: chunk,
+      cleanedOutput: snapshot.cleanedOutput,
+      observerState: snapshot.state,
+      runtimeLost: snapshot.runtimeLost,
+      needsAttention: snapshot.needsAttention,
+    );
   }
 
   String _missingResultLog(String output) {
@@ -504,7 +510,7 @@ while [ "\$i" -lt $_maxPolls ]; do
     printf "%s\\n" "\$pane_output"
     break
   fi
-  if [ "\$changed_after_start" -eq 1 ] && [ "\$i" -ge 8 ] && [ "\$stable_count" -ge 3 ]; then
+  if [ "\$changed_after_start" -eq 1 ] && [ "\$stable_count" -ge $_settledStablePolls ]; then
     printf "%s\\n" "\$pane_output"
     break
   fi

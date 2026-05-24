@@ -42,4 +42,41 @@ hello
     expect(cleaned, contains('输出 hello'));
     expect(cleaned, contains('hello'));
   });
+
+  test('cleans real agent noise while keeping useful output', () {
+    const raw = '''
+│ >_ OpenAI Codex (v0.130.0)
+│ model: gpt-5.5 medium fast
+│ directory: ~/workspace/momo
+Tip: Try the Codex App. Run `codex app`
+⚠ Skipped loading 1 skill(s) due to invalid SKILL.md files.
+⚠ /Users/ironion/.codex/skills/work-decision-guard/SKILL.md: invalid YAML:
+mapping values are not allowed in this context at line 2 column 152
+Use /skills to list available skills
+Armin context governance:
+- Only inspect files directly related to the task.
+- Never scan the entire repository.
+帮我输出所有 momo 的 PET
+Explored
+Search (^|/)Pets/|pets|Pet
+List hatch-pet
+Ran jq -r '.pet_id' output/hatch-pet/*/pet_request.json
+You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 3:41 AM.
+hello
+''';
+
+    final cleaned = const CodexOutputCleaner().clean(raw);
+
+    expect(cleaned, contains('额度已用完，请稍后重试。'));
+    expect(cleaned, contains('hello'));
+    expect(cleaned, isNot(contains('OpenAI Codex')));
+    expect(cleaned, isNot(contains('SKILL.md')));
+    expect(cleaned, isNot(contains('mapping values')));
+    expect(cleaned, isNot(contains('Use /skills')));
+    expect(cleaned, isNot(contains('Armin context governance')));
+    expect(cleaned, isNot(contains('Search (^|/)Pets')));
+    expect(cleaned, isNot(contains('List hatch-pet')));
+    expect(cleaned, isNot(contains('Ran jq')));
+    expect(cleaned, isNot(contains('chatgpt.com')));
+  });
 }

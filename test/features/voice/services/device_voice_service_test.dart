@@ -98,6 +98,33 @@ You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), v
     expect(cleaned.length, lessThan(230));
   });
 
+  test('speech summary skips real agent terminal noise', () {
+    final cleaned = DeviceVoiceService.cleanSpeechSummaryForTest('''
+│ >_ OpenAI Codex (v0.130.0)
+Tip: Try the Codex App. Run `codex app`
+⚠ Skipped loading 1 skill(s) due to invalid SKILL.md files.
+/Users/ironion/.codex/skills/work-decision-guard/SKILL.md: invalid YAML:
+mapping values are not allowed in this context at line 2 column 152
+Use /skills to list available skills
+Armin context governance:
+- Keep command output short.
+Explored
+Search pet/Pet/Pets/assets in .
+List hatch-pet
+Ran jq -r '.pet_id' output/hatch-pet/*/pet_request.json
+已找到 SUMMER。
+hello world
+''');
+
+    expect(cleaned, contains('已找到 SUMMER。'));
+    expect(cleaned, contains('hello world'));
+    expect(cleaned, isNot(contains('OpenAI Codex')));
+    expect(cleaned, isNot(contains('SKILL.md')));
+    expect(cleaned, isNot(contains('Use /skills')));
+    expect(cleaned, isNot(contains('Search pet')));
+    expect(cleaned, isNot(contains('Ran jq')));
+  });
+
   test('fast female style increases speech pace', () {
     final base = DeviceVoiceService.speechProfileForTest('zh-CN');
     final fast = base.forStyle(SpeechVoiceStyle.fastFemale);

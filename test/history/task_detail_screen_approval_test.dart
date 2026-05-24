@@ -146,6 +146,33 @@ void main() {
 
     expect(voice.spokenSummaries.single, contains('hello world'));
   });
+
+  testWidgets('failed task header does not label the finish time completed',
+      (tester) async {
+    final task = _task().copyWith(
+      status: TaskStatus.failed,
+      completedAt: DateTime(2026, 5, 18, 11, 42),
+      shortSummary: 'SSH 执行失败',
+    );
+    final state = ArminAppState(
+      store: _TaskStore(task),
+      agentSessionService: const _NoopAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await tester.pumpWidget(
+      AppStateScope(
+        state: state,
+        child: const MaterialApp(
+          home: TaskDetailScreen(taskId: 'task-1'),
+        ),
+      ),
+    );
+
+    expect(find.text('11:42 失败'), findsOneWidget);
+    expect(find.text('11:42 完成'), findsNothing);
+  });
 }
 
 TaskSession _task() {

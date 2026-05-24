@@ -1,5 +1,6 @@
 import '../../../core/models/task_status.dart';
 import '../../tasks/models/task_session.dart';
+import '../../tasks/services/output_summary_provider.dart';
 import 'device_voice_service.dart';
 
 enum TaskSpeechKind {
@@ -60,11 +61,13 @@ class TaskSpeechPolicy {
 
   final int maxSentences;
 
-  TaskSpeechDecision decide({
+  Future<TaskSpeechDecision> decide({
     required TaskSession previous,
     required TaskSession current,
     required TaskSpeechSettings settings,
-  }) {
+    OutputSummaryProvider outputSummaryProvider =
+        const RuleBasedOutputSummaryProvider(),
+  }) async {
     if (!settings.enabled) {
       return const TaskSpeechDecision.skip();
     }
@@ -72,7 +75,10 @@ class TaskSpeechPolicy {
     if (kind == null || !_isKindEnabled(kind, settings)) {
       return const TaskSpeechDecision.skip();
     }
-    final speechText = _speechTextFor(current);
+    final speechText = await _speechTextFor(
+      current,
+      outputSummaryProvider: outputSummaryProvider,
+    );
     if (speechText.isEmpty) {
       return const TaskSpeechDecision.skip();
     }
@@ -85,13 +91,30 @@ class TaskSpeechPolicy {
     );
   }
 
-  String buildSpeechText(TaskSession task) {
-    return _speechTextFor(task);
+  Future<String> buildSpeechText(
+    TaskSession task, {
+    OutputSummaryProvider outputSummaryProvider =
+        const RuleBasedOutputSummaryProvider(),
+  }) {
+    return _speechTextFor(task, outputSummaryProvider: outputSummaryProvider);
   }
 
-  String _speechTextFor(TaskSession task) {
+  Future<String> _speechTextFor(
+    TaskSession task, {
+    required OutputSummaryProvider outputSummaryProvider,
+  }) async {
     final source = _summarySource(task);
-    final cleaned = DeviceVoiceService.cleanSpeechSummary(source);
+    final summary = await outputSummaryProvider.summarize(
+      OutputSummaryRequest(
+        cleanedOutput: source,
+        status: task.status,
+        taskTitle: task.title,
+        agentCommand: task.host.agentCommand,
+      ),
+    );
+    final cleaned = DeviceVoiceService.cleanSpeechSummary(
+      summary.speechSummary,
+    );
     final concise = _limitSentences(cleaned);
     return _decorate(task.status, concise).trim();
   }

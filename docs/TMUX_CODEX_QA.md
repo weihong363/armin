@@ -1,4 +1,4 @@
-# tmux / Codex SSH Q&A
+# tmux / Agent SSH Q&A
 
 ## Q: 手机 SSH 可以运行 tmux，但 Armin connection test 报 `command not found: tmux`？
 
@@ -22,10 +22,16 @@ PATH prepend: /opt/homebrew/bin:/usr/local/bin:$HOME/.npm-global/bin:$HOME/.npm-
 
 A: 这通常不是 tmux 找不到，而是 tmux session 创建后里面的命令立即退出，tmux server 没有任何活着的 session。
 
-当前最常见原因是 `codex` 在非交互环境里找不到。可以在远端验证：
+当前最常见原因是 Agent CLI 在非交互环境里找不到。可以在远端验证 Codex：
 
 ```sh
 ssh ironion@100.105.215.24 'export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.npm-global/bin:$HOME/.npm-packages/bin:$PATH"; command -v tmux; tmux -V; command -v codex; codex --version'
+```
+
+或验证 Qoder：
+
+```sh
+ssh ironion@100.105.215.24 'export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.npm-global/bin:$HOME/.npm-packages/bin:$PATH"; command -v tmux; tmux -V; command -v qodercli; qodercli --version'
 ```
 
 如果返回：
@@ -36,11 +42,11 @@ tmux 3.5a
 zsh:1: command not found: codex
 ```
 
-说明 tmux 已正常，失败点是 Codex CLI。
+说明 tmux 已正常，失败点是 Agent CLI。
 
-## Q: 怎么修复 `codex: command not found`？
+## Q: 怎么修复 `codex: command not found` 或 `qodercli: command not found`？
 
-A: 找到远端 Codex CLI 的真实路径：
+A: 找到远端 Agent CLI 的真实路径：
 
 ```sh
 ssh ironion@100.105.215.24 'zsh -lic "command -v codex; echo PATH=$PATH"'
@@ -52,19 +58,30 @@ ssh ironion@100.105.215.24 'zsh -lic "command -v codex; echo PATH=$PATH"'
 Agent command: $HOME/.npm-global/bin/codex
 ```
 
-如果 Codex CLI 是通过 npm 全局安装的，常见位置可以通过下面的命令确认：
+如果 Agent CLI 是通过 npm 全局安装的，常见位置可以通过下面的命令确认：
 
 ```sh
 ssh ironion@100.105.215.24 'export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"; npm prefix -g'
 ```
 
-返回的 prefix 后面加 `/bin`，通常就是 Codex CLI 所在目录。然后把所在目录加入：
+返回的 prefix 后面加 `/bin`，通常就是 Agent CLI 所在目录。然后把所在目录加入：
 
 ```text
 PATH prepend: /opt/homebrew/bin:/usr/local/bin:/path/to/npm-prefix/bin
 ```
 
 Armin 会在远端 shell 中展开 `$HOME`。如果你已经知道绝对路径，也可以直接填写绝对路径作为 `Agent command`。
+
+## Q: Codex 和 Qoder 的项目路径参数有什么区别？
+
+A: Armin 会按 Agent command 选择项目路径参数：
+
+```text
+Codex: codex -C projectPath
+Qoder: qodercli -w projectPath
+```
+
+如果 `Agent command` 是绝对路径，Armin 仍会根据命令名识别，例如 `$HOME/.npm-global/bin/codex` 使用 `-C`，`$HOME/.qoder/bin/qodercli` 使用 `-w`。
 
 ## Q: Host type 做了什么？
 
@@ -89,4 +106,12 @@ command -v codex
 codex --version
 ```
 
-如果 tmux 通过但 codex 不可用，UI 会提示配置 `Agent command` 绝对路径，或把 Codex CLI 所在目录加入 `PATH prepend`。
+如果使用 Qoder，则验证：
+
+```sh
+tmux -V
+command -v qodercli
+qodercli --version
+```
+
+如果 tmux 通过但 Agent CLI 不可用，UI 会提示配置 `Agent command` 绝对路径，或把 Agent CLI 所在目录加入 `PATH prepend`。

@@ -4,6 +4,7 @@ import 'package:armin/features/agent/parsers/task_result.dart';
 import 'package:armin/features/hosts/models/host_config.dart';
 import 'package:armin/features/tasks/models/native_output_turn.dart';
 import 'package:armin/features/tasks/models/task_session.dart';
+import 'package:armin/features/tasks/services/output_summary_provider.dart';
 import 'package:armin/features/voice/services/task_speech_policy.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -11,7 +12,7 @@ void main() {
   const policy = TaskSpeechPolicy();
   const settings = TaskSpeechSettings();
 
-  test('completed task speaks cleaned final result summary', () {
+  test('completed task speaks cleaned final result summary', () async {
     final previous = _task(status: TaskStatus.running);
     final current = previous.copyWith(
       status: TaskStatus.completed,
@@ -35,7 +36,7 @@ flutter test
       ),
     );
 
-    final decision = policy.decide(
+    final decision = await policy.decide(
       previous: previous,
       current: current,
       settings: settings,
@@ -50,14 +51,14 @@ flutter test
     expect(decision.text, isNot(contains('/Users/ironion')));
   });
 
-  test('turn idle task speaks current output with continue prompt', () {
+  test('turn idle task speaks current output with continue prompt', () async {
     final previous = _task(status: TaskStatus.running);
     final current = previous.copyWith(
       status: TaskStatus.turnIdle,
       summary: '已完成第一轮检查。',
     );
 
-    final decision = policy.decide(
+    final decision = await policy.decide(
       previous: previous,
       current: current,
       settings: settings,
@@ -69,7 +70,7 @@ flutter test
   });
 
   test('need approval task speaks confirmation prompt without command detail',
-      () {
+      () async {
     final previous = _task(status: TaskStatus.running);
     final current = previous.copyWith(
       status: TaskStatus.needApproval,
@@ -80,7 +81,7 @@ flutter test
       ),
     );
 
-    final decision = policy.decide(
+    final decision = await policy.decide(
       previous: previous,
       current: current,
       settings: settings,
@@ -93,7 +94,7 @@ flutter test
     expect(decision.text, isNot(contains('rm -rf')));
   });
 
-  test('settings can disable result and attention speech separately', () {
+  test('settings can disable result and attention speech separately', () async {
     final previous = _task(status: TaskStatus.running);
     final completed = previous.copyWith(
       status: TaskStatus.completed,
@@ -105,28 +106,26 @@ flutter test
     );
 
     expect(
-      policy
-          .decide(
-            previous: previous,
-            current: completed,
-            settings: const TaskSpeechSettings(speakResults: false),
-          )
+      (await policy.decide(
+        previous: previous,
+        current: completed,
+        settings: const TaskSpeechSettings(speakResults: false),
+      ))
           .shouldSpeak,
       isFalse,
     );
     expect(
-      policy
-          .decide(
-            previous: previous,
-            current: attention,
-            settings: const TaskSpeechSettings(speakAttention: false),
-          )
+      (await policy.decide(
+        previous: previous,
+        current: attention,
+        settings: const TaskSpeechSettings(speakAttention: false),
+      ))
           .shouldSpeak,
       isFalse,
     );
   });
 
-  test('same text in a new turn gets a new speech hash', () {
+  test('same text in a new turn gets a new speech hash', () async {
     final previous = _task(status: TaskStatus.turnIdle).copyWith(
       summary: 'hello',
       turns: [_turn(1)],
@@ -136,12 +135,12 @@ flutter test
       turns: [_turn(1), _turn(2)],
     );
 
-    final first = policy.decide(
+    final first = await policy.decide(
       previous: _task(status: TaskStatus.running),
       current: previous,
       settings: settings,
     );
-    final second = policy.decide(
+    final second = await policy.decide(
       previous: previous,
       current: current,
       settings: settings,
@@ -149,6 +148,35 @@ flutter test
 
     expect(first.text, second.text);
     expect(first.hash, isNot(second.hash));
+  });
+
+  test('speech policy uses summary provider without raw log or status changes',
+      () async {
+    final previous = _task(status: TaskStatus.running);
+    final current = previous.copyWith(
+      status: TaskStatus.turnIdle,
+      summary: '有用结果',
+      rawLog: 'raw terminal log should not be summarized',
+    );
+    final provider = _CapturingSummaryProvider(
+      const OutputSummary(
+        displaySummary: '有用结果',
+        speechSummary: '有用结果',
+      ),
+    );
+
+    final decision = await policy.decide(
+      previous: previous,
+      current: current,
+      settings: settings,
+      outputSummaryProvider: provider,
+    );
+
+    expect(provider.lastRequest?.cleanedOutput, '有用结果');
+    expect(
+        provider.lastRequest?.cleanedOutput, isNot(contains('raw terminal')));
+    expect(current.status, TaskStatus.turnIdle);
+    expect(decision.text, contains('有用结果'));
   });
 }
 
@@ -199,4 +227,17 @@ NativeOutputTurn _turn(int index) {
     lastOutputAt: now,
     status: NativeOutputTurnStatus.turnIdle,
   );
+}
+
+class _CapturingSummaryProvider implements OutputSummaryProvider {
+  _CapturingSummaryProvider(this.summary);
+
+  final OutputSummary summary;
+  OutputSummaryRequest? lastRequest;
+
+  @override
+  Future<OutputSummary> summarize(OutputSummaryRequest request) async {
+    lastRequest = request;
+    return summary;
+  }
 }

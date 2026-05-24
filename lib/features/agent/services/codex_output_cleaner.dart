@@ -22,6 +22,10 @@ class CodexOutputCleaner {
   }
 
   String _cleanLine(String line) {
+    if (RegExp(r"you['’]ve hit your usage limit", caseSensitive: false)
+        .hasMatch(line)) {
+      return '额度已用完，请稍后重试。';
+    }
     return line
         .replaceFirst(RegExp(r'^[│|]\s*'), '')
         .replaceFirst(RegExp(r'^[›]\s*'), '')
@@ -42,6 +46,7 @@ class CodexOutputCleaner {
         line.startsWith('_') ||
         line.startsWith('━') ||
         lower.contains('openai codex') ||
+        lower.contains('qoder cli') ||
         lower.startsWith('model:') ||
         lower.startsWith('directory:') ||
         lower.startsWith('gpt-') ||
@@ -58,12 +63,17 @@ class CodexOutputCleaner {
         lower.startsWith('search ') ||
         lower.startsWith('list ') ||
         lower.startsWith('ran ') ||
+        lower.startsWith('read ') ||
+        lower.startsWith('edited ') ||
+        lower.startsWith('opened ') ||
+        lower.startsWith('checked ') ||
         lower.contains(' to view transcript') ||
         lower.contains('npm install -g @openai/codex') ||
         lower.contains('github.com/openai/codex/releases') ||
         lower.contains('chatgpt.com/codex?app-landing-page=true') ||
         lower.startsWith('skipped loading') ||
         lower.startsWith('warning') ||
+        lower.startsWith('/users/') ||
         lower.contains('invalid skill.md') ||
         lower.contains('invalid yaml') ||
         lower.contains('mapping values are not allowed in this context') ||

@@ -212,6 +212,13 @@ class DeviceVoiceService implements VoiceService {
       return false;
     }
     return lower.startsWith('```') ||
+        lower.startsWith('│') ||
+        lower.contains('openai codex') ||
+        lower.contains('qoder cli') ||
+        lower.startsWith('tip:') ||
+        lower.startsWith('model:') ||
+        lower.startsWith('directory:') ||
+        lower.startsWith('gpt-') ||
         normalized.startsWith('armin context governance:') ||
         _isSpeechGovernanceRule(normalized) ||
         lower.startsWith('import ') ||

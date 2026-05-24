@@ -38,7 +38,7 @@ class AgentInstructionDiscoveryResult {
       return 'No AGENTS.md detected. Armin will use lightweight built-in '
           'prompt governance.';
     }
-    return 'AGENTS.md detected. Codex may follow repository-specific '
+    return 'AGENTS.md detected. Agent may follow repository-specific '
         'optimization rules.';
   }
 }

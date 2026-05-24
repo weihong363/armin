@@ -32,7 +32,7 @@ void main() {
     expect(result.detected, isTrue);
     expect(
       result.uiMessage,
-      'AGENTS.md detected. Codex may follow repository-specific '
+      'AGENTS.md detected. Agent may follow repository-specific '
       'optimization rules.',
     );
   });

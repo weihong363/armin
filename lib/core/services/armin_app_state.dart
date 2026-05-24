@@ -11,6 +11,7 @@ import '../../features/tasks/models/execution_log.dart';
 import '../../features/tasks/models/metric_event.dart';
 import '../../features/tasks/models/native_output_turn.dart';
 import '../../features/tasks/models/task_session.dart';
+import '../../features/tasks/services/output_summary_provider.dart';
 import '../../features/tasks/services/secret_redactor.dart';
 import '../../features/voice/services/device_voice_service.dart';
 import '../../features/voice/services/task_speech_policy.dart';
@@ -25,9 +26,12 @@ class ArminAppState extends ChangeNotifier {
     required this.agentSessionService,
     required this.voiceService,
     TaskSpeechPolicy? taskSpeechPolicy,
+    OutputSummaryProvider? outputSummaryProvider,
     this.speechSettings = const TaskSpeechSettings(),
   })  : _store = store,
-        _taskSpeechPolicy = taskSpeechPolicy ?? const TaskSpeechPolicy();
+        _taskSpeechPolicy = taskSpeechPolicy ?? const TaskSpeechPolicy(),
+        outputSummaryProvider =
+            outputSummaryProvider ?? const RuleBasedOutputSummaryProvider();
 
   ArminAppState.phase2({
     TaskHistoryStore? store,
@@ -37,12 +41,14 @@ class ArminAppState extends ChangeNotifier {
         agentSessionService = agentSessionService ?? SSHAgentSessionService(),
         voiceService = voiceService ?? DeviceVoiceService(),
         _taskSpeechPolicy = const TaskSpeechPolicy(),
+        outputSummaryProvider = const RuleBasedOutputSummaryProvider(),
         speechSettings = const TaskSpeechSettings();
 
   final TaskHistoryStore _store;
   final AgentSessionService agentSessionService;
   final VoiceService voiceService;
   final TaskSpeechPolicy _taskSpeechPolicy;
+  final OutputSummaryProvider outputSummaryProvider;
   final SecretRedactor _secretRedactor = SecretRedactor();
   TaskSpeechSettings speechSettings;
 
@@ -115,7 +121,10 @@ class ArminAppState extends ChangeNotifier {
 
   Future<bool> speakTaskSummary(TaskSession task) async {
     final latest = _latestTask(task.id) ?? task;
-    final text = _taskSpeechPolicy.buildSpeechText(latest);
+    final text = await _taskSpeechPolicy.buildSpeechText(
+      latest,
+      outputSummaryProvider: outputSummaryProvider,
+    );
     if (text.trim().isEmpty) {
       return false;
     }
@@ -214,11 +223,7 @@ class ArminAppState extends ChangeNotifier {
 
   Future<void> stopTask(TaskSession task) async {
     final request = await _controlRequest(task);
-    final finalLog = await _captureLogBestEffort(request);
-    final taskWithFinalLog = finalLog.trim().isEmpty
-        ? task
-        : await _appendRawLog(task, 'Final captured output:\n$finalLog\n');
-    await agentSessionService.stop(request);
+    final taskWithFinalLog = await _captureFinalLog(task, request);
     await _saveControlledTask(
       taskWithFinalLog,
       status: TaskStatus.stopped,
@@ -227,6 +232,7 @@ class ArminAppState extends ChangeNotifier {
       turnStatus: NativeOutputTurnStatus.stopped,
       userDecision: 'stopped',
     );
+    await agentSessionService.stop(request);
   }
 
   Future<String> _captureLogBestEffort(AgentControlRequest request) async {
@@ -237,34 +243,51 @@ class ArminAppState extends ChangeNotifier {
     }
   }
 
+  Future<TaskSession> _captureFinalLog(
+    TaskSession task,
+    AgentControlRequest request,
+  ) async {
+    final finalLog = await _captureLogBestEffort(request);
+    if (finalLog.trim().isEmpty) {
+      return task;
+    }
+    return _appendRawLog(task, 'Final captured output:\n$finalLog\n');
+  }
+
   Future<void> markTaskCompleted(TaskSession task) async {
+    final request = await _controlRequest(task);
+    final taskWithFinalLog = await _captureFinalLog(task, request);
     await _saveControlledTask(
-      task,
+      taskWithFinalLog,
       status: TaskStatus.userCompleted,
       logMessage: 'Task marked completed by user.',
       completed: true,
       eventType: 'user_mark_completed',
-      shortSummary:
-          task.shortSummary.trim().isEmpty ? '用户已确认任务完成' : task.shortSummary,
+      shortSummary: taskWithFinalLog.shortSummary.trim().isEmpty
+          ? '用户已确认任务完成'
+          : taskWithFinalLog.shortSummary,
       turnStatus: NativeOutputTurnStatus.completedByUser,
       userDecision: 'completed',
     );
-    await _cleanupTaskSession(_latestTask(task.id) ?? task);
+    await _cleanupTaskSession(_latestTask(task.id) ?? taskWithFinalLog);
   }
 
   Future<void> markTaskFailed(TaskSession task) async {
+    final request = await _controlRequest(task);
+    final taskWithFinalLog = await _captureFinalLog(task, request);
     await _saveControlledTask(
-      task,
+      taskWithFinalLog,
       status: TaskStatus.userFailed,
       logMessage: 'Task marked failed by user.',
       completed: true,
       eventType: 'user_mark_failed',
-      shortSummary:
-          task.shortSummary.trim().isEmpty ? '用户已标记任务失败' : task.shortSummary,
+      shortSummary: taskWithFinalLog.shortSummary.trim().isEmpty
+          ? '用户已标记任务失败'
+          : taskWithFinalLog.shortSummary,
       turnStatus: NativeOutputTurnStatus.failedByUser,
       userDecision: 'failed',
     );
-    await _cleanupTaskSession(_latestTask(task.id) ?? task);
+    await _cleanupTaskSession(_latestTask(task.id) ?? taskWithFinalLog);
   }
 
   void startTaskExecution(
@@ -332,7 +355,7 @@ class ArminAppState extends ChangeNotifier {
         status: TaskStatus.observerDetached,
         logMessage:
             'Observer detached by user. Remote tmux session may still be running.',
-        shortSummary: '已断开手机监听，远端 Codex 可能仍在运行',
+        shortSummary: '已断开手机监听，远端 Agent 可能仍在运行',
         eventType: 'observer_detached',
       );
       return;
@@ -638,8 +661,8 @@ Apply this decision to the pending approval request.
               ),
         updatedAt: idleAt,
         shortSummary: update.needsAttention
-            ? 'Codex 可能需要用户处理'
-            : (summary.isEmpty ? 'Codex 暂时停止输出' : summary),
+            ? 'Agent 可能需要用户处理'
+            : (summary.isEmpty ? 'Agent 暂时停止输出' : summary),
         summary: summary.isEmpty ? task.summary : summary,
         executionLogs: executionLogs,
         metricEvents: [
@@ -846,10 +869,11 @@ Apply this decision to the pending approval request.
     TaskSession previous,
     TaskSession current,
   ) async {
-    final decision = _taskSpeechPolicy.decide(
+    final decision = await _taskSpeechPolicy.decide(
       previous: previous,
       current: current,
       settings: speechSettings,
+      outputSummaryProvider: outputSummaryProvider,
     );
     if (!decision.shouldSpeak ||
         _lastSpokenHashes[current.id] == decision.hash) {

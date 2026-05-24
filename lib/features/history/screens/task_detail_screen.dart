@@ -6,9 +6,9 @@ import '../../../app_state_scope.dart';
 import '../../../core/models/task_status.dart';
 import '../../../shared/theme/armin_theme.dart';
 import '../../../shared/widgets/status_badge.dart';
-import '../../agent/services/codex_output_cleaner.dart';
 import '../../tasks/models/native_output_turn.dart';
 import '../../tasks/models/task_session.dart';
+import '../../tasks/services/output_summary_provider.dart';
 import '../../tasks/screens/task_draft_screen.dart';
 
 enum _TaskDetailAction {
@@ -323,7 +323,7 @@ class _TimelinePanel extends StatelessWidget {
       _TimelineItem(
         icon: Icons.send_outlined,
         time: _timeLabel(task.startedAt ?? task.createdAt),
-        title: '发送到 Codex',
+        title: '发送到 Agent',
         subtitle: '通过 SSH/tmux 发送任务',
       ),
       _TimelineItem(
@@ -455,29 +455,59 @@ class _TimelineItem extends StatelessWidget {
   }
 }
 
-class _ResultPanel extends StatelessWidget {
+class _ResultPanel extends StatefulWidget {
   const _ResultPanel({required this.task});
 
   final TaskSession task;
 
   @override
+  State<_ResultPanel> createState() => _ResultPanelState();
+}
+
+class _ResultPanelState extends State<_ResultPanel> {
+  Future<OutputSummary>? _summaryFuture;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _summaryFuture ??= _outputSummary(widget.task);
+  }
+
+  @override
+  void didUpdateWidget(covariant _ResultPanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.task.id != widget.task.id ||
+        oldWidget.task.updatedAt != widget.task.updatedAt ||
+        oldWidget.task.summary != widget.task.summary ||
+        oldWidget.task.result?.summary != widget.task.result?.summary) {
+      _summaryFuture = _outputSummary(widget.task);
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final result = task.result;
-    final segments = _outputSegments(task);
+    final result = widget.task.result;
     return ListView(
       physics: const AlwaysScrollableScrollPhysics(),
       padding: const EdgeInsets.fromLTRB(20, 20, 20, 96),
       children: [
         _InfoCard(
           title: '输出',
-          child: segments.isEmpty
-              ? const Text('暂无结果')
-              : Column(
-                  children: [
-                    for (final segment in segments)
-                      _OutputSegmentCard(text: segment),
-                  ],
-                ),
+          child: FutureBuilder<OutputSummary>(
+            future: _summaryFuture,
+            builder: (context, snapshot) {
+              final segments = _outputSegments(snapshot.data);
+              if (segments.isEmpty) {
+                return const Text('暂无结果');
+              }
+              return Column(
+                children: [
+                  for (final segment in segments)
+                    _OutputSegmentCard(text: segment),
+                ],
+              );
+            },
+          ),
         ),
         _InfoCard(
           title: '执行详情',
@@ -508,13 +538,24 @@ class _ResultPanel extends StatelessWidget {
     );
   }
 
-  List<String> _outputSegments(TaskSession task) {
+  Future<OutputSummary> _outputSummary(TaskSession task) {
     final source = _bestOutputSource(task);
-    final cleaned = const CodexOutputCleaner().clean(source);
-    if (cleaned.isEmpty) {
+    return AppStateScope.of(context).outputSummaryProvider.summarize(
+          OutputSummaryRequest(
+            cleanedOutput: source,
+            status: task.status,
+            taskTitle: task.title,
+            agentCommand: task.host.agentCommand,
+          ),
+        );
+  }
+
+  List<String> _outputSegments(OutputSummary? summary) {
+    final display = summary?.displaySummary.trim() ?? '';
+    if (display.isEmpty) {
       return const [];
     }
-    return cleaned
+    return display
         .split(RegExp(r'\n{2,}'))
         .map((segment) => segment.trim())
         .where((segment) => segment.isNotEmpty)
@@ -1609,6 +1650,12 @@ String _finishedLabel(TaskSession task) {
     return task.completedAt == null
         ? '已停止'
         : '${_timeLabel(task.completedAt!)} 停止';
+  }
+  if (task.status == TaskStatus.failed ||
+      task.status == TaskStatus.userFailed) {
+    return task.completedAt == null
+        ? '失败'
+        : '${_timeLabel(task.completedAt!)} 失败';
   }
   if (task.completedAt == null) {
     return '进行中';

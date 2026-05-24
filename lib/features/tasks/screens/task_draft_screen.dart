@@ -143,7 +143,7 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
             minLines: 6,
             maxLines: 10,
             decoration: const InputDecoration(
-              hintText: '描述你要交给 Codex 的任务...',
+              hintText: '描述你要交给 Agent 的任务...',
               alignLabelWithHint: true,
               counterText: '36/1000',
             ),
@@ -353,7 +353,7 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
                     Expanded(
                       child: FilledButton.icon(
                         icon: const Icon(Icons.send_outlined),
-                        label: Text(_isSending ? '发送中...' : '发送给 Codex'),
+                        label: Text(_isSending ? '发送中...' : '发送给 Agent'),
                         onPressed: _isSending ? null : _send,
                       ),
                     ),

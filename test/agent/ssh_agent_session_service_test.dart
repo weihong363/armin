@@ -116,6 +116,7 @@ void main() {
     expect(command, contains('send-keys -t'));
     expect(command, contains('Enter'));
     expect(command, contains('stable_count'));
+    expect(command, contains('stable_count" -ge 20'));
     expect(command, contains("'\"'\"'/usr/bin/tmux'\"'\"' capture-pane"));
     expect(command, contains('-S -200'));
     expect(command, isNot(contains('-S -2000')));
@@ -264,6 +265,7 @@ void main() {
     expect(command, contains('capture-pane'));
     expect(command, contains('sleep 1'));
     expect(command, contains('stable_count'));
+    expect(command, contains('stable_count" -ge 20'));
     expect(command, isNot(contains('initial_markers')));
     expect(command, isNot(contains('marker_count')));
     expect(command, contains('Armin could not capture tmux pane'));

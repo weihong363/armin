@@ -86,6 +86,7 @@ void main() {
 
     expect(agent.stopped, isTrue);
     expect(agent.cleanedUp, isTrue);
+    expect(agent.events, containsAllInOrder(['captureLog', 'stop', 'cleanup']));
     expect(store.task!.status, TaskStatus.stopped);
     expect(store.task!.completedAt, isNotNull);
     expect(store.task!.rawLog, contains('Final captured output'));
@@ -392,7 +393,7 @@ void main() {
   test('user marked completed cleans up tmux session', () async {
     final task = _task(status: TaskStatus.turnIdle);
     final store = _TaskStore(task);
-    final agent = _ControlAgent();
+    final agent = _ControlAgent()..capturedLog = 'final pane output';
     final state = ArminAppState(
       store: store,
       agentSessionService: agent,
@@ -405,6 +406,9 @@ void main() {
     expect(store.task!.status, TaskStatus.userCompleted);
     expect(store.task!.completedAt, isNotNull);
     expect(agent.cleanedUp, isTrue);
+    expect(agent.events, containsAllInOrder(['captureLog', 'cleanup']));
+    expect(store.task!.rawLog, contains('Final captured output'));
+    expect(store.task!.rawLog, contains('final pane output'));
     expect(
       store.task!.turns.single.status,
       NativeOutputTurnStatus.completedByUser,
@@ -415,7 +419,7 @@ void main() {
   test('user marked failed updates current turn', () async {
     final task = _task(status: TaskStatus.turnIdle);
     final store = _TaskStore(task);
-    final agent = _ControlAgent();
+    final agent = _ControlAgent()..capturedLog = 'final pane output';
     final state = ArminAppState(
       store: store,
       agentSessionService: agent,
@@ -428,6 +432,9 @@ void main() {
     expect(store.task!.status, TaskStatus.userFailed);
     expect(store.task!.completedAt, isNotNull);
     expect(agent.cleanedUp, isTrue);
+    expect(agent.events, containsAllInOrder(['captureLog', 'cleanup']));
+    expect(store.task!.rawLog, contains('Final captured output'));
+    expect(store.task!.rawLog, contains('final pane output'));
     expect(
       store.task!.turns.single.status,
       NativeOutputTurnStatus.failedByUser,
@@ -585,6 +592,7 @@ class _ControlAgent implements AgentSessionService {
   bool cleanedUp = false;
   String capturedLog = '';
   String? lastFollowUp;
+  final List<String> events = [];
   AgentControlRequest? lastResumeRequest;
   AgentExecutionRequest? lastExecuteRequest;
 
@@ -595,33 +603,39 @@ class _ControlAgent implements AgentSessionService {
 
   @override
   Future<void> pause(AgentControlRequest request) async {
+    events.add('pause');
     paused = true;
   }
 
   @override
   Future<void> resume(AgentControlRequest request) async {
+    events.add('resume');
     resumed = true;
     lastResumeRequest = request;
   }
 
   @override
   Future<void> sendFollowUp(AgentControlRequest request) async {
+    events.add('sendFollowUp');
     lastFollowUp = request.instruction;
   }
 
   @override
   Future<void> stop(AgentControlRequest request) async {
+    events.add('stop');
     stopped = true;
     await cleanup(request);
   }
 
   @override
   Future<void> cleanup(AgentControlRequest request) async {
+    events.add('cleanup');
     cleanedUp = true;
   }
 
   @override
   Future<String> captureLog(AgentControlRequest request) async {
+    events.add('captureLog');
     return capturedLog;
   }
 

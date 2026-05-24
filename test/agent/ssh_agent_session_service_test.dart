@@ -121,7 +121,7 @@ void main() {
     expect(command, isNot(contains('-S -2000')));
   });
 
-  test('connection test command checks tmux and codex availability', () {
+  test('connection test command checks tmux and agent availability', () {
     final service = SSHAgentSessionService();
 
     final command = service.buildConnectionTestCommandForTest(
@@ -145,8 +145,32 @@ void main() {
         command, contains("command -v '\"'\"'/opt/homebrew/bin/codex'\"'\"'"));
     expect(
         command, contains("'\"'\"'/opt/homebrew/bin/codex'\"'\"' --version"));
+    expect(command, contains('agent status: ok'));
+    expect(command, contains('agent status: missing'));
     expect(command, contains('npm prefix -g'));
     expect(command, contains('npm global bin: %s/bin'));
+  });
+
+  test('execution command starts qoder with workspace flag', () {
+    final service = SSHAgentSessionService();
+
+    final command = service.buildExecutionCommandForTest(
+      const AgentExecutionRequest(
+        prompt: 'prompt',
+        host: '127.0.0.1',
+        username: 'ironion',
+        projectPath: '/tmp/armin',
+        tmuxSessionName: 'armin-codex',
+        agentCommand: 'qodercli',
+        password: 'secret-password',
+      ),
+    );
+
+    expect(command, contains("'\"'\"'qodercli'\"'\"' -w "));
+    expect(command, isNot(contains("'\"'\"'qodercli'\"'\"' -C ")));
+    expect(command, contains('Armin Qoder exited with status'));
+    expect(command, contains('Armin timed out waiting for Qoder TUI'));
+    expect(command, isNot(contains('Update available!')));
   });
 
   test('connection test command expands home based agent command', () {
@@ -296,5 +320,27 @@ decision: approved
     expect(update, '只输出 pets 名字');
     expect(update, isNot(contains('RUNTIME_UPDATE:')));
     expect(update, isNot(contains('New instruction:')));
+  });
+
+  test('follow-up paste targets the active tmux pane and presses Enter', () {
+    final service = SSHAgentSessionService();
+
+    const request = AgentControlRequest(
+      host: '127.0.0.1',
+      port: 22,
+      username: 'ironion',
+      tmuxSessionName: 'armin-2800',
+      password: 'secret-password',
+      instruction: '输出 hello world',
+    );
+
+    final command = service.buildPasteTextCommandForTest(request);
+
+    expect(command, contains('display-message -p -t'));
+    expect(command, contains("'#{pane_id}'"));
+    expect(command, contains(r'send-keys -t "$pane" C-u'));
+    expect(command, contains(r'paste-buffer -d -t "$pane"'));
+    expect(command, contains(r'send-keys -t "$pane" Enter'));
+    expect(command, contains('输出 hello world'));
   });
 }

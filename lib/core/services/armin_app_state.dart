@@ -9,7 +9,9 @@ import '../../features/hosts/models/host_config.dart';
 import '../../features/projects/models/project_path_config.dart';
 import '../../features/tasks/models/execution_log.dart';
 import '../../features/tasks/models/metric_event.dart';
+import '../../features/tasks/models/native_output_turn.dart';
 import '../../features/tasks/models/task_session.dart';
+import '../../features/tasks/services/secret_redactor.dart';
 import '../../features/voice/services/device_voice_service.dart';
 import '../../features/voice/services/task_speech_policy.dart';
 import '../../features/voice/services/voice_service.dart';
@@ -41,6 +43,7 @@ class ArminAppState extends ChangeNotifier {
   final AgentSessionService agentSessionService;
   final VoiceService voiceService;
   final TaskSpeechPolicy _taskSpeechPolicy;
+  final SecretRedactor _secretRedactor = SecretRedactor();
   TaskSpeechSettings speechSettings;
 
   List<HostConfig> hosts = const [];
@@ -110,6 +113,16 @@ class ArminAppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<bool> speakTaskSummary(TaskSession task) async {
+    final latest = _latestTask(task.id) ?? task;
+    final text = _taskSpeechPolicy.buildSpeechText(latest);
+    if (text.trim().isEmpty) {
+      return false;
+    }
+    await voiceService.speakSummary(text);
+    return true;
+  }
+
   Future<void> deleteTask(String taskId) async {
     final task = _latestTask(taskId);
     if (task != null && !_canDeleteTask(task.status)) {
@@ -155,8 +168,13 @@ class ArminAppState extends ChangeNotifier {
       return;
     }
     final latest = _latestTask(task.id) ?? task;
-    await _saveControlledTask(
+    final taskWithNewTurn = _taskWithNewTurn(
       latest,
+      userInput: instruction.trim(),
+      now: DateTime.now(),
+    );
+    await _saveControlledTask(
+      taskWithNewTurn,
       status: TaskStatus.running,
       logMessage: 'User sent follow-up instruction.',
     );
@@ -206,6 +224,8 @@ class ArminAppState extends ChangeNotifier {
       status: TaskStatus.stopped,
       logMessage: 'Task stopped by user.',
       completed: true,
+      turnStatus: NativeOutputTurnStatus.stopped,
+      userDecision: 'stopped',
     );
   }
 
@@ -226,6 +246,8 @@ class ArminAppState extends ChangeNotifier {
       eventType: 'user_mark_completed',
       shortSummary:
           task.shortSummary.trim().isEmpty ? '用户已确认任务完成' : task.shortSummary,
+      turnStatus: NativeOutputTurnStatus.completedByUser,
+      userDecision: 'completed',
     );
     await _cleanupTaskSession(_latestTask(task.id) ?? task);
   }
@@ -239,6 +261,8 @@ class ArminAppState extends ChangeNotifier {
       eventType: 'user_mark_failed',
       shortSummary:
           task.shortSummary.trim().isEmpty ? '用户已标记任务失败' : task.shortSummary,
+      turnStatus: NativeOutputTurnStatus.failedByUser,
+      userDecision: 'failed',
     );
     await _cleanupTaskSession(_latestTask(task.id) ?? task);
   }
@@ -418,30 +442,42 @@ Apply this decision to the pending approval request.
     bool completed = false,
     String? shortSummary,
     String eventType = 'runtime_control',
+    NativeOutputTurnStatus? turnStatus,
+    String? userDecision,
   }) async {
     final now = DateTime.now();
     final logLine = '$logMessage\n';
+    final taskWithTurn = turnStatus == null
+        ? task
+        : _taskWithCurrentTurnDecision(
+            task,
+            status: turnStatus,
+            userDecision: userDecision,
+            now: now,
+          );
     await saveTask(
-      task.copyWith(
+      taskWithTurn.copyWith(
         status: status,
-        rawLog: '${task.rawLog}$logLine',
+        rawLog: '${taskWithTurn.rawLog}$logLine',
         updatedAt: now,
-        completedAt: completed ? now : task.completedAt,
+        completedAt: completed ? now : taskWithTurn.completedAt,
         shortSummary: shortSummary ??
-            (status == TaskStatus.stopped ? '用户已停止任务' : task.shortSummary),
+            (status == TaskStatus.stopped
+                ? '用户已停止任务'
+                : taskWithTurn.shortSummary),
         executionLogs: [
-          ...task.executionLogs,
+          ...taskWithTurn.executionLogs,
           ExecutionLog(
             id: 'log-${now.microsecondsSinceEpoch}',
-            taskId: task.id,
+            taskId: taskWithTurn.id,
             rawOutput: logLine,
             createdAt: now,
           ),
         ],
         metricEvents: [
-          ...task.metricEvents,
+          ...taskWithTurn.metricEvents,
           MetricEvent.create(
-            taskId: task.id,
+            taskId: taskWithTurn.id,
             eventType: eventType,
             payloadJson: '{"status":"${status.name}"}',
             now: now,
@@ -453,11 +489,17 @@ Apply this decision to the pending approval request.
 
   Future<TaskSession> _appendRawLog(TaskSession task, String rawOutput) async {
     final now = DateTime.now();
-    final updated = task.copyWith(
+    final taskWithTurn = _taskWithTurnOutput(
+      task,
+      rawOutput: rawOutput,
+      cleanedOutput: '',
+      now: now,
+    );
+    final updated = taskWithTurn.copyWith(
       rawLog: '${task.rawLog}$rawOutput',
       updatedAt: now,
       executionLogs: [
-        ...task.executionLogs,
+        ...taskWithTurn.executionLogs,
         ExecutionLog(
           id: 'log-${now.microsecondsSinceEpoch}',
           taskId: task.id,
@@ -494,19 +536,27 @@ Apply this decision to the pending approval request.
         createdAt: updateAt,
       ),
     ];
+    final taskWithTurn = _taskWithTurnOutput(
+      task,
+      rawOutput: update.rawOutput,
+      cleanedOutput: update.cleanedOutput ?? '',
+      now: updateAt,
+      status: _turnStatusForUpdate(update),
+      idleDetectedAt: update.turnIdle || update.done ? updateAt : null,
+    );
 
     if (update.approval != null) {
       final approval = update.approval!;
-      return task.copyWith(
+      return taskWithTurn.copyWith(
         status: TaskStatus.needApproval,
         rawLog: rawLog,
         approval: approval,
-        approvalRequests: [...task.approvalRequests, approval],
+        approvalRequests: [...taskWithTurn.approvalRequests, approval],
         executionLogs: executionLogs,
         updatedAt: updateAt,
         shortSummary: approval.reason,
         metricEvents: [
-          ...task.metricEvents,
+          ...taskWithTurn.metricEvents,
           MetricEvent.create(
             taskId: task.id,
             eventType: 'approval_requested',
@@ -520,7 +570,7 @@ Apply this decision to the pending approval request.
     if (update.result != null) {
       final completedAt = DateTime.now();
       final resultStatus = update.result!.status;
-      return task.copyWith(
+      return taskWithTurn.copyWith(
         status: resultStatus == 'success'
             ? TaskStatus.completed
             : TaskStatus.failed,
@@ -532,7 +582,7 @@ Apply this decision to the pending approval request.
         summary: update.result!.summary,
         executionLogs: executionLogs,
         metricEvents: [
-          ...task.metricEvents,
+          ...taskWithTurn.metricEvents,
           MetricEvent.create(
             taskId: task.id,
             eventType: 'task_completed',
@@ -547,7 +597,7 @@ Apply this decision to the pending approval request.
     if (update.runtimeLost) {
       final failedAt = DateTime.now();
       final runtimeLostSummary = _runtimeLostSummary(update.cleanedOutput);
-      return task.copyWith(
+      return taskWithTurn.copyWith(
         status: TaskStatus.runtimeLost,
         rawLog: rawLog,
         updatedAt: failedAt,
@@ -556,7 +606,7 @@ Apply this decision to the pending approval request.
         summary: update.cleanedOutput,
         executionLogs: executionLogs,
         metricEvents: [
-          ...task.metricEvents,
+          ...taskWithTurn.metricEvents,
           MetricEvent.create(
             taskId: task.id,
             eventType: 'runtime_lost',
@@ -571,7 +621,7 @@ Apply this decision to the pending approval request.
     if (update.turnIdle || update.done) {
       final idleAt = DateTime.now();
       final summary = update.cleanedOutput?.trim() ?? '';
-      return task.copyWith(
+      return taskWithTurn.copyWith(
         status: update.needsAttention
             ? TaskStatus.needAttention
             : TaskStatus.turnIdle,
@@ -593,7 +643,7 @@ Apply this decision to the pending approval request.
         summary: summary.isEmpty ? task.summary : summary,
         executionLogs: executionLogs,
         metricEvents: [
-          ...task.metricEvents,
+          ...taskWithTurn.metricEvents,
           MetricEvent.create(
             taskId: task.id,
             eventType: update.needsAttention ? 'need_attention' : 'turn_idle',
@@ -605,12 +655,12 @@ Apply this decision to the pending approval request.
       );
     }
 
-    return task.copyWith(
+    return taskWithTurn.copyWith(
       rawLog: rawLog,
       executionLogs: executionLogs,
       updatedAt: updateAt,
       metricEvents: [
-        ...task.metricEvents,
+        ...taskWithTurn.metricEvents,
         MetricEvent.create(
           taskId: task.id,
           eventType: 'log_update',
@@ -619,6 +669,127 @@ Apply this decision to the pending approval request.
         ),
       ],
     );
+  }
+
+  TaskSession _taskWithNewTurn(
+    TaskSession task, {
+    required String userInput,
+    required DateTime now,
+  }) {
+    final baseTask = task.turns.isEmpty
+        ? _taskWithInitialTurn(
+            task,
+            userInput: task.userText.isEmpty ? task.title : task.userText,
+            now: task.startedAt ?? task.createdAt,
+          )
+        : task;
+    final turnIndex = baseTask.turns.last.turnIndex + 1;
+    final redactedInput = _secretRedactor.redactInlineSecrets(userInput);
+    final nextTurn = NativeOutputTurn(
+      id: 'turn-${baseTask.id}-$turnIndex',
+      taskId: baseTask.id,
+      turnIndex: turnIndex,
+      userInput: redactedInput,
+      rawOutput: '',
+      cleanedOutput: '',
+      startedAt: now,
+      lastOutputAt: now,
+      status: NativeOutputTurnStatus.running,
+    );
+    return baseTask.copyWith(turns: [...baseTask.turns, nextTurn]);
+  }
+
+  TaskSession _taskWithInitialTurn(
+    TaskSession task, {
+    required String userInput,
+    required DateTime now,
+  }) {
+    if (task.turns.isNotEmpty) {
+      return task;
+    }
+    final redactedInput = _secretRedactor.redactInlineSecrets(userInput);
+    return task.copyWith(
+      turns: [
+        NativeOutputTurn(
+          id: 'turn-${task.id}-1',
+          taskId: task.id,
+          turnIndex: 1,
+          userInput: redactedInput,
+          rawOutput: '',
+          cleanedOutput: '',
+          startedAt: now,
+          lastOutputAt: now,
+          status: NativeOutputTurnStatus.running,
+        ),
+      ],
+    );
+  }
+
+  TaskSession _taskWithTurnOutput(
+    TaskSession task, {
+    required String rawOutput,
+    required String cleanedOutput,
+    required DateTime now,
+    NativeOutputTurnStatus? status,
+    DateTime? idleDetectedAt,
+  }) {
+    final turns = task.turns.isEmpty
+        ? _taskWithInitialTurn(
+            task,
+            userInput: task.userText.isEmpty ? task.title : task.userText,
+            now: task.startedAt ?? task.createdAt,
+          ).turns
+        : task.turns;
+    final updatedTurns = [...turns];
+    final current = updatedTurns.last;
+    updatedTurns[updatedTurns.length - 1] = current.copyWith(
+      rawOutput: '${current.rawOutput}$rawOutput',
+      cleanedOutput:
+          cleanedOutput.trim().isEmpty ? current.cleanedOutput : cleanedOutput,
+      lastOutputAt: now,
+      idleDetectedAt: idleDetectedAt,
+      status: status ?? current.status,
+    );
+    return task.copyWith(turns: updatedTurns);
+  }
+
+  TaskSession _taskWithCurrentTurnDecision(
+    TaskSession task, {
+    required NativeOutputTurnStatus status,
+    required DateTime now,
+    String? userDecision,
+  }) {
+    final taskWithTurn = task.turns.isEmpty
+        ? _taskWithInitialTurn(
+            task,
+            userInput: task.userText.isEmpty ? task.title : task.userText,
+            now: task.startedAt ?? task.createdAt,
+          )
+        : task;
+    final turns = [...taskWithTurn.turns];
+    final current = turns.last;
+    turns[turns.length - 1] = current.copyWith(
+      status: status,
+      lastOutputAt: now,
+      userDecision: userDecision,
+    );
+    return taskWithTurn.copyWith(turns: turns);
+  }
+
+  NativeOutputTurnStatus? _turnStatusForUpdate(AgentExecutionUpdate update) {
+    if (update.runtimeLost) {
+      return NativeOutputTurnStatus.runtimeLost;
+    }
+    if (update.approval != null || update.needsAttention) {
+      return NativeOutputTurnStatus.needAttention;
+    }
+    if (update.turnIdle || update.done || update.result != null) {
+      if (update.result?.status == 'failed') {
+        return NativeOutputTurnStatus.failed;
+      }
+      return NativeOutputTurnStatus.turnIdle;
+    }
+    return null;
   }
 
   String _runtimeLostSummary(String? cleanedOutput) {
@@ -634,15 +805,21 @@ Apply this decision to the pending approval request.
       TaskSession task, Object error) async {
     final failedAt = DateTime.now();
     final message = 'SSH 执行失败：${error.toString()}';
-    final failedTask = task.copyWith(
+    final taskWithFailedTurn = _taskWithCurrentTurnDecision(
+      task,
+      status: NativeOutputTurnStatus.failed,
+      userDecision: 'failed',
+      now: failedAt,
+    );
+    final failedTask = taskWithFailedTurn.copyWith(
       status: TaskStatus.failed,
-      rawLog: '${task.rawLog}$message\n',
+      rawLog: '${taskWithFailedTurn.rawLog}$message\n',
       updatedAt: failedAt,
       completedAt: failedAt,
       shortSummary: message,
       summary: message,
       executionLogs: [
-        ...task.executionLogs,
+        ...taskWithFailedTurn.executionLogs,
         ExecutionLog(
           id: 'log-${failedAt.microsecondsSinceEpoch}',
           taskId: task.id,
@@ -651,7 +828,7 @@ Apply this decision to the pending approval request.
         ),
       ],
       metricEvents: [
-        ...task.metricEvents,
+        ...taskWithFailedTurn.metricEvents,
         MetricEvent.create(
           taskId: task.id,
           eventType: 'task_failed',

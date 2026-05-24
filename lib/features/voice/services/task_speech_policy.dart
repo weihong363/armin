@@ -79,9 +79,14 @@ class TaskSpeechPolicy {
     return TaskSpeechDecision(
       shouldSpeak: true,
       text: speechText,
-      hash: '${current.status.name}:${_normalize(speechText)}',
+      hash:
+          '${current.status.name}:${_latestTurnIndex(current)}:${_normalize(speechText)}',
       kind: kind,
     );
+  }
+
+  String buildSpeechText(TaskSession task) {
+    return _speechTextFor(task);
   }
 
   String _speechTextFor(TaskSession task) {
@@ -158,5 +163,9 @@ class TaskSpeechPolicy {
 
   String _normalize(String text) {
     return text.replaceAll(RegExp(r'\s+'), ' ').trim().toLowerCase();
+  }
+
+  int _latestTurnIndex(TaskSession task) {
+    return task.turns.isEmpty ? 0 : task.turns.last.turnIndex;
   }
 }

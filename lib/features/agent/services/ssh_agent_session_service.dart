@@ -5,6 +5,7 @@ import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter/foundation.dart';
 
 import '../../hosts/models/host_config.dart';
+import '../../tasks/services/agent_instruction_discovery.dart';
 import '../parsers/approval_parser.dart';
 import '../parsers/task_result_parser.dart';
 import 'agent_session_service.dart';
@@ -44,7 +45,7 @@ class SSHAgentSessionService implements AgentSessionService {
     try {
       final output = await client.run(_buildConnectionTestCommand(request));
       final testOutput = utf8.decode(output, allowMalformed: true).trim();
-      final success = !testOutput.contains('codex status: missing') &&
+      final success = !testOutput.contains('agent status: missing') &&
           !testOutput.contains('tmux status: missing');
 
       return AgentConnectionTestResult(
@@ -62,16 +63,48 @@ class SSHAgentSessionService implements AgentSessionService {
               'Please install tmux: sudo apt install tmux (Ubuntu) or brew install tmux (macOS)',
         );
       }
-      if (errorMsg.contains('codex') || errorMsg.contains('agent command')) {
+      if (errorMsg.contains('agent command')) {
         return AgentConnectionTestResult(
           success: false,
-          message: 'SSH connected and tmux is available, but Codex command '
+          message: 'SSH connected and tmux is available, but agent command '
               'is not available: ${request.agentCommand}.\n'
-              'Set Agent command to the absolute codex path or add its '
+              'Set Agent command to the absolute CLI path or add its '
               'directory to PATH prepend.',
         );
       }
       rethrow;
+    } finally {
+      client.close();
+      await client.done;
+    }
+  }
+
+  @override
+  Future<AgentInstructionDiscoveryResult> discoverAgentInstructions(
+    AgentInstructionDiscoveryRequest request,
+  ) async {
+    _validateInstructionDiscoveryRequest(request);
+    const discovery = AgentInstructionDiscovery();
+    final script = '''
+set -eu
+cd ${_pathToken(request.projectPath)}
+${discovery.buildFindCommand()} 2>/dev/null || true
+''';
+    final client = await _connect(
+      host: request.host,
+      port: request.port,
+      username: request.username,
+      password: request.password,
+    );
+    try {
+      final output = await client.run(
+        _wrapRemoteCommand(
+          script,
+          pathPrepend: request.pathPrepend,
+          shellWrapper: request.shellWrapper,
+        ),
+      );
+      return discovery.parse(utf8.decode(output, allowMalformed: true));
     } finally {
       client.close();
       await client.done;
@@ -313,15 +346,7 @@ class SSHAgentSessionService implements AgentSessionService {
   }
 
   Future<void> _pasteText(AgentControlRequest request, String text) async {
-    final tmux = _tmuxCommand(request.tmuxCommand);
-    final session = _shellQuote(request.tmuxSessionName);
-    final clearHistory = text.trimLeft().startsWith('APPROVAL_DECISION:')
-        ? '; $tmux clear-history -t $session'
-        : '';
-    final command = 'printf %s ${_shellQuote(text)} | $tmux load-buffer -; '
-        '$tmux paste-buffer -t $session; '
-        '$tmux send-keys -t $session C-m'
-        '$clearHistory';
+    final command = _buildPasteTextCommand(request, text);
     await _runControlCommand(
         request,
         _wrapRemoteCommand(
@@ -329,6 +354,22 @@ class SSHAgentSessionService implements AgentSessionService {
           pathPrepend: request.pathPrepend,
           shellWrapper: request.shellWrapper,
         ));
+  }
+
+  String _buildPasteTextCommand(AgentControlRequest request, String text) {
+    final tmux = _tmuxCommand(request.tmuxCommand);
+    final session = _shellQuote(request.tmuxSessionName);
+    final clearHistory = text.trimLeft().startsWith('APPROVAL_DECISION:')
+        ? '\n$tmux clear-history -t "\$pane"'
+        : '';
+    return '''
+$tmux has-session -t $session
+pane="\$($tmux display-message -p -t $session '#{pane_id}')"
+$tmux send-keys -t "\$pane" C-u
+printf %s ${_shellQuote(text)} | $tmux load-buffer -
+$tmux paste-buffer -d -t "\$pane"
+$tmux send-keys -t "\$pane" Enter$clearHistory
+''';
   }
 
   Future<void> _sendRawKeys(AgentControlRequest request, String key) async {
@@ -383,10 +424,11 @@ class SSHAgentSessionService implements AgentSessionService {
     final tmux = _tmuxCommand(request.tmuxCommand);
     final session = _shellQuote(request.tmuxSessionName);
     final projectPath = _pathToken(request.projectPath);
+    final profile = _agentRuntimeProfile(request.agentCommand);
     final agentLaunchCommand = _interactiveAgentLaunchCommand(request);
     final longRunningAgentCommand = _shellQuote(
       '$agentLaunchCommand; code=\$?; echo; '
-      'echo "Armin Codex exited with status \$code."; sleep 3600',
+      'echo "Armin ${profile.label} exited with status \$code."; sleep 3600',
     );
     final prompt = _shellQuote(request.prompt);
     final delayMs = _pollInterval.inMilliseconds;
@@ -409,16 +451,9 @@ i=0
 update_prompt_skipped=0
 while [ "\$i" -lt 20 ]; do
   ready_output="\$($tmux capture-pane -p -t $session -S -80 2>/dev/null || true)"
-  if printf "%s" "\$ready_output" | grep -q "OpenAI Codex\\|directory:"; then
-    break
-  fi
-  if [ "\$update_prompt_skipped" -eq 0 ] && printf "%s" "\$ready_output" | grep -q "Update available!"; then
-    $tmux send-keys -t $session 2 Enter
-    update_prompt_skipped=1
-    sleep 1
-    continue
-  fi
-  if printf "%s" "\$ready_output" | grep -q "Armin Codex exited with status"; then
+${_buildReadyCheck(profile)}
+${_buildUpdatePromptSkip(profile, tmux, session)}
+  if printf "%s" "\$ready_output" | grep -q "Armin ${profile.label} exited with status"; then
     printf "%s\\n" "\$ready_output"
     exit 1
   fi
@@ -427,7 +462,7 @@ while [ "\$i" -lt 20 ]; do
 done
 if [ "\$i" -ge 20 ]; then
   printf "%s\\n" "\$ready_output"
-  echo "Armin timed out waiting for Codex TUI to become ready."
+  echo "Armin timed out waiting for ${profile.label} TUI to become ready."
   exit 1
 fi
 printf %s $prompt | $tmux load-buffer -
@@ -461,11 +496,11 @@ while [ "\$i" -lt $_maxPolls ]; do
     stable_count=0
     last_hash="\$current_hash"
   fi
-  codex_exited=0
-  if printf "%s" "\$pane_output" | grep -q "Armin Codex exited with status"; then
-    codex_exited=1
+  agent_exited=0
+  if printf "%s" "\$pane_output" | grep -q "Armin ${profile.label} exited with status"; then
+    agent_exited=1
   fi
-  if [ "\$codex_exited" -eq 1 ]; then
+  if [ "\$agent_exited" -eq 1 ]; then
     printf "%s\\n" "\$pane_output"
     break
   fi
@@ -507,12 +542,12 @@ agent_path="\$(command -v $agentCommand 2>/dev/null)"
 agent_status=\$?
 if [ "\$agent_status" -eq 0 ]; then
   agent_version="\$($agentCommand --version 2>&1)"
-  printf "codex status: ok\\n"
-  printf "codex path: %s\\n" "\$agent_path"
-  printf "codex version: %s\\n" "\$agent_version"
+  printf "agent status: ok\\n"
+  printf "agent path: %s\\n" "\$agent_path"
+  printf "agent version: %s\\n" "\$agent_version"
 else
-  printf "codex status: missing\\n"
-  printf "codex command: %s\\n" ${_shellQuote(request.agentCommand)}
+  printf "agent status: missing\\n"
+  printf "agent command: %s\\n" ${_shellQuote(request.agentCommand)}
 fi
 npm_path="\$(command -v npm 2>/dev/null)"
 if [ -n "\$npm_path" ]; then
@@ -559,6 +594,18 @@ fi
     }
   }
 
+  void _validateInstructionDiscoveryRequest(
+    AgentInstructionDiscoveryRequest request,
+  ) {
+    if (request.host.trim().isEmpty ||
+        request.username.trim().isEmpty ||
+        request.password.trim().isEmpty ||
+        request.projectPath.trim().isEmpty) {
+      throw ArgumentError(
+          'AGENTS.md discovery request is missing required fields.');
+    }
+  }
+
   void _validateControlRequest(AgentControlRequest request) {
     if (request.host.trim().isEmpty ||
         request.username.trim().isEmpty ||
@@ -582,6 +629,11 @@ fi
   @visibleForTesting
   String buildFollowUpTextForTest(AgentControlRequest request) {
     return _buildFollowUpText(request);
+  }
+
+  @visibleForTesting
+  String buildPasteTextCommandForTest(AgentControlRequest request) {
+    return _buildPasteTextCommand(request, _buildFollowUpText(request));
   }
 
   @visibleForTesting
@@ -628,7 +680,53 @@ fi
   }
 
   String _interactiveAgentLaunchCommand(AgentExecutionRequest request) {
-    return '${_agentLaunchCommand(request)} -C ${_pathToken(request.projectPath)}';
+    final profile = _agentRuntimeProfile(request.agentCommand);
+    return '${_agentLaunchCommand(request)} ${profile.workspaceFlag} '
+        '${_pathToken(request.projectPath)}';
+  }
+
+  _AgentRuntimeProfile _agentRuntimeProfile(String agentCommand) {
+    final basename = agentCommand.trim().toLowerCase().split('/').last;
+    if (basename == 'qoder' || basename == 'qodercli') {
+      return const _AgentRuntimeProfile(
+        label: 'Qoder',
+        workspaceFlag: '-w',
+        readyPattern: r'Qoder|qoder|/help|/status|workspace|>',
+        skipCodexUpdatePrompt: false,
+      );
+    }
+    return const _AgentRuntimeProfile(
+      label: 'Codex',
+      workspaceFlag: '-C',
+      readyPattern: r'OpenAI Codex|directory:',
+      skipCodexUpdatePrompt: true,
+    );
+  }
+
+  String _buildReadyCheck(_AgentRuntimeProfile profile) {
+    return '''
+  if printf "%s" "\$ready_output" | grep -E -q ${_shellQuote(profile.readyPattern)}; then
+    break
+  fi
+''';
+  }
+
+  String _buildUpdatePromptSkip(
+    _AgentRuntimeProfile profile,
+    String tmux,
+    String session,
+  ) {
+    if (!profile.skipCodexUpdatePrompt) {
+      return '';
+    }
+    return '''
+  if [ "\$update_prompt_skipped" -eq 0 ] && printf "%s" "\$ready_output" | grep -q "Update available!"; then
+    $tmux send-keys -t $session 2 Enter
+    update_prompt_skipped=1
+    sleep 1
+    continue
+  fi
+''';
   }
 
   String _commandToken(String value) {
@@ -670,4 +768,18 @@ class SSHAuthPlan {
 
   final List<SSHKeyPair>? identities;
   final String Function()? onPasswordRequest;
+}
+
+class _AgentRuntimeProfile {
+  const _AgentRuntimeProfile({
+    required this.label,
+    required this.workspaceFlag,
+    required this.readyPattern,
+    required this.skipCodexUpdatePrompt,
+  });
+
+  final String label;
+  final String workspaceFlag;
+  final String readyPattern;
+  final bool skipCodexUpdatePrompt;
 }

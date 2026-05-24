@@ -6,9 +6,10 @@ import '../../agent/services/agent_session_service.dart';
 import '../models/host_config.dart';
 
 class HostFormScreen extends StatefulWidget {
-  const HostFormScreen({this.host, super.key});
+  const HostFormScreen({this.host, this.duplicate = false, super.key});
 
   final HostConfig? host;
+  final bool duplicate;
 
   @override
   State<HostFormScreen> createState() => _HostFormScreenState();
@@ -35,7 +36,11 @@ class _HostFormScreenState extends State<HostFormScreen> {
   void initState() {
     super.initState();
     final host = widget.host;
-    _nameController = TextEditingController(text: host?.name ?? '');
+    _nameController = TextEditingController(
+      text: widget.duplicate && host != null
+          ? '${host.name} Copy'
+          : host?.name ?? '',
+    );
     _ipControllers = _ipSegments(host?.address ?? '')
         .map((segment) => TextEditingController(text: segment))
         .toList(growable: false);
@@ -44,7 +49,9 @@ class _HostFormScreenState extends State<HostFormScreen> {
     _usernameController = TextEditingController(text: host?.username ?? '');
     _passwordController = TextEditingController(text: host?.password ?? '');
     _tmuxController = TextEditingController(
-      text: host?.tmuxSessionName ?? 'armin-codex',
+      text: widget.duplicate && host != null
+          ? '${host.tmuxSessionName}-copy'
+          : host?.tmuxSessionName ?? 'armin-codex',
     );
     _tmuxCommandController = TextEditingController(
       text: host?.tmuxCommand ?? 'tmux',
@@ -58,7 +65,7 @@ class _HostFormScreenState extends State<HostFormScreen> {
     _shellWrapper = host?.shellWrapper ?? ShellWrapper.none;
     _machineType = host?.machineType ?? HostMachineType.generic;
     // If editing existing host, use its isDefault; if creating new, default to true
-    _setAsDefault = host?.isDefault ?? true;
+    _setAsDefault = widget.duplicate ? false : host?.isDefault ?? true;
   }
 
   @override
@@ -85,12 +92,14 @@ class _HostFormScreenState extends State<HostFormScreen> {
     final state = AppStateScope.of(context);
     final hostCount = state.hosts.length;
     // If only one host (or creating the first), it's automatically default and cannot be changed
-    final isSingleHost = hostCount <= 1;
+    final isSingleHost = !widget.duplicate && hostCount <= 1;
     final canToggleDefault = !isSingleHost;
 
     return Scaffold(
-      appBar:
-          AppBar(title: Text(widget.host == null ? 'Add Host' : 'Edit Host')),
+      appBar: AppBar(
+          title: Text(widget.duplicate || widget.host == null
+              ? 'Add Host'
+              : 'Edit Host')),
       body: Form(
         key: _formKey,
         child: ListView(
@@ -346,7 +355,7 @@ class _HostFormScreenState extends State<HostFormScreen> {
     final shouldBeDefault = isSingleHost ? true : _setAsDefault;
 
     final now = DateTime.now();
-    final existing = widget.host;
+    final existing = widget.duplicate ? null : widget.host;
     final host = HostConfig(
       id: existing?.id ?? 'host-${now.microsecondsSinceEpoch}',
       name: _nameController.text.trim(),

@@ -21,6 +21,13 @@ class MockAgentSessionService implements AgentSessionService {
   }
 
   @override
+  Future<AgentInstructionDiscoveryResult> discoverAgentInstructions(
+    AgentInstructionDiscoveryRequest request,
+  ) async {
+    return const AgentInstructionDiscoveryResult(paths: []);
+  }
+
+  @override
   Stream<AgentExecutionUpdate> execute(AgentExecutionRequest request) async* {
     yield const AgentExecutionUpdate(rawOutput: 'Mock agent accepted task.\n');
     await Future<void>.delayed(const Duration(seconds: 1));

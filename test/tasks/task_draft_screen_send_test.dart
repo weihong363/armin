@@ -73,6 +73,91 @@ void main() {
     expect(store.savedTasks.last.host.projectPath, '/tmp/armin-task');
   });
 
+  testWidgets('send uses selected host on first task execution',
+      (tester) async {
+    final store = _TaskStore(
+      hosts: [
+        _host(password: 'first-password'),
+        _host(
+          id: 'host-2',
+          name: 'Qoder',
+          host: '127.0.0.2',
+          password: 'second-password',
+          agentCommand: 'qodercli',
+        ),
+      ],
+    );
+    final agent = _CaptureAgentSessionService();
+    await _pumpScreen(tester, store: store, agent: agent);
+
+    await tester.tap(find.byKey(const ValueKey('host-selector')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.textContaining('Qoder ·').last);
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.byType(TextField).first, '执行真实任务');
+    await tester.tap(find.text('发送给 Codex'));
+    await tester.pumpAndSettle();
+
+    expect(agent.lastRequest?.hostId, 'host-2');
+    expect(agent.lastRequest?.host, '127.0.0.2');
+    expect(agent.lastRequest?.password, 'second-password');
+    expect(agent.lastRequest?.agentCommand, 'qodercli');
+    expect(store.savedTasks.last.host.id, 'host-2');
+  });
+
+  testWidgets('send creates first native output turn', (tester) async {
+    final store = _TaskStore(hosts: [_host(password: 'secret-password')]);
+    final agent = _CaptureAgentSessionService();
+    await _pumpScreen(tester, store: store, agent: agent);
+
+    await tester.enterText(find.byType(TextField).first, '输出 hello');
+    await tester.tap(find.text('发送给 Codex'));
+    await tester.pumpAndSettle();
+
+    expect(store.savedTasks.first.turns, hasLength(1));
+    expect(store.savedTasks.first.turns.single.turnIndex, 1);
+    expect(store.savedTasks.first.turns.single.userInput, '输出 hello');
+  });
+
+  testWidgets('AGENTS.md discovery failure does not block sending',
+      (tester) async {
+    final store = _TaskStore(hosts: [_host(password: 'secret-password')]);
+    final agent = _CaptureAgentSessionService(
+      discoveryError: StateError('discovery failed'),
+    );
+    await _pumpScreen(tester, store: store, agent: agent);
+    await tester.pumpAndSettle();
+
+    expect(
+      find.textContaining('AGENTS.md detection failed'),
+      findsOneWidget,
+    );
+
+    await tester.enterText(find.byType(TextField).first, '执行真实任务');
+    await tester.tap(find.text('发送给 Codex'));
+    await tester.pumpAndSettle();
+
+    expect(agent.lastDiscoveryRequest?.projectPath, '/tmp/armin-task');
+    expect(agent.lastRequest, isNotNull);
+  });
+
+  testWidgets('AGENTS.md discovery shows detected message', (tester) async {
+    final store = _TaskStore(hosts: [_host(password: 'secret-password')]);
+    final agent = _CaptureAgentSessionService(
+      discoveryResult: const AgentInstructionDiscoveryResult(
+        paths: ['./AGENTS.md'],
+      ),
+    );
+    await _pumpScreen(tester, store: store, agent: agent);
+    await tester.pumpAndSettle();
+
+    expect(
+      find.textContaining('AGENTS.md detected. Codex may follow'),
+      findsOneWidget,
+    );
+  });
+
   testWidgets('send normalizes home based project path', (tester) async {
     final store = _TaskStore(
       hosts: [_host(password: 'secret-password')],
@@ -165,18 +250,24 @@ Future<void> _pumpScreen(
   await tester.pump();
 }
 
-HostConfig _host({required String password}) {
+HostConfig _host({
+  String id = 'host-1',
+  String name = 'Dev',
+  String host = '127.0.0.1',
+  required String password,
+  String agentCommand = 'codex',
+}) {
   final now = DateTime(2026, 5, 17);
   return HostConfig(
-    id: 'host-1',
-    name: 'Dev',
-    host: '127.0.0.1',
+    id: id,
+    name: name,
+    host: host,
     port: 22,
     username: 'ironion',
     authType: HostAuthType.password,
     projectPath: '',
     tmuxSessionName: 'armin-codex',
-    agentCommand: 'codex',
+    agentCommand: agentCommand,
     createdAt: now,
     updatedAt: now,
     password: password,
@@ -263,18 +354,34 @@ class _CaptureAgentSessionService implements AgentSessionService {
     this.error,
     this.doneWithoutResult = false,
     this.waitBeforeResult,
+    this.discoveryResult = const AgentInstructionDiscoveryResult(paths: []),
+    this.discoveryError,
   });
 
   final Object? error;
   final bool doneWithoutResult;
   final Completer<void>? waitBeforeResult;
+  final AgentInstructionDiscoveryResult discoveryResult;
+  final Object? discoveryError;
   AgentExecutionRequest? lastRequest;
+  AgentInstructionDiscoveryRequest? lastDiscoveryRequest;
 
   @override
   Future<AgentConnectionTestResult> testConnection(
     AgentConnectionTestRequest request,
   ) async {
     return const AgentConnectionTestResult(success: true, message: 'ok');
+  }
+
+  @override
+  Future<AgentInstructionDiscoveryResult> discoverAgentInstructions(
+    AgentInstructionDiscoveryRequest request,
+  ) async {
+    lastDiscoveryRequest = request;
+    if (discoveryError != null) {
+      throw discoveryError!;
+    }
+    return discoveryResult;
   }
 
   @override

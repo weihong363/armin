@@ -26,6 +26,24 @@ void main() {
     expect(
         find.textContaining('SSH password ready for this run'), findsOneWidget);
   });
+
+  testWidgets('host list can duplicate host config', (tester) async {
+    await _pumpHostList(tester, host: _host(password: 'secret-password'));
+
+    await tester.tap(find.byTooltip('Host actions'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('复制配置'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Add Host'), findsOneWidget);
+    expect(find.widgetWithText(TextFormField, 'Dev Copy'), findsOneWidget);
+    expect(
+      find.widgetWithText(TextFormField, 'armin-codex-copy'),
+      findsOneWidget,
+    );
+    expect(
+        find.widgetWithText(TextFormField, 'secret-password'), findsOneWidget);
+  });
 }
 
 Future<void> _pumpHostList(

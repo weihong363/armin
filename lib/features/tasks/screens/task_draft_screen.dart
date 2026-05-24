@@ -4,11 +4,13 @@ import '../../../app_state_scope.dart';
 import '../../../core/models/task_status.dart';
 import '../../../shared/theme/armin_theme.dart';
 import '../../agent/services/agent_session_service.dart';
+import '../../hosts/models/host_config.dart';
 import '../../history/screens/task_detail_screen.dart';
 import '../../projects/models/project_path_config.dart';
 import '../../projects/screens/project_path_list_screen.dart';
 import '../../voice/services/voice_service.dart';
 import '../models/metric_event.dart';
+import '../models/native_output_turn.dart';
 import '../models/prompt_record.dart';
 import '../models/secret_entry.dart';
 import '../models/task_constraint.dart';
@@ -17,6 +19,7 @@ import '../models/task_session.dart';
 import '../models/voice_input.dart';
 import '../services/constraint_extractor.dart';
 import '../services/prompt_template_builder.dart';
+import '../services/secret_redactor.dart';
 import '../services/speech_draft_cleaner.dart';
 
 enum _VoiceInteractionStatus {
@@ -48,6 +51,7 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
   final _cleaner = SpeechDraftCleaner();
   final _extractor = ConstraintExtractor();
   final _promptBuilder = PromptTemplateBuilder();
+  final _secretRedactor = SecretRedactor();
   final List<SecretEntry> _secrets = [];
   final Set<TaskConstraint> _constraints = {
     TaskConstraint.minimalChange,
@@ -61,7 +65,13 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
   String _promptPreview = '';
   _VoiceInteractionStatus _voiceStatus = _VoiceInteractionStatus.idle;
   bool _isSending = false;
+  bool _isDiscoveringAgentInstructions = false;
+  String? _selectedHostId;
   String? _selectedProjectPathId;
+  String _agentInstructionMessage =
+      'No AGENTS.md detected. Armin will use lightweight built-in prompt governance.';
+  String _agentInstructionWarning = '';
+  String? _agentInstructionProjectPathId;
 
   @override
   void initState() {
@@ -72,6 +82,7 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
       _cleanedDraft = initialText;
       _promptPreview = _buildPrompt();
     }
+    _selectedHostId = widget.selectedHostId;
   }
 
   @override
@@ -87,7 +98,9 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
   @override
   Widget build(BuildContext context) {
     final state = AppStateScope.of(context);
+    final selectedHost = _selectedHost(state.hosts);
     final selectedProjectPath = _selectedProjectPath(state.projectPaths);
+    _scheduleAgentInstructionDiscovery(selectedProjectPath, selectedHost);
     return Scaffold(
       appBar: AppBar(
         title: const Text('新建任务'),
@@ -137,6 +150,36 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
             onChanged: (_) => _refreshPreview(),
           ),
           const SizedBox(height: 12),
+          DropdownButtonFormField<String>(
+            key: const ValueKey('host-selector'),
+            initialValue: selectedHost?.id,
+            decoration: const InputDecoration(
+              labelText: 'Host',
+            ),
+            items: [
+              for (final host in state.hosts)
+                DropdownMenuItem(
+                  value: host.id,
+                  child: Text(
+                    '${host.name} · ${host.username}@${host.address}:${host.port}',
+                  ),
+                ),
+            ],
+            onChanged: (value) {
+              setState(() {
+                _selectedHostId = value;
+                _agentInstructionProjectPathId = null;
+              });
+            },
+          ),
+          if (state.hosts.isEmpty) ...[
+            const SizedBox(height: 8),
+            Text(
+              '请先添加 SSH Host，然后在这里选择执行主机。',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ],
+          const SizedBox(height: 12),
           Row(
             children: [
               Expanded(
@@ -155,7 +198,10 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
                       ),
                   ],
                   onChanged: (value) {
-                    setState(() => _selectedProjectPathId = value);
+                    setState(() {
+                      _selectedProjectPathId = value;
+                      _agentInstructionProjectPathId = null;
+                    });
                     _refreshPreview();
                   },
                 ),
@@ -181,6 +227,13 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
               style: Theme.of(context).textTheme.bodySmall,
             ),
           ],
+          const SizedBox(height: 8),
+          _AgentInstructionNotice(
+            message: _isDiscoveringAgentInstructions
+                ? 'Checking AGENTS.md...'
+                : _agentInstructionMessage,
+            warning: _agentInstructionWarning,
+          ),
           const SizedBox(height: 12),
           Wrap(
             spacing: 8,
@@ -547,7 +600,7 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
     }
 
     setState(() => _isSending = true);
-    final host = state.defaultHost;
+    final host = _selectedHost(state.hosts);
     if (host == null) {
       setState(() => _isSending = false);
       ScaffoldMessenger.of(context).showSnackBar(
@@ -618,6 +671,19 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
         templateVersion: PromptTemplateBuilder.templateVersion,
         createdAt: now,
       ),
+      turns: [
+        NativeOutputTurn(
+          id: 'turn-$taskId-1',
+          taskId: taskId,
+          turnIndex: 1,
+          userInput: _secretRedactor.redactInlineSecrets(taskText),
+          rawOutput: '',
+          cleanedOutput: '',
+          startedAt: now,
+          lastOutputAt: now,
+          status: NativeOutputTurnStatus.running,
+        ),
+      ],
       metricEvents: [
         MetricEvent.create(
           taskId: taskId,
@@ -663,6 +729,78 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
     );
   }
 
+  void _scheduleAgentInstructionDiscovery(
+    ProjectPathConfig? project,
+    HostConfig? host,
+  ) {
+    if (project == null ||
+        host == null ||
+        project.id == _agentInstructionProjectPathId ||
+        _isDiscoveringAgentInstructions) {
+      return;
+    }
+    Future.microtask(() => _refreshAgentInstructionDiscovery(project, host));
+  }
+
+  Future<void> _refreshAgentInstructionDiscovery(
+    ProjectPathConfig project,
+    HostConfig host,
+  ) async {
+    final state = AppStateScope.of(context);
+    setState(() {
+      _isDiscoveringAgentInstructions = true;
+      _agentInstructionProjectPathId = project.id;
+      _agentInstructionWarning = '';
+    });
+
+    if (host.password.trim().isEmpty) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _isDiscoveringAgentInstructions = false;
+        _agentInstructionMessage =
+            'No AGENTS.md detected. Armin will use lightweight built-in prompt governance.';
+        _agentInstructionWarning =
+            'AGENTS.md detection will run after Host password is configured.';
+      });
+      return;
+    }
+
+    try {
+      final result = await state.agentSessionService.discoverAgentInstructions(
+        AgentInstructionDiscoveryRequest(
+          host: host.host,
+          port: host.port,
+          username: host.username,
+          password: host.password,
+          projectPath: normalizeRemoteProjectPath(project.path),
+          pathPrepend: host.pathPrepend,
+          shellWrapper: host.shellWrapper,
+        ),
+      );
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _isDiscoveringAgentInstructions = false;
+        _agentInstructionMessage = result.uiMessage;
+        _agentInstructionWarning = '';
+      });
+    } catch (_) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _isDiscoveringAgentInstructions = false;
+        _agentInstructionMessage =
+            'No AGENTS.md detected. Armin will use lightweight built-in prompt governance.';
+        _agentInstructionWarning =
+            'AGENTS.md detection failed. Built-in prompt governance is still enabled.';
+      });
+    }
+  }
+
   ProjectPathConfig? _selectedProjectPath(List<ProjectPathConfig> items) {
     if (items.isEmpty) {
       return null;
@@ -678,6 +816,23 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
     final defaultPath = AppStateScope.of(context).defaultProjectPath;
     _selectedProjectPathId = defaultPath?.id ?? items.first.id;
     return defaultPath ?? items.first;
+  }
+
+  HostConfig? _selectedHost(List<HostConfig> items) {
+    if (items.isEmpty) {
+      return null;
+    }
+    final selectedId = _selectedHostId;
+    if (selectedId != null) {
+      for (final item in items) {
+        if (item.id == selectedId) {
+          return item;
+        }
+      }
+    }
+    final defaultHost = AppStateScope.of(context).defaultHost;
+    _selectedHostId = defaultHost?.id ?? items.first.id;
+    return defaultHost ?? items.first;
   }
 
   String _taskTmuxSessionName(String _, String taskId) {
@@ -708,6 +863,41 @@ class _VoiceDock extends StatefulWidget {
 
   @override
   State<_VoiceDock> createState() => _VoiceDockState();
+}
+
+class _AgentInstructionNotice extends StatelessWidget {
+  const _AgentInstructionNotice({
+    required this.message,
+    required this.warning,
+  });
+
+  final String message;
+  final String warning;
+
+  @override
+  Widget build(BuildContext context) {
+    final hasWarning = warning.trim().isNotEmpty;
+    final color = hasWarning ? Colors.orange.shade800 : ArminTheme.primary;
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(
+          hasWarning ? Icons.info_outline : Icons.check_circle_outline,
+          size: 18,
+          color: color,
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            hasWarning ? '$message\n$warning' : message,
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: ArminTheme.ink.withValues(alpha: 0.72),
+                ),
+          ),
+        ),
+      ],
+    );
+  }
 }
 
 class _VoiceDockState extends State<_VoiceDock>

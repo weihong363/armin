@@ -47,6 +47,8 @@ class CodexOutputCleaner {
         lower.startsWith('gpt-') ||
         lower.startsWith('tip:') ||
         lower.startsWith('use /skills ') ||
+        lower.startsWith('armin context governance:') ||
+        _isGovernanceRule(lower) ||
         lower.startsWith('update available!') ||
         lower.startsWith('release notes:') ||
         lower.startsWith('press enter to continue') ||
@@ -59,11 +61,25 @@ class CodexOutputCleaner {
         lower.contains(' to view transcript') ||
         lower.contains('npm install -g @openai/codex') ||
         lower.contains('github.com/openai/codex/releases') ||
+        lower.contains('chatgpt.com/codex?app-landing-page=true') ||
         lower.startsWith('skipped loading') ||
         lower.startsWith('warning') ||
         lower.contains('invalid skill.md') ||
         lower.contains('invalid yaml') ||
+        lower.contains('mapping values are not allowed in this context') ||
+        lower.startsWith('are not allowed in this context') ||
+        lower == 'find and fix a bug in @filename' ||
         RegExp(r'^\d+\.\s').hasMatch(lower);
+  }
+
+  bool _isGovernanceRule(String lower) {
+    return lower == 'only inspect files directly related to the task.' ||
+        lower == 'never scan the entire repository.' ||
+        lower == 'avoid reading docs/ and readme unless necessary.' ||
+        lower == 'keep edits minimal and focused.' ||
+        lower == 'do not analyze unrelated architecture.' ||
+        lower == 'run only targeted tests.' ||
+        lower == 'keep command output short.';
   }
 
   List<String> _squashEmptyLines(List<String> lines) {

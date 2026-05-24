@@ -1,7 +1,13 @@
 import 'package:flutter/material.dart';
 
 import '../../../app_state_scope.dart';
+import '../models/host_config.dart';
 import 'host_form_screen.dart';
+
+enum _HostListAction {
+  edit,
+  duplicate,
+}
 
 class HostListScreen extends StatelessWidget {
   const HostListScreen({super.key});
@@ -102,13 +108,29 @@ class HostListScreen extends StatelessWidget {
                     '${host.tmuxSessionName}\n'
                     '${_passwordStatusText(host.password)}'),
                 isThreeLine: true,
-                trailing: const Icon(Icons.chevron_right),
-                onTap: () {
-                  Navigator.of(context).push(
-                    MaterialPageRoute<void>(
-                      builder: (_) => HostFormScreen(host: host),
+                trailing: PopupMenuButton<_HostListAction>(
+                  tooltip: 'Host actions',
+                  onSelected: (action) {
+                    switch (action) {
+                      case _HostListAction.edit:
+                        _openHostForm(context, host);
+                      case _HostListAction.duplicate:
+                        _openHostForm(context, host, duplicate: true);
+                    }
+                  },
+                  itemBuilder: (context) => const [
+                    PopupMenuItem(
+                      value: _HostListAction.edit,
+                      child: Text('编辑配置'),
                     ),
-                  );
+                    PopupMenuItem(
+                      value: _HostListAction.duplicate,
+                      child: Text('复制配置'),
+                    ),
+                  ],
+                ),
+                onTap: () {
+                  _openHostForm(context, host);
                 },
               ),
             ),
@@ -134,5 +156,17 @@ class HostListScreen extends StatelessWidget {
       return 'SSH password not set for this run';
     }
     return 'SSH password ready for this run';
+  }
+
+  void _openHostForm(
+    BuildContext context,
+    HostConfig host, {
+    bool duplicate = false,
+  }) {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => HostFormScreen(host: host, duplicate: duplicate),
+      ),
+    );
   }
 }

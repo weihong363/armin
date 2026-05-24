@@ -214,6 +214,13 @@ class _ConnectionTestAgent implements AgentSessionService {
   }
 
   @override
+  Future<AgentInstructionDiscoveryResult> discoverAgentInstructions(
+    AgentInstructionDiscoveryRequest request,
+  ) async {
+    return const AgentInstructionDiscoveryResult(paths: []);
+  }
+
+  @override
   Stream<AgentExecutionUpdate> execute(AgentExecutionRequest request) async* {}
 
   @override

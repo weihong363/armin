@@ -1,7 +1,11 @@
 import '../../hosts/models/host_config.dart';
+import '../../tasks/services/agent_instruction_discovery.dart';
 import '../parsers/approval_request.dart';
 import '../parsers/task_result.dart';
 import 'native_output_observer.dart';
+
+export '../../tasks/services/agent_instruction_discovery.dart'
+    show AgentInstructionDiscoveryResult;
 
 class AgentExecutionRequest {
   const AgentExecutionRequest({
@@ -123,11 +127,35 @@ class AgentConnectionTestResult {
   final String message;
 }
 
+class AgentInstructionDiscoveryRequest {
+  const AgentInstructionDiscoveryRequest({
+    required this.host,
+    required this.port,
+    required this.username,
+    required this.password,
+    required this.projectPath,
+    this.pathPrepend = '',
+    this.shellWrapper = ShellWrapper.none,
+  });
+
+  final String host;
+  final int port;
+  final String username;
+  final String password;
+  final String projectPath;
+  final String pathPrepend;
+  final ShellWrapper shellWrapper;
+}
+
 abstract class AgentSessionService {
   Stream<AgentExecutionUpdate> execute(AgentExecutionRequest request);
 
   Future<AgentConnectionTestResult> testConnection(
     AgentConnectionTestRequest request,
+  );
+
+  Future<AgentInstructionDiscoveryResult> discoverAgentInstructions(
+    AgentInstructionDiscoveryRequest request,
   );
 
   Future<void> sendFollowUp(AgentControlRequest request);

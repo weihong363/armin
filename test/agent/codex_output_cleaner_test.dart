@@ -19,4 +19,27 @@ void main() {
     expect(cleaned, isNot(contains('Use /skills')));
     expect(cleaned, isNot(contains('\x1B')));
   });
+
+  test('removes Armin governance and invalid skill noise', () {
+    const raw = '''
+Armin context governance:
+- Only inspect files directly related to the task.
+- Never scan the entire repository.
+https://chatgpt.com/codex?app-landing-page=true
+mapping values are not allowed in this context at line 2 column 152
+Find and fix a bug in @filename
+输出 hello
+hello
+''';
+
+    final cleaned = const CodexOutputCleaner().clean(raw);
+
+    expect(cleaned, isNot(contains('Armin context governance')));
+    expect(cleaned, isNot(contains('Never scan')));
+    expect(cleaned, isNot(contains('chatgpt.com')));
+    expect(cleaned, isNot(contains('mapping values')));
+    expect(cleaned, isNot(contains('@filename')));
+    expect(cleaned, contains('输出 hello'));
+    expect(cleaned, contains('hello'));
+  });
 }

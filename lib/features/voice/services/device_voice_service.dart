@@ -112,6 +112,7 @@ class DeviceVoiceService implements VoiceService {
       await _flutterTts.setSpeechRate(styledProfile.speechRate);
       await _flutterTts.setPitch(styledProfile.pitch);
       await _flutterTts.speak(segment.text);
+      await Future<void>.delayed(_pauseAfter(segment.text));
     }
   }
 
@@ -135,12 +136,7 @@ class DeviceVoiceService implements VoiceService {
         .split(RegExp(r'(?<=[。！？.!?])\s+|\n+'))
         .map((part) => part.trim())
         .where((part) => part.isNotEmpty)
-        .map(
-          (part) => SpeechSummarySegment(
-            text: part,
-            languageCode: _isEnglishDominant(part) ? 'en-US' : 'zh-CN',
-          ),
-        )
+        .expand(_splitMixedLanguageSegment)
         .toList(growable: false);
   }
 
@@ -160,14 +156,14 @@ class DeviceVoiceService implements VoiceService {
         .map(_cleanSpeechLine)
         .where((line) => line.isNotEmpty)
         .toList();
-    return _joinSpeechLines(lines);
+    return _compactForSpeech(_joinSpeechLines(lines));
   }
 
   @visibleForTesting
   static SpeechVoiceProfile speechProfileForTest(String languageCode) {
     return languageCode == 'en-US'
-        ? const SpeechVoiceProfile(speechRate: 0.58, pitch: 1.04)
-        : const SpeechVoiceProfile(speechRate: 0.65, pitch: 1.06);
+        ? const SpeechVoiceProfile(speechRate: 0.67, pitch: 1.05)
+        : const SpeechVoiceProfile(speechRate: 0.72, pitch: 1.07);
   }
 
   @visibleForTesting
@@ -180,8 +176,13 @@ class DeviceVoiceService implements VoiceService {
 
   static String _cleanSpeechLine(String line) {
     return line
+        .replaceAll(
+          RegExp(r".*you['’]ve hit your usage limit.*", caseSensitive: false),
+          '额度已用完，请稍后重试。',
+        )
         .replaceFirst(RegExp(r'^[•*-]\s+'), '')
         .replaceAll(RegExp(r'https?://\S+'), '')
+        .replaceAll(RegExp(r'\s+'), ' ')
         .trim();
   }
 
@@ -206,7 +207,13 @@ class DeviceVoiceService implements VoiceService {
 
   static bool _isSpeechNoiseLine(String line) {
     final lower = line.toLowerCase();
+    final normalized = lower.replaceFirst(RegExp(r'^[•*-]\s+'), '').trim();
+    if (normalized.contains('usage limit')) {
+      return false;
+    }
     return lower.startsWith('```') ||
+        normalized.startsWith('armin context governance:') ||
+        _isSpeechGovernanceRule(normalized) ||
         lower.startsWith('import ') ||
         lower.startsWith('class ') ||
         lower.startsWith('final ') ||
@@ -220,11 +227,36 @@ class DeviceVoiceService implements VoiceService {
         lower.startsWith('git ') ||
         lower.startsWith('ssh ') ||
         lower.startsWith('tmux ') ||
+        lower.startsWith('use /') ||
         lower == 'explored' ||
         lower.startsWith('search ') ||
         lower.startsWith('list ') ||
         lower.startsWith('ran ') ||
+        lower.startsWith('read ') ||
+        lower.startsWith('edited ') ||
+        lower.startsWith('opened ') ||
+        lower.startsWith('checked ') ||
+        lower.startsWith('grep ') ||
+        lower.startsWith('rg ') ||
+        lower.startsWith('cat ') ||
+        lower.startsWith('sed ') ||
+        lower.startsWith('jq ') ||
+        lower.startsWith('find ') ||
+        lower.startsWith('apply_patch') ||
+        lower.startsWith('changed files') ||
+        lower.startsWith('validation') ||
+        lower.startsWith('risks') ||
+        lower.startsWith('next actions') ||
+        lower.startsWith('summary:') ||
+        lower.startsWith('status:') ||
+        lower.startsWith('command:') ||
+        lower.startsWith('reason:') ||
         lower.contains(' to view transcript') ||
+        lower.contains('context left') ||
+        lower.contains('mapping values are not allowed') ||
+        lower.contains('invalid yaml') ||
+        lower.contains('invalid skill.md') ||
+        lower.contains('skipped loading') ||
         lower.startsWith('path:') ||
         lower.startsWith('file:') ||
         lower.contains('://') ||
@@ -236,6 +268,16 @@ class DeviceVoiceService implements VoiceService {
         _looksLikeCode(line);
   }
 
+  static bool _isSpeechGovernanceRule(String lower) {
+    return lower == 'only inspect files directly related to the task.' ||
+        lower == 'never scan the entire repository.' ||
+        lower == 'avoid reading docs/ and readme unless necessary.' ||
+        lower == 'keep edits minimal and focused.' ||
+        lower == 'do not analyze unrelated architecture.' ||
+        lower == 'run only targeted tests.' ||
+        lower == 'keep command output short.';
+  }
+
   static bool _looksLikeCode(String line) {
     final symbols = RegExp(r'[{};=<>]').allMatches(line).length;
     if (symbols >= 2) {
@@ -245,10 +287,100 @@ class DeviceVoiceService implements VoiceService {
         !RegExp(r'[\u4e00-\u9fff]').hasMatch(line);
   }
 
-  static bool _isEnglishDominant(String text) {
-    final letters = RegExp(r'[A-Za-z]').allMatches(text).length;
-    final chinese = RegExp(r'[\u4e00-\u9fff]').allMatches(text).length;
-    return letters > 0 && letters >= chinese * 2;
+  static List<SpeechSummarySegment> _splitMixedLanguageSegment(String text) {
+    if (!RegExp(r'[\u4e00-\u9fff]').hasMatch(text)) {
+      return [
+        SpeechSummarySegment(
+            text: _normalizeEnglishForSpeech(text), languageCode: 'en-US'),
+      ];
+    }
+
+    final segments = <SpeechSummarySegment>[];
+    final pattern = RegExp(r'[A-Za-z][A-Za-z0-9_+\-./]*'
+        r'(?:\s+[A-Za-z][A-Za-z0-9_+\-./]*)*');
+    var index = 0;
+    for (final match in pattern.allMatches(text)) {
+      final before = text.substring(index, match.start).trim();
+      if (before.isNotEmpty) {
+        segments.add(SpeechSummarySegment(text: before, languageCode: 'zh-CN'));
+      }
+      final english = _normalizeEnglishForSpeech(match.group(0)!);
+      if (english.isNotEmpty && !_looksLikeCode(english)) {
+        segments
+            .add(SpeechSummarySegment(text: english, languageCode: 'en-US'));
+      }
+      index = match.end;
+    }
+    final tail = text.substring(index).trim();
+    if (tail.isNotEmpty) {
+      segments.add(SpeechSummarySegment(text: tail, languageCode: 'zh-CN'));
+    }
+    return _mergeAdjacentSpeechSegments(segments);
+  }
+
+  static List<SpeechSummarySegment> _mergeAdjacentSpeechSegments(
+    List<SpeechSummarySegment> segments,
+  ) {
+    final merged = <SpeechSummarySegment>[];
+    for (final segment in segments) {
+      if (merged.isNotEmpty &&
+          merged.last.languageCode == segment.languageCode) {
+        final previous = merged.removeLast();
+        merged.add(
+          SpeechSummarySegment(
+            text: '${previous.text} ${segment.text}'.trim(),
+            languageCode: segment.languageCode,
+          ),
+        );
+      } else {
+        merged.add(segment);
+      }
+    }
+    return merged;
+  }
+
+  static String _normalizeEnglishForSpeech(String text) {
+    return text
+        .replaceAll('_', ' ')
+        .replaceAll(RegExp(r'[/\\]+'), ' ')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+  }
+
+  static String _compactForSpeech(String text) {
+    final trimmed = text.trim();
+    if (trimmed.length <= 90) {
+      return trimmed;
+    }
+    final sentences = trimmed
+        .split(RegExp(r'(?<=[。！？.!?])\s*'))
+        .map((sentence) => sentence.trim())
+        .where((sentence) => sentence.isNotEmpty)
+        .toList();
+    final buffer = StringBuffer();
+    for (final sentence in sentences) {
+      final candidate =
+          buffer.isEmpty ? sentence : '${buffer.toString()} $sentence';
+      if (candidate.length > 90) {
+        break;
+      }
+      buffer
+        ..clear()
+        ..write(candidate);
+      if (buffer.length >= 70) {
+        break;
+      }
+    }
+    final compacted =
+        buffer.isEmpty ? trimmed.substring(0, 90) : buffer.toString();
+    return '$compacted。结果较长，已保存在详情页。';
+  }
+
+  static Duration _pauseAfter(String text) {
+    if (RegExp(r'[。！？.!?]$').hasMatch(text.trim())) {
+      return const Duration(milliseconds: 180);
+    }
+    return const Duration(milliseconds: 70);
   }
 
   static String _joinSpeechLines(List<String> lines) {

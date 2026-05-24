@@ -2,6 +2,7 @@ import 'package:armin/core/models/task_status.dart';
 import 'package:armin/features/agent/parsers/approval_request.dart';
 import 'package:armin/features/agent/parsers/task_result.dart';
 import 'package:armin/features/hosts/models/host_config.dart';
+import 'package:armin/features/tasks/models/native_output_turn.dart';
 import 'package:armin/features/tasks/models/task_session.dart';
 import 'package:armin/features/voice/services/task_speech_policy.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -124,6 +125,31 @@ flutter test
       isFalse,
     );
   });
+
+  test('same text in a new turn gets a new speech hash', () {
+    final previous = _task(status: TaskStatus.turnIdle).copyWith(
+      summary: 'hello',
+      turns: [_turn(1)],
+    );
+    final current = previous.copyWith(
+      summary: 'hello',
+      turns: [_turn(1), _turn(2)],
+    );
+
+    final first = policy.decide(
+      previous: _task(status: TaskStatus.running),
+      current: previous,
+      settings: settings,
+    );
+    final second = policy.decide(
+      previous: previous,
+      current: current,
+      settings: settings,
+    );
+
+    expect(first.text, second.text);
+    expect(first.hash, isNot(second.hash));
+  });
 }
 
 TaskSession _task({required TaskStatus status}) {
@@ -157,5 +183,20 @@ TaskSession _task({required TaskStatus status}) {
     finalPrompt: 'Task',
     secretRecords: const [],
     rawLog: '',
+  );
+}
+
+NativeOutputTurn _turn(int index) {
+  final now = DateTime(2026, 5, 24, 10, index);
+  return NativeOutputTurn(
+    id: 'turn-task-1-$index',
+    taskId: 'task-1',
+    turnIndex: index,
+    userInput: 'input $index',
+    rawOutput: 'hello',
+    cleanedOutput: 'hello',
+    startedAt: now,
+    lastOutputAt: now,
+    status: NativeOutputTurnStatus.turnIdle,
   );
 }

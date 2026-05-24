@@ -8,6 +8,7 @@ import 'package:armin/features/agent/parsers/task_result.dart';
 import 'package:armin/features/agent/services/agent_session_service.dart';
 import 'package:armin/features/hosts/models/host_config.dart';
 import 'package:armin/features/projects/models/project_path_config.dart';
+import 'package:armin/features/tasks/models/native_output_turn.dart';
 import 'package:armin/features/tasks/models/task_session.dart';
 import 'package:armin/features/voice/services/voice_service.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -90,6 +91,8 @@ void main() {
     expect(store.task!.rawLog, contains('Final captured output'));
     expect(store.task!.rawLog, contains('latest pane output'));
     expect(store.task!.rawLog, contains('Task stopped by user.'));
+    expect(store.task!.turns.single.status, NativeOutputTurnStatus.stopped);
+    expect(store.task!.turns.single.userDecision, 'stopped');
   });
 
   test('updateTaskStatus can mark hung task failed', () async {
@@ -243,6 +246,9 @@ void main() {
     expect(agent.lastFollowUp, isNot(contains('RUNTIME_UPDATE:')));
     expect(store.task!.status, TaskStatus.running);
     expect(agent.lastExecuteRequest?.attachOnly, isTrue);
+    expect(store.task!.turns, hasLength(2));
+    expect(store.task!.turns.last.turnIndex, 2);
+    expect(store.task!.turns.last.userInput, '只输出 pets 名字');
   });
 
   test('completed execution cleans up tmux session after result is saved',
@@ -311,6 +317,8 @@ void main() {
     expect(store.task!.status, TaskStatus.turnIdle);
     expect(store.task!.completedAt, isNull);
     expect(agent.cleanedUp, isFalse);
+    expect(store.task!.turns.single.status, NativeOutputTurnStatus.turnIdle);
+    expect(store.task!.turns.single.rawOutput, contains('hello'));
   });
 
   test('turn idle output is spoken once for repeated same summary', () async {
@@ -397,6 +405,34 @@ void main() {
     expect(store.task!.status, TaskStatus.userCompleted);
     expect(store.task!.completedAt, isNotNull);
     expect(agent.cleanedUp, isTrue);
+    expect(
+      store.task!.turns.single.status,
+      NativeOutputTurnStatus.completedByUser,
+    );
+    expect(store.task!.turns.single.userDecision, 'completed');
+  });
+
+  test('user marked failed updates current turn', () async {
+    final task = _task(status: TaskStatus.turnIdle);
+    final store = _TaskStore(task);
+    final agent = _ControlAgent();
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: agent,
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await state.markTaskFailed(task);
+
+    expect(store.task!.status, TaskStatus.userFailed);
+    expect(store.task!.completedAt, isNotNull);
+    expect(agent.cleanedUp, isTrue);
+    expect(
+      store.task!.turns.single.status,
+      NativeOutputTurnStatus.failedByUser,
+    );
+    expect(store.task!.turns.single.userDecision, 'failed');
   });
 
   test('missing tmux session surfaces ended session summary', () async {
@@ -441,6 +477,7 @@ void main() {
     expect(store.task!.status, TaskStatus.failed);
     expect(store.task!.rawLog, contains('ssh failed'));
     expect(agent.cleanedUp, isTrue);
+    expect(store.task!.turns.single.status, NativeOutputTurnStatus.failed);
   });
 
   test('failed execution speaks failure summary', () async {
@@ -593,6 +630,13 @@ class _ControlAgent implements AgentSessionService {
     AgentConnectionTestRequest request,
   ) async {
     return const AgentConnectionTestResult(success: true, message: 'ok');
+  }
+
+  @override
+  Future<AgentInstructionDiscoveryResult> discoverAgentInstructions(
+    AgentInstructionDiscoveryRequest request,
+  ) async {
+    return const AgentInstructionDiscoveryResult(paths: []);
   }
 }
 

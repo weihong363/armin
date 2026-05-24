@@ -9,6 +9,8 @@ void main() {
 
     expect(prompt, contains('Only inspect files directly related'));
     expect(prompt, contains('Never scan the entire repository'));
+    expect(prompt, isNot(contains('TASK_RESULT_START')));
+    expect(prompt, isNot(contains('NEED_APPROVAL_START')));
     expect(prompt, endsWith('输出 hello'));
     expect(lines.length, lessThanOrEqualTo(20));
   });
@@ -28,6 +30,10 @@ void main() {
     );
 
     expect(result.detected, isTrue);
-    expect(result.uiMessage, contains('./AGENTS.md'));
+    expect(
+      result.uiMessage,
+      'AGENTS.md detected. Codex may follow repository-specific '
+      'optimization rules.',
+    );
   });
 }

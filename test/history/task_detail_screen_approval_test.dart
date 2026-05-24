@@ -80,6 +80,72 @@ void main() {
     expect(find.text('断开监听'), findsOneWidget);
     expect(find.text('断开连接'), findsNothing);
   });
+
+  testWidgets('voice follow-up sends recognized instruction', (tester) async {
+    final task = _task().copyWith(status: TaskStatus.turnIdle);
+    final agent = _CapturingAgent();
+    final state = ArminAppState(
+      store: _TaskStore(task),
+      agentSessionService: agent,
+      voiceService: _RecognizingVoiceService('输出 hello world'),
+    );
+    await state.load();
+
+    await tester.pumpWidget(
+      AppStateScope(
+        state: state,
+        child: const MaterialApp(
+          home: TaskDetailScreen(taskId: 'task-1'),
+        ),
+      ),
+    );
+    await tester.tap(find.text('追加指令'));
+    await tester.pumpAndSettle();
+
+    final button = find.text('语音追加');
+    final gesture = await tester.startGesture(tester.getCenter(button));
+    await tester.pumpAndSettle();
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('发送'));
+    await tester.pumpAndSettle();
+
+    expect(agent.lastFollowUp, '输出 hello world');
+  });
+
+  testWidgets('manual read result speaks cleaned task summary', (tester) async {
+    final task = _task().copyWith(
+      status: TaskStatus.turnIdle,
+      summary: 'hello world',
+    );
+    final voice = _RecognizingVoiceService('');
+    final state = ArminAppState(
+      store: _TaskStore(task),
+      agentSessionService: const _NoopAgent(),
+      voiceService: voice,
+    );
+    await state.load();
+
+    await tester.pumpWidget(
+      AppStateScope(
+        state: state,
+        child: const MaterialApp(
+          home: TaskDetailScreen(taskId: 'task-1'),
+        ),
+      ),
+    );
+    await tester.tap(find.text('结果'));
+    await tester.pumpAndSettle();
+
+    final speakButton = find.byIcon(Icons.volume_up_outlined).last;
+    await tester.ensureVisible(speakButton);
+    await tester.pumpAndSettle();
+    await tester.tap(speakButton);
+    await tester.pumpAndSettle();
+
+    expect(voice.spokenSummaries.single, contains('hello world'));
+  });
 }
 
 TaskSession _task() {
@@ -175,6 +241,22 @@ class _NoopAgent implements AgentSessionService {
   ) async {
     return const AgentConnectionTestResult(success: true, message: 'ok');
   }
+
+  @override
+  Future<AgentInstructionDiscoveryResult> discoverAgentInstructions(
+    AgentInstructionDiscoveryRequest request,
+  ) async {
+    return const AgentInstructionDiscoveryResult(paths: []);
+  }
+}
+
+class _CapturingAgent extends _NoopAgent {
+  String? lastFollowUp;
+
+  @override
+  Future<void> sendFollowUp(AgentControlRequest request) async {
+    lastFollowUp = request.instruction;
+  }
 }
 
 class _SilentVoiceService implements VoiceService {
@@ -196,4 +278,34 @@ class _SilentVoiceService implements VoiceService {
 
   @override
   Future<String> stopListening() async => '';
+}
+
+class _RecognizingVoiceService implements VoiceService {
+  _RecognizingVoiceService(this.text);
+
+  final String text;
+  final List<String> spokenSummaries = [];
+  String _latest = '';
+
+  @override
+  bool get isAvailable => true;
+
+  @override
+  Future<String> listenOnce() async => text;
+
+  @override
+  Future<void> speakSummary(String summary) async {
+    spokenSummaries.add(summary);
+  }
+
+  @override
+  Future<void> startListening({
+    void Function(String partial)? onPartial,
+  }) async {
+    _latest = text;
+    onPartial?.call(text);
+  }
+
+  @override
+  Future<String> stopListening() async => _latest;
 }

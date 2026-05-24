@@ -20,17 +20,25 @@ class AgentInstructionDiscovery {
 }
 
 class AgentInstructionDiscoveryResult {
-  const AgentInstructionDiscoveryResult({required this.paths});
+  const AgentInstructionDiscoveryResult({
+    required this.paths,
+    this.warning = '',
+  });
 
   final List<String> paths;
+  final String warning;
 
   bool get detected => paths.isNotEmpty;
 
   String get uiMessage {
-    if (paths.isEmpty) {
-      return 'This project does not contain AGENTS.md. Armin will use '
-          'lightweight built-in prompt governance.';
+    if (warning.trim().isNotEmpty) {
+      return warning;
     }
-    return 'AGENTS.md detected: ${paths.join(', ')}';
+    if (paths.isEmpty) {
+      return 'No AGENTS.md detected. Armin will use lightweight built-in '
+          'prompt governance.';
+    }
+    return 'AGENTS.md detected. Codex may follow repository-specific '
+        'optimization rules.';
   }
 }

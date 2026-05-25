@@ -1,20 +1,14 @@
-import '../../features/agent/parsers/task_result.dart';
 import '../../features/hosts/models/host_config.dart';
-import '../../features/tasks/models/metric_event.dart';
-import '../../features/tasks/models/secret_entry.dart';
-import '../../features/tasks/models/task_constraint.dart';
+import '../../features/projects/models/project_path_config.dart';
 import '../../features/tasks/models/task_session.dart';
-import '../models/task_status.dart';
 import 'task_history_store.dart';
 
 class InMemoryTaskHistoryStore implements TaskHistoryStore {
-  InMemoryTaskHistoryStore() {
-    _hosts.add(HostConfig.mock());
-    _tasks.add(_mockTask(_hosts.first));
-  }
+  InMemoryTaskHistoryStore();
 
   final List<HostConfig> _hosts = [];
   final List<TaskSession> _tasks = [];
+  final List<ProjectPathConfig> _projectPaths = [];
 
   @override
   Future<List<HostConfig>> loadHosts() async => List.unmodifiable(_hosts);
@@ -42,62 +36,28 @@ class InMemoryTaskHistoryStore implements TaskHistoryStore {
     _tasks.insert(0, task);
   }
 
-  TaskSession _mockTask(HostConfig host) {
-    final now = DateTime.now();
-    return TaskSession(
-      id: 'task-mock-1',
-      host: host,
-      title: 'Inspect login failure',
-      status: TaskStatus.completed,
-      createdAt: now.subtract(const Duration(minutes: 18)),
-      updatedAt: now.subtract(const Duration(minutes: 15)),
-      rawSttText: '嗯 帮我先看看登录为什么失败，先别大改，跑一下测试，别提交',
-      cleanedDraft: '帮我先看看登录为什么失败，先别大改，跑一下测试，别提交',
-      userText: '帮我先看看登录为什么失败，先别大改，跑一下测试，别提交',
-      context: 'Android first MVP mock item.',
-      constraints: const {
-        TaskConstraint.analyzeOnly,
-        TaskConstraint.minimalChange,
-        TaskConstraint.runTestsAfterChanges,
-        TaskConstraint.noGitCommit,
-      },
-      finalPrompt: 'Mock prompt archived for Phase 1.',
-      secretRecords: const [
-        SecretRedactedRecord(
-          name: 'GITHUB_TOKEN',
-          usage: 'Only if GitHub API is needed',
-          placeholder: 'GITHUB_TOKEN: [REDACTED]',
-          oneTimeOnly: true,
-        ),
-      ],
-      rawLog:
-          'Mock agent accepted task.\nTASK_RESULT_START\n...\nTASK_RESULT_END',
-      shortSummary: 'Mock login failure investigation completed.',
-      startedAt: now.subtract(const Duration(minutes: 18)),
-      completedAt: now.subtract(const Duration(minutes: 15)),
-      summary: 'Mock login failure investigation completed.',
-      metricEvents: [
-        MetricEvent.create(
-          taskId: 'task-mock-1',
-          eventType: 'task_created',
-          payloadJson: '{"source":"mock"}',
-          now: now.subtract(const Duration(minutes: 18)),
-        ),
-        MetricEvent.create(
-          taskId: 'task-mock-1',
-          eventType: 'task_completed',
-          payloadJson: '{"result_status":"success"}',
-          now: now.subtract(const Duration(minutes: 15)),
-        ),
-      ],
-      result: const TaskResult(
-        status: 'success',
-        summary: 'Mock login failure investigation completed.',
-        changedFiles: ['lib/features/tasks/screens/task_draft_screen.dart'],
-        validation: ['Mock validation passed.'],
-        risks: ['SSH is not wired in Phase 1.'],
-        nextActions: ['Implement SSHAgentSessionService in Phase 2.'],
-      ),
-    );
+  @override
+  Future<void> deleteTask(String taskId) async {
+    _tasks.removeWhere((task) => task.id == taskId);
+  }
+
+  @override
+  Future<List<ProjectPathConfig>> loadProjectPaths() async {
+    return List.unmodifiable(_projectPaths);
+  }
+
+  @override
+  Future<void> saveProjectPath(ProjectPathConfig projectPath) async {
+    final index = _projectPaths.indexWhere((item) => item.id == projectPath.id);
+    if (index >= 0) {
+      _projectPaths[index] = projectPath;
+      return;
+    }
+    _projectPaths.add(projectPath);
+  }
+
+  @override
+  Future<void> deleteProjectPath(String projectPathId) async {
+    _projectPaths.removeWhere((item) => item.id == projectPathId);
   }
 }

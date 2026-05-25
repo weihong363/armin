@@ -4,6 +4,7 @@ import '../../agent/parsers/task_result.dart';
 import '../../hosts/models/host_config.dart';
 import 'execution_log.dart';
 import 'metric_event.dart';
+import 'native_output_turn.dart';
 import 'prompt_record.dart';
 import 'secret_entry.dart';
 import 'subtask.dart';
@@ -42,6 +43,7 @@ class TaskSession {
     this.approvalRequests = const [],
     this.metricEvents = const [],
     this.subtasks = const [],
+    this.turns = const [],
   });
 
   final String id;
@@ -73,19 +75,19 @@ class TaskSession {
   final List<ApprovalRequest> approvalRequests;
   final List<MetricEvent> metricEvents;
   final List<Subtask> subtasks;
+  final List<NativeOutputTurn> turns;
 
   factory TaskSession.fromJson(Map<String, Object?> json) {
     final hostJson = json['host'];
+    if (hostJson is! Map<String, Object?>) {
+      throw const FormatException(
+          'TaskSession JSON must include a valid host object.');
+    }
     return TaskSession(
       id: json['id'] as String? ?? '',
-      host: hostJson is Map<String, Object?>
-          ? HostConfig.fromJson(hostJson)
-          : HostConfig.mock(),
+      host: HostConfig.fromJson(hostJson),
       title: json['title'] as String? ?? '',
-      status: TaskStatus.values.firstWhere(
-        (status) => status.name == json['status'],
-        orElse: () => TaskStatus.pending,
-      ),
+      status: _statusFromJson(json['status']),
       createdAt: _date(json['createdAt']),
       updatedAt: _date(json['updatedAt']),
       startedAt: _nullableDate(json['startedAt']),
@@ -115,6 +117,7 @@ class TaskSession {
           _listOf(json['approvalRequests'], ApprovalRequest.fromJson),
       metricEvents: _listOf(json['metricEvents'], MetricEvent.fromJson),
       subtasks: _listOf(json['subtasks'], Subtask.fromJson),
+      turns: _listOf(json['turns'], NativeOutputTurn.fromJson),
     );
   }
 
@@ -148,6 +151,7 @@ class TaskSession {
     List<ApprovalRequest>? approvalRequests,
     List<MetricEvent>? metricEvents,
     List<Subtask>? subtasks,
+    List<NativeOutputTurn>? turns,
     bool clearApproval = false,
   }) {
     return TaskSession(
@@ -180,6 +184,7 @@ class TaskSession {
       approvalRequests: approvalRequests ?? this.approvalRequests,
       metricEvents: metricEvents ?? this.metricEvents,
       subtasks: subtasks ?? this.subtasks,
+      turns: turns ?? this.turns,
     );
   }
 
@@ -215,12 +220,21 @@ class TaskSession {
           approvalRequests.map((approval) => approval.toJson()).toList(),
       'metricEvents': metricEvents.map((event) => event.toJson()).toList(),
       'subtasks': subtasks.map((subtask) => subtask.toJson()).toList(),
+      'turns': turns.map((turn) => turn.toJson()).toList(),
     };
   }
 }
 
 DateTime _date(Object? value) {
   return DateTime.tryParse(value as String? ?? '') ?? DateTime.now();
+}
+
+TaskStatus _statusFromJson(Object? value) {
+  final name = value as String? ?? '';
+  return TaskStatus.values.firstWhere(
+    (status) => status.name == name,
+    orElse: () => TaskStatus.pending,
+  );
 }
 
 DateTime? _nullableDate(Object? value) {

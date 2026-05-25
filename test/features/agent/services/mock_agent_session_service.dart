@@ -1,18 +1,31 @@
 import 'dart:async';
 
-import '../parsers/approval_parser.dart';
-import '../parsers/task_result_parser.dart';
-import 'agent_session_service.dart';
+import 'package:armin/features/agent/parsers/task_result_parser.dart';
+import 'package:armin/features/agent/services/agent_session_service.dart';
 
 class MockAgentSessionService implements AgentSessionService {
   MockAgentSessionService({
     TaskResultParser? resultParser,
-    ApprovalParser? approvalParser,
-  })  : _resultParser = resultParser ?? TaskResultParser(),
-        _approvalParser = approvalParser ?? ApprovalParser();
+  }) : _resultParser = resultParser ?? TaskResultParser();
 
   final TaskResultParser _resultParser;
-  final ApprovalParser _approvalParser;
+
+  @override
+  Future<AgentConnectionTestResult> testConnection(
+    AgentConnectionTestRequest request,
+  ) async {
+    return const AgentConnectionTestResult(
+      success: true,
+      message: 'Mock SSH connection succeeded.',
+    );
+  }
+
+  @override
+  Future<AgentInstructionDiscoveryResult> discoverAgentInstructions(
+    AgentInstructionDiscoveryRequest request,
+  ) async {
+    return const AgentInstructionDiscoveryResult(paths: []);
+  }
 
   @override
   Stream<AgentExecutionUpdate> execute(AgentExecutionRequest request) async* {
@@ -21,40 +34,9 @@ class MockAgentSessionService implements AgentSessionService {
     yield const AgentExecutionUpdate(
         rawOutput: 'Mock agent is reading files.\n');
     await Future<void>.delayed(const Duration(seconds: 1));
-
-    if (request.scenario == MockAgentScenario.needApproval) {
-      const approvalOutput = '''
-NEED_APPROVAL_START
-reason: Mock execution wants to run a high risk command.
-command: rm -rf build
-risk: high
-NEED_APPROVAL_END
-''';
-      yield AgentExecutionUpdate(
-        rawOutput: approvalOutput,
-        approval: _approvalParser.parse(approvalOutput),
-        done: true,
-      );
-      return;
-    }
-
     await Future<void>.delayed(const Duration(seconds: 1));
-    final resultOutput = request.scenario == MockAgentScenario.failed
-        ? '''
-TASK_RESULT_START
-status: failed
-summary: Mock execution failed after reading agent output.
-changed_files:
-- none
-validation:
-- Mock validation failed.
-risks:
-- The remote agent reported an error.
-next_actions:
-- Open raw logs and send a follow-up with missing context.
-TASK_RESULT_END
-'''
-        : '''
+
+    const resultOutput = '''
 TASK_RESULT_START
 status: success
 summary: Mock Phase 1 execution completed.
@@ -86,4 +68,10 @@ TASK_RESULT_END
 
   @override
   Future<void> stop(AgentControlRequest request) async {}
+
+  @override
+  Future<void> cleanup(AgentControlRequest request) async {}
+
+  @override
+  Future<String> captureLog(AgentControlRequest request) async => '';
 }

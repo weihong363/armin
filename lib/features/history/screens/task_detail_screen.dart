@@ -1,11 +1,21 @@
 import 'dart:convert';
+import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../../app_state_scope.dart';
 import '../../../core/models/task_status.dart';
 import '../../../shared/theme/armin_theme.dart';
 import '../../../shared/widgets/status_badge.dart';
+import '../../tasks/models/native_output_turn.dart';
 import '../../tasks/models/task_session.dart';
+import '../../tasks/services/output_summary_provider.dart';
+import '../../tasks/screens/task_draft_screen.dart';
+
+enum _TaskDetailAction {
+  rerun,
+  forceStop,
+  delete,
+}
 
 class TaskDetailScreen extends StatelessWidget {
   const TaskDetailScreen({required this.taskId, super.key});
@@ -15,7 +25,13 @@ class TaskDetailScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final state = AppStateScope.of(context);
-    final task = state.tasks.firstWhere((item) => item.id == taskId);
+    final task = _findTask(state.tasks);
+    if (task == null) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('任务详情')),
+        body: const Center(child: Text('任务不存在或已删除')),
+      );
+    }
 
     return DefaultTabController(
       length: 5,
@@ -23,10 +39,33 @@ class TaskDetailScreen extends StatelessWidget {
         appBar: AppBar(
           title: const Text('任务详情'),
           actions: [
-            IconButton(
-              tooltip: 'Export',
-              icon: const Icon(Icons.ios_share_outlined),
-              onPressed: () {},
+            PopupMenuButton<_TaskDetailAction>(
+              onSelected: (action) async {
+                switch (action) {
+                  case _TaskDetailAction.rerun:
+                    _rerunTask(context, task);
+                  case _TaskDetailAction.forceStop:
+                    await _forceStopTask(context, task);
+                  case _TaskDetailAction.delete:
+                    _confirmDelete(context, task);
+                }
+              },
+              itemBuilder: (context) => [
+                const PopupMenuItem(
+                  value: _TaskDetailAction.rerun,
+                  child: Text('重新执行'),
+                ),
+                PopupMenuItem(
+                  value: _TaskDetailAction.forceStop,
+                  enabled: _canForceStop(task),
+                  child: const Text('强制停止'),
+                ),
+                PopupMenuItem(
+                  value: _TaskDetailAction.delete,
+                  enabled: _canDelete(task),
+                  child: const Text('删除任务'),
+                ),
+              ],
             ),
           ],
         ),
@@ -35,6 +74,10 @@ class TaskDetailScreen extends StatelessWidget {
             Padding(
               padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
               child: _SummaryBanner(task: task),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
+              child: _RuntimeControlPanel(task: task),
             ),
             const SizedBox(height: 8),
             const TabBar(
@@ -66,15 +109,144 @@ class TaskDetailScreen extends StatelessWidget {
       ),
     );
   }
+
+  TaskSession? _findTask(List<TaskSession> tasks) {
+    for (final task in tasks) {
+      if (task.id == taskId) {
+        return task;
+      }
+    }
+    return null;
+  }
+
+  void _rerunTask(BuildContext context, TaskSession task) {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => TaskDraftScreen(initialTaskText: task.userText),
+      ),
+    );
+  }
+
+  Future<void> _forceStopTask(BuildContext context, TaskSession task) async {
+    try {
+      await AppStateScope.of(context).stopTask(task);
+    } catch (error) {
+      if (!context.mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('强制停止失败：$error')),
+      );
+    }
+  }
+
+  Future<void> _confirmDelete(
+    BuildContext context,
+    TaskSession task,
+  ) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('删除任务?'),
+          content: Text(task.title),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('删除'),
+            ),
+          ],
+        );
+      },
+    );
+    if (confirmed == true && context.mounted) {
+      try {
+        await AppStateScope.of(context).deleteTask(task.id);
+      } catch (error) {
+        if (!context.mounted) {
+          return;
+        }
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('删除失败：$error')),
+        );
+        return;
+      }
+      if (context.mounted) {
+        Navigator.of(context).pop();
+      }
+    }
+  }
+
+  bool _canDelete(TaskSession task) {
+    return task.status == TaskStatus.completed ||
+        task.status == TaskStatus.failed ||
+        task.status == TaskStatus.userCompleted ||
+        task.status == TaskStatus.userFailed;
+  }
+
+  bool _canForceStop(TaskSession task) {
+    return task.status == TaskStatus.running ||
+        task.status == TaskStatus.paused ||
+        task.status == TaskStatus.needApproval ||
+        task.status == TaskStatus.turnIdle ||
+        task.status == TaskStatus.needAttention ||
+        task.status == TaskStatus.observerDetached ||
+        task.status == TaskStatus.pending;
+  }
 }
 
-class _SummaryBanner extends StatelessWidget {
+class _SummaryBanner extends StatefulWidget {
   const _SummaryBanner({required this.task});
 
   final TaskSession task;
 
   @override
+  State<_SummaryBanner> createState() => _SummaryBannerState();
+}
+
+class _SummaryBannerState extends State<_SummaryBanner> {
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _syncTimer();
+  }
+
+  @override
+  void didUpdateWidget(covariant _SummaryBanner oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.task.status != widget.task.status ||
+        oldWidget.task.completedAt != widget.task.completedAt) {
+      _syncTimer();
+    }
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  void _syncTimer() {
+    _timer?.cancel();
+    _timer = null;
+    if (_isLiveTask(widget.task)) {
+      _timer = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (mounted) {
+          setState(() {});
+        }
+      });
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final task = widget.task;
     return DecoratedBox(
       decoration: BoxDecoration(
         color: const Color(0xFFF1F8F5),
@@ -102,6 +274,8 @@ class _SummaryBanner extends StatelessWidget {
             Text(
               task.shortSummary.isEmpty ? task.userText : task.shortSummary,
               style: Theme.of(context).textTheme.bodyMedium,
+              maxLines: 4,
+              overflow: TextOverflow.ellipsis,
             ),
             const SizedBox(height: 14),
             Text(
@@ -112,6 +286,17 @@ class _SummaryBanner extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  bool _isLiveTask(TaskSession task) {
+    return task.completedAt == null &&
+        (task.status == TaskStatus.running ||
+            task.status == TaskStatus.pending ||
+            task.status == TaskStatus.paused ||
+            task.status == TaskStatus.needApproval ||
+            task.status == TaskStatus.turnIdle ||
+            task.status == TaskStatus.needAttention ||
+            task.status == TaskStatus.observerDetached);
   }
 }
 
@@ -138,23 +323,93 @@ class _TimelinePanel extends StatelessWidget {
       _TimelineItem(
         icon: Icons.send_outlined,
         time: _timeLabel(task.startedAt ?? task.createdAt),
-        title: '发送到 Codex',
+        title: '发送到 Agent',
         subtitle: '通过 SSH/tmux 发送任务',
       ),
       _TimelineItem(
-        icon: Icons.check_circle_outline,
+        icon: _timelineResultIcon(task.status),
         time:
             task.completedAt == null ? '--:--' : _timeLabel(task.completedAt!),
-        title: task.status == TaskStatus.needApproval ? '等待确认' : '接收结果',
+        title: _timelineResultTitle(task.status),
         subtitle: task.shortSummary.isEmpty ? '任务执行中' : task.shortSummary,
+        color: _timelineResultColor(task.status),
       ),
     ];
 
     return ListView.separated(
       padding: const EdgeInsets.all(20),
-      itemCount: items.length,
+      itemCount: items.length + (task.turns.isEmpty ? 0 : 1),
       separatorBuilder: (_, __) => const SizedBox(height: 12),
-      itemBuilder: (context, index) => items[index],
+      itemBuilder: (context, index) {
+        if (index < items.length) {
+          return items[index];
+        }
+        return _InfoCard(
+          title: '交互轮次',
+          child: _TurnSummaryList(task: task),
+        );
+      },
+    );
+  }
+}
+
+class _TurnSummaryList extends StatelessWidget {
+  const _TurnSummaryList({required this.task});
+
+  final TaskSession task;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        for (final turn in task.turns)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: _TurnSummaryRow(turn: turn),
+          ),
+      ],
+    );
+  }
+}
+
+class _TurnSummaryRow extends StatelessWidget {
+  const _TurnSummaryRow({required this.turn});
+
+  final NativeOutputTurn turn;
+
+  @override
+  Widget build(BuildContext context) {
+    final title = turn.turnIndex == 1
+        ? 'Turn ${turn.turnIndex}：初始任务'
+        : 'Turn ${turn.turnIndex}：追加指令';
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Text(title, style: Theme.of(context).textTheme.titleSmall),
+            ),
+            _MiniBadge(
+              label: _turnStatusLabel(turn.status),
+              color: _turnStatusColor(turn.status),
+            ),
+          ],
+        ),
+        const SizedBox(height: 4),
+        Text(
+          _timeLabel(turn.startedAt),
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+        const SizedBox(height: 4),
+        Text(
+          _fallback(turn.userInput, '无用户输入'),
+          maxLines: 3,
+          overflow: TextOverflow.ellipsis,
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+      ],
     );
   }
 }
@@ -165,12 +420,14 @@ class _TimelineItem extends StatelessWidget {
     required this.time,
     required this.title,
     required this.subtitle,
+    this.color,
   });
 
   final IconData icon;
   final String time;
   final String title;
   final String subtitle;
+  final Color? color;
 
   @override
   Widget build(BuildContext context) {
@@ -181,7 +438,7 @@ class _TimelineItem extends StatelessWidget {
           width: 44,
           child: Text(time, style: Theme.of(context).textTheme.bodySmall),
         ),
-        Icon(icon, size: 20, color: ArminTheme.ink),
+        Icon(icon, size: 20, color: color ?? ArminTheme.ink),
         const SizedBox(width: 14),
         Expanded(
           child: Column(
@@ -198,36 +455,204 @@ class _TimelineItem extends StatelessWidget {
   }
 }
 
-class _ResultPanel extends StatelessWidget {
+class _ResultPanel extends StatefulWidget {
   const _ResultPanel({required this.task});
 
   final TaskSession task;
 
   @override
+  State<_ResultPanel> createState() => _ResultPanelState();
+}
+
+class _ResultPanelState extends State<_ResultPanel> {
+  Future<OutputSummary>? _summaryFuture;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _summaryFuture ??= _outputSummary(widget.task);
+  }
+
+  @override
+  void didUpdateWidget(covariant _ResultPanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.task.id != widget.task.id ||
+        oldWidget.task.updatedAt != widget.task.updatedAt ||
+        oldWidget.task.summary != widget.task.summary ||
+        oldWidget.task.result?.summary != widget.task.result?.summary) {
+      _summaryFuture = _outputSummary(widget.task);
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final result = task.result;
+    final result = widget.task.result;
     return ListView(
-      padding: const EdgeInsets.all(20),
+      physics: const AlwaysScrollableScrollPhysics(),
+      padding: const EdgeInsets.fromLTRB(20, 20, 20, 96),
       children: [
         _InfoCard(
-          title: '结果摘要',
-          child: Text(result?.summary ?? '暂无结果'),
+          title: '输出',
+          child: FutureBuilder<OutputSummary>(
+            future: _summaryFuture,
+            builder: (context, snapshot) {
+              final segments = _outputSegments(snapshot.data);
+              if (segments.isEmpty) {
+                return const Text('暂无结果');
+              }
+              return Column(
+                children: [
+                  for (final segment in segments)
+                    _OutputSegmentCard(text: segment),
+                ],
+              );
+            },
+          ),
         ),
         _InfoCard(
-          title: '变更文件 (${result?.changedFiles.length ?? 0})',
-          child: _BulletList(values: result?.changedFiles ?? const []),
-        ),
-        _InfoCard(
-          title: '验证结果',
-          trailing: _MiniBadge(label: '通过', color: Colors.green.shade700),
-          child: _BulletList(values: result?.validation ?? const []),
-        ),
-        _InfoCard(
-          title: '潜在风险',
-          trailing: _MiniBadge(label: '低', color: Colors.orange.shade800),
-          child: _BulletList(values: result?.risks ?? const []),
+          title: '执行详情',
+          child: ExpansionTile(
+            tilePadding: EdgeInsets.zero,
+            title: const Text('展开非输出内容'),
+            children: [
+              _DetailList(
+                title: '变更文件',
+                values: result?.changedFiles ?? const [],
+              ),
+              _DetailList(
+                title: '验证结果',
+                values: result?.validation ?? const [],
+              ),
+              _DetailList(
+                title: '潜在风险',
+                values: result?.risks ?? const [],
+              ),
+              _DetailList(
+                title: '下一步',
+                values: result?.nextActions ?? const [],
+              ),
+            ],
+          ),
         ),
       ],
+    );
+  }
+
+  Future<OutputSummary> _outputSummary(TaskSession task) {
+    final source = _bestOutputSource(task);
+    return AppStateScope.of(context).outputSummaryProvider.summarize(
+          OutputSummaryRequest(
+            cleanedOutput: source,
+            status: task.status,
+            taskTitle: task.title,
+            agentCommand: task.host.agentCommand,
+          ),
+        );
+  }
+
+  List<String> _outputSegments(OutputSummary? summary) {
+    final display = summary?.displaySummary.trim() ?? '';
+    if (display.isEmpty) {
+      return const [];
+    }
+    return display
+        .split(RegExp(r'\n{2,}'))
+        .map((segment) => segment.trim())
+        .where((segment) => segment.isNotEmpty)
+        .toList(growable: false);
+  }
+
+  String _bestOutputSource(TaskSession task) {
+    final resultSummary = task.result?.summary.trim() ?? '';
+    if (resultSummary.isNotEmpty) {
+      return resultSummary;
+    }
+    final summary = task.summary?.trim() ?? '';
+    if (summary.isNotEmpty) {
+      return summary;
+    }
+    for (final turn in task.turns.reversed) {
+      final cleaned = turn.cleanedOutput.trim();
+      if (cleaned.isNotEmpty) {
+        return cleaned;
+      }
+    }
+    return task.shortSummary.trim();
+  }
+}
+
+class _OutputSegmentCard extends StatelessWidget {
+  const _OutputSegmentCard({required this.text});
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: const Color(0xFFF8FAF8),
+          border: Border.all(color: ArminTheme.border),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SelectableText(text),
+              const SizedBox(height: 8),
+              Align(
+                alignment: Alignment.centerRight,
+                child: IconButton.filledTonal(
+                  tooltip: '朗读这段输出',
+                  icon: const Icon(Icons.volume_up_outlined),
+                  onPressed: () => _speakSegment(context, text),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _speakSegment(BuildContext context, String text) async {
+    try {
+      await AppStateScope.of(context).voiceService.speakSummary(text);
+    } catch (error) {
+      if (!context.mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('朗读失败：$error')),
+      );
+    }
+  }
+}
+
+class _DetailList extends StatelessWidget {
+  const _DetailList({required this.title, required this.values});
+
+  final String title;
+  final List<String> values;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(title, style: Theme.of(context).textTheme.titleSmall),
+            const SizedBox(height: 6),
+            _BulletList(values: values.isEmpty ? const ['无'] : values),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -274,6 +699,295 @@ class _PromptPanel extends StatelessWidget {
   }
 }
 
+class _RuntimeControlPanel extends StatefulWidget {
+  const _RuntimeControlPanel({required this.task});
+
+  final TaskSession task;
+
+  @override
+  State<_RuntimeControlPanel> createState() => _RuntimeControlPanelState();
+}
+
+class _RuntimeControlPanelState extends State<_RuntimeControlPanel> {
+  @override
+  Widget build(BuildContext context) {
+    final task = widget.task;
+    final controlState = _runtimeControlStateFromTask(task.status);
+    return _InfoCard(
+      title: '运行控制',
+      trailing: _MiniBadge(
+        label: controlState.label,
+        color: controlState.color,
+      ),
+      child: Wrap(
+        spacing: 10,
+        runSpacing: 10,
+        children: [
+          _ControlButton(
+            icon: Icons.add_comment_outlined,
+            label: '追加指令',
+            tone: ControlTone.neutral,
+            onPressed: controlState == RuntimeControlState.stopped
+                ? null
+                : () => _showFollowUpSheet(context),
+          ),
+          _ControlButton(
+            icon: Icons.check_circle_outline,
+            label: '标记完成',
+            tone: ControlTone.neutral,
+            onPressed: controlState == RuntimeControlState.stopped ||
+                    controlState == RuntimeControlState.detached
+                ? null
+                : () => _runControlAction(
+                      context,
+                      () => AppStateScope.of(context).markTaskCompleted(task),
+                    ),
+          ),
+          _ControlButton(
+            icon: Icons.report_gmailerrorred_outlined,
+            label: '标记失败',
+            tone: ControlTone.danger,
+            onPressed: controlState == RuntimeControlState.stopped
+                ? null
+                : () => _runControlAction(
+                      context,
+                      () => AppStateScope.of(context).markTaskFailed(task),
+                    ),
+          ),
+          _ControlButton(
+            icon: controlState == RuntimeControlState.paused
+                ? Icons.play_arrow_outlined
+                : Icons.pause_outlined,
+            label: controlState == RuntimeControlState.paused ? '恢复' : '暂停',
+            tone: ControlTone.neutral,
+            onPressed: controlState == RuntimeControlState.stopped ||
+                    controlState == RuntimeControlState.detached
+                ? null
+                : () => _runControlAction(
+                      context,
+                      () => controlState == RuntimeControlState.paused
+                          ? AppStateScope.of(context).resumeTask(task)
+                          : AppStateScope.of(context).pauseTask(task),
+                    ),
+          ),
+          _ControlButton(
+            icon: Icons.stop_rounded,
+            label: '停止',
+            tone: ControlTone.danger,
+            onPressed: controlState == RuntimeControlState.stopped
+                ? null
+                : () => _runControlAction(
+                      context,
+                      () => AppStateScope.of(context).stopTask(task),
+                    ),
+          ),
+          _ControlButton(
+            icon: Icons.sensors_outlined,
+            label: '重新监听',
+            tone: ControlTone.neutral,
+            onPressed: controlState == RuntimeControlState.detached
+                ? () => _runControlAction(
+                      context,
+                      () => AppStateScope.of(context).reconnectTask(task),
+                    )
+                : null,
+          ),
+          _ControlButton(
+            icon: Icons.link_off_outlined,
+            label: '断开监听',
+            tone: ControlTone.danger,
+            onPressed: controlState == RuntimeControlState.stopped ||
+                    controlState == RuntimeControlState.detached
+                ? null
+                : () => _runControlAction(
+                      context,
+                      () => AppStateScope.of(context).disconnectTask(task),
+                    ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _runControlAction(
+    BuildContext context,
+    Future<void> Function() action,
+  ) async {
+    try {
+      await action();
+    } catch (error) {
+      if (!context.mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('运行控制失败：$error')),
+      );
+    }
+  }
+
+  void _showFollowUpSheet(BuildContext context) {
+    final controller = TextEditingController();
+    var listening = false;
+    var busy = false;
+    var partial = '';
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (sheetContext) {
+        return StatefulBuilder(
+          builder: (sheetContext, setSheetState) {
+            Future<void> startVoice() async {
+              if (listening || busy) {
+                return;
+              }
+              final voiceService = AppStateScope.of(context).voiceService;
+              if (!voiceService.isAvailable) {
+                ScaffoldMessenger.of(sheetContext).showSnackBar(
+                  const SnackBar(content: Text('当前设备不支持语音，请手动输入')),
+                );
+                return;
+              }
+              setSheetState(() {
+                listening = true;
+                partial = '';
+              });
+              try {
+                await voiceService.startListening(
+                  onPartial: (value) {
+                    if (!sheetContext.mounted) {
+                      return;
+                    }
+                    setSheetState(() => partial = value);
+                  },
+                );
+              } catch (error) {
+                if (!sheetContext.mounted) {
+                  return;
+                }
+                setSheetState(() => listening = false);
+                ScaffoldMessenger.of(sheetContext).showSnackBar(
+                  SnackBar(content: Text('语音输入失败：$error')),
+                );
+              }
+            }
+
+            Future<void> stopVoice() async {
+              if (!listening) {
+                return;
+              }
+              final voiceService = AppStateScope.of(context).voiceService;
+              setSheetState(() {
+                listening = false;
+                busy = true;
+              });
+              try {
+                final stopped = await voiceService.stopListening();
+                final raw =
+                    stopped.trim().isNotEmpty ? stopped.trim() : partial.trim();
+                if (raw.isEmpty) {
+                  if (sheetContext.mounted) {
+                    ScaffoldMessenger.of(sheetContext).showSnackBar(
+                      const SnackBar(content: Text('未检测到语音')),
+                    );
+                  }
+                  return;
+                }
+                final prefix = controller.text.trim();
+                controller.text = prefix.isEmpty ? raw : '$prefix\n$raw';
+                controller.selection = TextSelection.collapsed(
+                  offset: controller.text.length,
+                );
+              } finally {
+                if (sheetContext.mounted) {
+                  setSheetState(() => busy = false);
+                }
+              }
+            }
+
+            final bottomInset = MediaQuery.viewInsetsOf(sheetContext).bottom;
+            final maxHeight = MediaQuery.sizeOf(sheetContext).height * 0.82;
+            return AnimatedPadding(
+              duration: const Duration(milliseconds: 180),
+              curve: Curves.easeOutCubic,
+              padding: EdgeInsets.only(bottom: bottomInset),
+              child: SafeArea(
+                top: false,
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(maxHeight: maxHeight),
+                  child: SingleChildScrollView(
+                    keyboardDismissBehavior:
+                        ScrollViewKeyboardDismissBehavior.onDrag,
+                    padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('追加指令',
+                            style: Theme.of(sheetContext).textTheme.titleLarge),
+                        const SizedBox(height: 12),
+                        TextField(
+                          controller: controller,
+                          keyboardType: TextInputType.multiline,
+                          minLines: 3,
+                          maxLines: 5,
+                          decoration: const InputDecoration(
+                            hintText: '继续补充你的要求...',
+                          ),
+                        ),
+                        if (partial.trim().isNotEmpty) ...[
+                          const SizedBox(height: 8),
+                          Text(
+                            partial,
+                            style: Theme.of(sheetContext).textTheme.bodySmall,
+                          ),
+                        ],
+                        const SizedBox(height: 12),
+                        Row(
+                          children: [
+                            _VoiceFollowUpButton(
+                              disabled: busy,
+                              listening: listening,
+                              busy: busy,
+                              onStart: startVoice,
+                              onStop: stopVoice,
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: FilledButton.icon(
+                                onPressed: busy
+                                    ? null
+                                    : () async {
+                                        final instruction =
+                                            controller.text.trim();
+                                        if (instruction.isNotEmpty) {
+                                          await AppStateScope.of(context)
+                                              .sendFollowUp(
+                                                  widget.task, instruction);
+                                        }
+                                        if (sheetContext.mounted) {
+                                          Navigator.of(sheetContext).pop();
+                                        }
+                                      },
+                                icon: const Icon(Icons.send_outlined),
+                                label: const Text('发送'),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      },
+    ).whenComplete(controller.dispose);
+  }
+}
+
 class _LogPanel extends StatefulWidget {
   const _LogPanel({required this.task});
 
@@ -284,8 +998,6 @@ class _LogPanel extends StatefulWidget {
 }
 
 class _LogPanelState extends State<_LogPanel> {
-  RuntimeControlState _controlState = RuntimeControlState.active;
-
   @override
   Widget build(BuildContext context) {
     final task = widget.task;
@@ -293,75 +1005,10 @@ class _LogPanelState extends State<_LogPanel> {
       padding: const EdgeInsets.all(20),
       children: [
         _InfoCard(
-          title: '运行控制',
-          trailing: _MiniBadge(
-            label: _controlState.label,
-            color: _controlState.color,
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'Phase 1 仅记录交互意图；真实 tmux 控制将在 Phase 2 接入。',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-              const SizedBox(height: 14),
-              Wrap(
-                spacing: 10,
-                runSpacing: 10,
-                children: [
-                  _ControlButton(
-                    icon: Icons.add_comment_outlined,
-                    label: '追加指令',
-                    tone: ControlTone.neutral,
-                    onPressed: () => _showFollowUpSheet(context),
-                  ),
-                  _ControlButton(
-                    icon: _controlState == RuntimeControlState.paused
-                        ? Icons.play_arrow_outlined
-                        : Icons.pause_outlined,
-                    label: _controlState == RuntimeControlState.paused
-                        ? '恢复'
-                        : '暂停',
-                    tone: ControlTone.neutral,
-                    onPressed: _controlState == RuntimeControlState.stopped
-                        ? null
-                        : () async {
-                            if (_controlState == RuntimeControlState.paused) {
-                              await AppStateScope.of(context).resumeTask(task);
-                            } else {
-                              await AppStateScope.of(context).pauseTask(task);
-                            }
-                            setState(() {
-                              _controlState =
-                                  _controlState == RuntimeControlState.paused
-                                      ? RuntimeControlState.active
-                                      : RuntimeControlState.paused;
-                            });
-                          },
-                  ),
-                  _ControlButton(
-                    icon: Icons.stop_rounded,
-                    label: '停止',
-                    tone: ControlTone.danger,
-                    onPressed: _controlState == RuntimeControlState.stopped
-                        ? null
-                        : () async {
-                            await AppStateScope.of(context).stopTask(task);
-                            setState(() {
-                              _controlState = RuntimeControlState.stopped;
-                            });
-                          },
-                  ),
-                  _ControlButton(
-                    icon: Icons.description_outlined,
-                    label: '查看日志',
-                    tone: ControlTone.neutral,
-                    onPressed: () {},
-                  ),
-                ],
-              ),
-            ],
+          title: '电脑端调试',
+          child: SelectableText(
+            'tmux attach -t ${task.host.tmuxSessionName}\n'
+            'tmux capture-pane -p -t ${task.host.tmuxSessionName} -S -200',
           ),
         ),
         _InfoCard(
@@ -399,23 +1046,65 @@ class _LogPanelState extends State<_LogPanel> {
                               'status: ${approval.status}',
                             ),
                             const SizedBox(height: 10),
-                            Wrap(
-                              spacing: 8,
-                              children: [
-                                FilledButton.icon(
-                                  onPressed: () => AppStateScope.of(context)
-                                      .resolveApproval(task, approved: true),
-                                  icon: const Icon(Icons.check_outlined),
-                                  label: const Text('允许'),
-                                ),
-                                OutlinedButton.icon(
-                                  onPressed: () => AppStateScope.of(context)
-                                      .resolveApproval(task, approved: false),
-                                  icon: const Icon(Icons.close_outlined),
-                                  label: const Text('拒绝'),
-                                ),
-                              ],
-                            ),
+                            if (_isPendingApproval(approval.status))
+                              Wrap(
+                                spacing: 8,
+                                children: [
+                                  FilledButton.icon(
+                                    onPressed: () async {
+                                      var succeeded = false;
+                                      await _runControlAction(
+                                        context,
+                                        () async {
+                                          await AppStateScope.of(context)
+                                              .resolveApproval(task,
+                                                  approved: true);
+                                          succeeded = true;
+                                        },
+                                      );
+                                      if (succeeded && context.mounted) {
+                                        ScaffoldMessenger.of(context)
+                                            .showSnackBar(
+                                          const SnackBar(
+                                            content: Text('已允许，正在继续监听远端任务。'),
+                                          ),
+                                        );
+                                      }
+                                    },
+                                    icon: const Icon(Icons.check_outlined),
+                                    label: const Text('允许'),
+                                  ),
+                                  OutlinedButton.icon(
+                                    onPressed: () async {
+                                      var succeeded = false;
+                                      await _runControlAction(
+                                        context,
+                                        () async {
+                                          await AppStateScope.of(context)
+                                              .resolveApproval(task,
+                                                  approved: false);
+                                          succeeded = true;
+                                        },
+                                      );
+                                      if (succeeded && context.mounted) {
+                                        ScaffoldMessenger.of(context)
+                                            .showSnackBar(
+                                          const SnackBar(
+                                            content: Text('已拒绝，正在继续监听远端任务。'),
+                                          ),
+                                        );
+                                      }
+                                    },
+                                    icon: const Icon(Icons.close_outlined),
+                                    label: const Text('拒绝'),
+                                  ),
+                                ],
+                              )
+                            else
+                              _MiniBadge(
+                                label: _approvalStatusLabel(approval.status),
+                                color: _approvalStatusColor(approval.status),
+                              ),
                           ],
                         ),
                       ),
@@ -426,50 +1115,41 @@ class _LogPanelState extends State<_LogPanel> {
     );
   }
 
-  void _showFollowUpSheet(BuildContext context) {
-    final controller = TextEditingController();
-    showModalBottomSheet<void>(
-      context: context,
-      showDragHandle: true,
-      builder: (context) {
-        return SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('追加指令', style: Theme.of(context).textTheme.titleLarge),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: controller,
-                  minLines: 3,
-                  maxLines: 5,
-                  decoration: const InputDecoration(
-                    hintText: '例如：先别查接口，优先看前端事件绑定。',
-                  ),
-                ),
-                const SizedBox(height: 12),
-                FilledButton.icon(
-                  onPressed: () async {
-                    final instruction = controller.text.trim();
-                    if (instruction.isNotEmpty) {
-                      await AppStateScope.of(context)
-                          .sendFollowUp(widget.task, instruction);
-                    }
-                    if (context.mounted) {
-                      Navigator.of(context).pop();
-                    }
-                  },
-                  icon: const Icon(Icons.send_outlined),
-                  label: const Text('记录为 Phase 1 占位'),
-                ),
-              ],
-            ),
-          ),
-        );
-      },
-    );
+  bool _isPendingApproval(String status) {
+    return status.trim().toLowerCase() == 'pending';
+  }
+
+  String _approvalStatusLabel(String status) {
+    return switch (status.trim().toLowerCase()) {
+      'approved' => '已允许',
+      'rejected' => '已拒绝',
+      final value when value.isNotEmpty => value,
+      _ => '已处理',
+    };
+  }
+
+  Color _approvalStatusColor(String status) {
+    return switch (status.trim().toLowerCase()) {
+      'approved' => Colors.green.shade700,
+      'rejected' => Colors.red.shade700,
+      _ => Colors.grey.shade700,
+    };
+  }
+
+  Future<void> _runControlAction(
+    BuildContext context,
+    Future<void> Function() action,
+  ) async {
+    try {
+      await action();
+    } catch (error) {
+      if (!context.mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('运行控制失败：$error')),
+      );
+    }
   }
 }
 
@@ -808,6 +1488,7 @@ class _MiniBadge extends StatelessWidget {
 enum RuntimeControlState {
   active,
   paused,
+  detached,
   stopped,
 }
 
@@ -816,6 +1497,7 @@ extension RuntimeControlStateLabel on RuntimeControlState {
     return switch (this) {
       RuntimeControlState.active => '运行中',
       RuntimeControlState.paused => '已暂停',
+      RuntimeControlState.detached => '已断开监听',
       RuntimeControlState.stopped => '已停止',
     };
   }
@@ -824,9 +1506,31 @@ extension RuntimeControlStateLabel on RuntimeControlState {
     return switch (this) {
       RuntimeControlState.active => ArminTheme.primary,
       RuntimeControlState.paused => Colors.orange,
+      RuntimeControlState.detached => Colors.blueGrey,
       RuntimeControlState.stopped => Colors.red,
     };
   }
+}
+
+RuntimeControlState _runtimeControlStateFromTask(TaskStatus status) {
+  return switch (status) {
+    TaskStatus.paused => RuntimeControlState.paused,
+    TaskStatus.stopped ||
+    TaskStatus.runtimeLost ||
+    TaskStatus.userCompleted ||
+    TaskStatus.userFailed ||
+    TaskStatus.completed ||
+    TaskStatus.failed =>
+      RuntimeControlState.stopped,
+    TaskStatus.observerDetached => RuntimeControlState.detached,
+    TaskStatus.draft ||
+    TaskStatus.pending ||
+    TaskStatus.running ||
+    TaskStatus.needApproval ||
+    TaskStatus.turnIdle ||
+    TaskStatus.needAttention =>
+      RuntimeControlState.active,
+  };
 }
 
 enum ControlTone {
@@ -862,6 +1566,58 @@ class _ControlButton extends StatelessWidget {
   }
 }
 
+class _VoiceFollowUpButton extends StatelessWidget {
+  const _VoiceFollowUpButton({
+    required this.disabled,
+    required this.listening,
+    required this.busy,
+    required this.onStart,
+    required this.onStop,
+  });
+
+  final bool disabled;
+  final bool listening;
+  final bool busy;
+  final VoidCallback onStart;
+  final VoidCallback onStop;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = listening ? Colors.red : ArminTheme.primary;
+    final enabledColor = disabled ? Colors.grey : color;
+    final label = busy
+        ? '整理语音'
+        : listening
+            ? '松开发送'
+            : '语音追加';
+    return GestureDetector(
+      onTapDown: disabled ? null : (_) => onStart(),
+      onTapUp: disabled ? null : (_) => onStop(),
+      onTapCancel: disabled ? null : onStop,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          border: Border.all(color: enabledColor.withValues(alpha: 0.26)),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                listening ? Icons.mic : Icons.mic_none_outlined,
+                color: enabledColor,
+              ),
+              const SizedBox(width: 8),
+              Text(label, style: TextStyle(color: enabledColor)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 String _fallback(String value, String fallback) {
   return value.trim().isEmpty ? fallback : value;
 }
@@ -873,10 +1629,106 @@ String _timeLabel(DateTime value) {
 }
 
 String _finishedLabel(TaskSession task) {
+  if (task.status == TaskStatus.turnIdle) {
+    return '等待继续';
+  }
+  if (task.status == TaskStatus.needAttention) {
+    return '需处理';
+  }
+  if (task.status == TaskStatus.observerDetached) {
+    return '监听已断开';
+  }
+  if (task.status == TaskStatus.paused) {
+    return '已暂停';
+  }
+  if (task.status == TaskStatus.runtimeLost) {
+    return task.completedAt == null
+        ? '运行丢失'
+        : '${_timeLabel(task.completedAt!)} 丢失';
+  }
+  if (task.status == TaskStatus.stopped) {
+    return task.completedAt == null
+        ? '已停止'
+        : '${_timeLabel(task.completedAt!)} 停止';
+  }
+  if (task.status == TaskStatus.failed ||
+      task.status == TaskStatus.userFailed) {
+    return task.completedAt == null
+        ? '失败'
+        : '${_timeLabel(task.completedAt!)} 失败';
+  }
   if (task.completedAt == null) {
     return '进行中';
   }
   return '${_timeLabel(task.completedAt!)} 完成';
+}
+
+String _timelineResultTitle(TaskStatus status) {
+  return switch (status) {
+    TaskStatus.needApproval => '等待确认',
+    TaskStatus.turnIdle => '等待用户继续',
+    TaskStatus.needAttention => '需要处理',
+    TaskStatus.observerDetached => '监听已断开',
+    TaskStatus.runtimeLost => '运行时丢失',
+    TaskStatus.failed || TaskStatus.userFailed => '任务失败',
+    _ => '接收结果',
+  };
+}
+
+IconData _timelineResultIcon(TaskStatus status) {
+  return switch (status) {
+    TaskStatus.failed ||
+    TaskStatus.userFailed ||
+    TaskStatus.runtimeLost =>
+      Icons.error_outline,
+    TaskStatus.turnIdle ||
+    TaskStatus.needAttention ||
+    TaskStatus.needApproval ||
+    TaskStatus.observerDetached =>
+      Icons.pause_circle_outline,
+    _ => Icons.check_circle_outline,
+  };
+}
+
+Color _timelineResultColor(TaskStatus status) {
+  return switch (status) {
+    TaskStatus.failed ||
+    TaskStatus.userFailed ||
+    TaskStatus.runtimeLost =>
+      Colors.red,
+    TaskStatus.turnIdle ||
+    TaskStatus.needAttention ||
+    TaskStatus.needApproval ||
+    TaskStatus.observerDetached =>
+      Colors.orange,
+    _ => ArminTheme.ink,
+  };
+}
+
+String _turnStatusLabel(NativeOutputTurnStatus status) {
+  return switch (status) {
+    NativeOutputTurnStatus.running => '运行中',
+    NativeOutputTurnStatus.turnIdle => '等待继续',
+    NativeOutputTurnStatus.needAttention => '需处理',
+    NativeOutputTurnStatus.runtimeLost => '运行丢失',
+    NativeOutputTurnStatus.failed => '失败',
+    NativeOutputTurnStatus.completedByUser => '用户完成',
+    NativeOutputTurnStatus.failedByUser => '用户失败',
+    NativeOutputTurnStatus.stopped => '已停止',
+  };
+}
+
+Color _turnStatusColor(NativeOutputTurnStatus status) {
+  return switch (status) {
+    NativeOutputTurnStatus.running => ArminTheme.primary,
+    NativeOutputTurnStatus.turnIdle => Colors.teal,
+    NativeOutputTurnStatus.needAttention => Colors.orange,
+    NativeOutputTurnStatus.runtimeLost => Colors.red,
+    NativeOutputTurnStatus.failed => Colors.red,
+    NativeOutputTurnStatus.completedByUser => Colors.green,
+    NativeOutputTurnStatus.failedByUser => Colors.red,
+    NativeOutputTurnStatus.stopped => Colors.red,
+  };
 }
 
 String _durationLabel(TaskSession task) {
@@ -904,6 +1756,13 @@ String _eventLabel(String eventType) {
     'task_started' => '任务开始',
     'agent_output' => '收到输出',
     'approval_requested' => '请求确认',
+    'turn_idle' => '等待继续',
+    'need_attention' => '需要处理',
+    'observer_detached' => '断开监听',
+    'observer_reconnected' => '重新监听',
+    'runtime_lost' => '运行丢失',
+    'user_mark_completed' => '用户确认完成',
+    'user_mark_failed' => '用户标记失败',
     'task_completed' => '任务完成',
     _ => eventType,
   };
@@ -915,6 +1774,13 @@ IconData _eventIcon(String eventType) {
     'task_started' => Icons.play_arrow_outlined,
     'agent_output' => Icons.terminal_outlined,
     'approval_requested' => Icons.verified_user_outlined,
+    'turn_idle' => Icons.pause_circle_outline,
+    'need_attention' => Icons.priority_high_outlined,
+    'observer_detached' => Icons.link_off_outlined,
+    'observer_reconnected' => Icons.sensors_outlined,
+    'runtime_lost' => Icons.signal_wifi_connected_no_internet_4_outlined,
+    'user_mark_completed' => Icons.check_circle_outline,
+    'user_mark_failed' => Icons.report_gmailerrorred_outlined,
     'task_completed' => Icons.check_circle_outline,
     _ => Icons.circle_outlined,
   };
@@ -923,6 +1789,13 @@ IconData _eventIcon(String eventType) {
 Color _eventColor(String eventType) {
   return switch (eventType) {
     'approval_requested' => Colors.orange.shade800,
+    'turn_idle' => Colors.teal.shade700,
+    'need_attention' => Colors.orange.shade800,
+    'observer_detached' => Colors.blueGrey.shade700,
+    'observer_reconnected' => ArminTheme.primary,
+    'runtime_lost' => Colors.red.shade800,
+    'user_mark_completed' => Colors.green.shade700,
+    'user_mark_failed' => Colors.red.shade700,
     'task_completed' => Colors.green.shade700,
     'agent_output' => Colors.blueGrey.shade700,
     _ => ArminTheme.primary,

@@ -1,14 +1,16 @@
-import 'dart:io';
-
 import 'package:flutter/material.dart';
 
 import '../../../app_state_scope.dart';
 import '../../../core/models/task_status.dart';
 import '../../../shared/theme/armin_theme.dart';
 import '../../agent/services/agent_session_service.dart';
+import '../../hosts/models/host_config.dart';
 import '../../history/screens/task_detail_screen.dart';
-import '../models/execution_log.dart';
+import '../../projects/models/project_path_config.dart';
+import '../../projects/screens/project_path_list_screen.dart';
+import '../../voice/services/voice_service.dart';
 import '../models/metric_event.dart';
+import '../models/native_output_turn.dart';
 import '../models/prompt_record.dart';
 import '../models/secret_entry.dart';
 import '../models/task_constraint.dart';
@@ -17,10 +19,24 @@ import '../models/task_session.dart';
 import '../models/voice_input.dart';
 import '../services/constraint_extractor.dart';
 import '../services/prompt_template_builder.dart';
+import '../services/secret_redactor.dart';
 import '../services/speech_draft_cleaner.dart';
 
+enum _VoiceInteractionStatus {
+  idle,
+  listening,
+  transcribing,
+}
+
 class TaskDraftScreen extends StatefulWidget {
-  const TaskDraftScreen({super.key});
+  const TaskDraftScreen({
+    this.initialTaskText = '',
+    this.selectedHostId,
+    super.key,
+  });
+
+  final String initialTaskText;
+  final String? selectedHostId;
 
   @override
   State<TaskDraftScreen> createState() => _TaskDraftScreenState();
@@ -35,6 +51,7 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
   final _cleaner = SpeechDraftCleaner();
   final _extractor = ConstraintExtractor();
   final _promptBuilder = PromptTemplateBuilder();
+  final _secretRedactor = SecretRedactor();
   final List<SecretEntry> _secrets = [];
   final Set<TaskConstraint> _constraints = {
     TaskConstraint.minimalChange,
@@ -44,10 +61,29 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
 
   String _rawStt = '';
   String _cleanedDraft = '';
+  String _partialStt = '';
   String _promptPreview = '';
-  MockAgentScenario _scenario = MockAgentScenario.completed;
-  bool _isListening = false;
+  _VoiceInteractionStatus _voiceStatus = _VoiceInteractionStatus.idle;
   bool _isSending = false;
+  bool _isDiscoveringAgentInstructions = false;
+  String? _selectedHostId;
+  String? _selectedProjectPathId;
+  String _agentInstructionMessage =
+      'No AGENTS.md detected. Armin will use lightweight built-in prompt governance.';
+  String _agentInstructionWarning = '';
+  String? _agentInstructionProjectPathId;
+
+  @override
+  void initState() {
+    super.initState();
+    final initialText = widget.initialTaskText.trim();
+    if (initialText.isNotEmpty) {
+      _taskController.text = initialText;
+      _cleanedDraft = initialText;
+      _promptPreview = _buildPrompt();
+    }
+    _selectedHostId = widget.selectedHostId;
+  }
 
   @override
   void dispose() {
@@ -61,6 +97,10 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final state = AppStateScope.of(context);
+    final selectedHost = _selectedHost(state.hosts);
+    final selectedProjectPath = _selectedProjectPath(state.projectPaths);
+    _scheduleAgentInstructionDiscovery(selectedProjectPath, selectedHost);
     return Scaffold(
       appBar: AppBar(
         title: const Text('新建任务'),
@@ -73,21 +113,24 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
         ],
       ),
       body: ListView(
-        padding: const EdgeInsets.fromLTRB(20, 12, 20, 112),
+        padding: const EdgeInsets.fromLTRB(20, 12, 20, 188),
         children: [
-          _VoiceCard(
-            isListening: _isListening,
-            onListen: _listen,
-          ),
-          if (_rawStt.isNotEmpty) ...[
-            const SizedBox(height: 12),
+          if (_rawStt.isNotEmpty || _partialStt.isNotEmpty) ...[
             _SurfaceCard(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('原始语音转写', style: Theme.of(context).textTheme.titleSmall),
+                  Text(
+                    _voiceStatus == _VoiceInteractionStatus.listening
+                        ? '实时语音转写'
+                        : '原始语音转写',
+                    style: Theme.of(context).textTheme.titleSmall,
+                  ),
                   const SizedBox(height: 8),
-                  Text(_rawStt, style: Theme.of(context).textTheme.bodySmall),
+                  Text(
+                    _partialStt.isNotEmpty ? _partialStt : _rawStt,
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
                 ],
               ),
             ),
@@ -100,11 +143,96 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
             minLines: 6,
             maxLines: 10,
             decoration: const InputDecoration(
-              hintText: '描述你要交给 Codex 的任务...',
+              hintText: '描述你要交给 Agent 的任务...',
               alignLabelWithHint: true,
               counterText: '36/1000',
             ),
             onChanged: (_) => _refreshPreview(),
+          ),
+          const SizedBox(height: 12),
+          DropdownButtonFormField<String>(
+            key: const ValueKey('host-selector'),
+            initialValue: selectedHost?.id,
+            decoration: const InputDecoration(
+              labelText: '执行主机',
+            ),
+            items: [
+              for (final host in state.hosts)
+                DropdownMenuItem(
+                  value: host.id,
+                  child: Text(
+                    '${host.name} · ${host.username}@${host.address}:${host.port}',
+                  ),
+                ),
+            ],
+            onChanged: (value) {
+              setState(() {
+                _selectedHostId = value;
+                _agentInstructionProjectPathId = null;
+              });
+            },
+          ),
+          if (state.hosts.isEmpty) ...[
+            const SizedBox(height: 8),
+            Text(
+              '请先添加主机连接，然后在这里选择执行主机。',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ],
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: DropdownButtonFormField<String>(
+                  key: const ValueKey('project-path-selector'),
+                  initialValue: selectedProjectPath?.id,
+                  decoration: const InputDecoration(
+                    labelText: '项目目录',
+                  ),
+                  items: [
+                    for (final projectPath in state.projectPaths)
+                      DropdownMenuItem(
+                        value: projectPath.id,
+                        child:
+                            Text('${projectPath.name} · ${projectPath.path}'),
+                      ),
+                  ],
+                  onChanged: (value) {
+                    setState(() {
+                      _selectedProjectPathId = value;
+                      _agentInstructionProjectPathId = null;
+                    });
+                    _refreshPreview();
+                  },
+                ),
+              ),
+              const SizedBox(width: 8),
+              IconButton.filledTonal(
+                tooltip: '项目目录设置',
+                icon: const Icon(Icons.folder_open_outlined),
+                onPressed: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => const ProjectPathListScreen(),
+                    ),
+                  );
+                },
+              ),
+            ],
+          ),
+          if (state.projectPaths.isEmpty) ...[
+            const SizedBox(height: 8),
+            Text(
+              '请先添加项目目录，然后在这里选择执行目录。',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ],
+          const SizedBox(height: 8),
+          _AgentInstructionNotice(
+            message: _isDiscoveringAgentInstructions
+                ? 'Checking AGENTS.md...'
+                : _agentInstructionMessage,
+            warning: _agentInstructionWarning,
           ),
           const SizedBox(height: 12),
           Wrap(
@@ -164,30 +292,6 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
             ],
           ),
           const SizedBox(height: 16),
-          DropdownButtonFormField<MockAgentScenario>(
-            initialValue: _scenario,
-            decoration: const InputDecoration(labelText: 'Mock 执行结果'),
-            items: const [
-              DropdownMenuItem(
-                value: MockAgentScenario.completed,
-                child: Text('Completed'),
-              ),
-              DropdownMenuItem(
-                value: MockAgentScenario.needApproval,
-                child: Text('Needs approval'),
-              ),
-              DropdownMenuItem(
-                value: MockAgentScenario.failed,
-                child: Text('Failed'),
-              ),
-            ],
-            onChanged: (value) {
-              if (value != null) {
-                setState(() => _scenario = value);
-              }
-            },
-          ),
-          const SizedBox(height: 16),
           Text('敏感信息', style: Theme.of(context).textTheme.titleSmall),
           const SizedBox(height: 8),
           TextField(
@@ -221,44 +325,181 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
         ],
       ),
       bottomNavigationBar: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(20, 10, 20, 16),
-          child: Row(
-            children: [
-              Expanded(
-                child: OutlinedButton(
-                  onPressed: () => _showPromptPreview(context),
-                  child: const Text('预览 Prompt'),
+        child: DecoratedBox(
+          decoration: const BoxDecoration(
+            color: Colors.white,
+            border: Border(top: BorderSide(color: ArminTheme.border)),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 10, 20, 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _VoiceDock(
+                  status: _voiceStatus,
+                  onStart: _startListening,
+                  onStop: _stopListening,
                 ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: FilledButton.icon(
-                  icon: const Icon(Icons.send_outlined),
-                  label: Text(_isSending ? '发送中...' : '发送给 Codex'),
-                  onPressed: _isSending ? null : _send,
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: () => _showPromptPreview(context),
+                        child: const Text('预览 Prompt'),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: FilledButton.icon(
+                        icon: const Icon(Icons.send_outlined),
+                        label: Text(_isSending ? '发送中...' : '发送给 Agent'),
+                        onPressed: _isSending ? null : _send,
+                      ),
+                    ),
+                  ],
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
     );
   }
 
-  Future<void> _listen() async {
-    setState(() => _isListening = true);
-    final raw = await AppStateScope.of(context).voiceService.listenOnce();
+  Future<void> _startListening() async {
+    if (_isSending || _voiceStatus != _VoiceInteractionStatus.idle) {
+      return;
+    }
+
+    final voiceService = AppStateScope.of(context).voiceService;
+    if (!voiceService.isAvailable) {
+      _showVoiceUnavailable();
+      return;
+    }
+
+    setState(() {
+      _voiceStatus = _VoiceInteractionStatus.listening;
+      _partialStt = '';
+    });
+
+    try {
+      await voiceService.startListening(
+        onPartial: (partial) {
+          if (!mounted) {
+            return;
+          }
+          setState(() => _partialStt = partial);
+        },
+      );
+    } catch (e) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _voiceStatus = _VoiceInteractionStatus.idle;
+        _partialStt = '';
+      });
+      _showVoiceError(e);
+    }
+  }
+
+  Future<void> _stopListening() async {
+    if (_voiceStatus != _VoiceInteractionStatus.listening) {
+      return;
+    }
+
+    setState(() => _voiceStatus = _VoiceInteractionStatus.transcribing);
+
+    try {
+      final stoppedRaw =
+          await AppStateScope.of(context).voiceService.stopListening();
+      final raw = stoppedRaw.trim().isNotEmpty ? stoppedRaw : _partialStt;
+
+      if (!mounted) {
+        return;
+      }
+
+      if (raw.trim().isEmpty) {
+        setState(() {
+          _voiceStatus = _VoiceInteractionStatus.idle;
+          _partialStt = '';
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('未检测到语音，请重试或手动输入'),
+            duration: Duration(seconds: 2),
+          ),
+        );
+        return;
+      }
+
+      _applyRecognizedSpeech(raw);
+    } catch (e) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _voiceStatus = _VoiceInteractionStatus.idle;
+        _partialStt = '';
+      });
+      _showVoiceError(e);
+    }
+  }
+
+  void _applyRecognizedSpeech(String raw) {
     final cleaned = _cleaner.clean(raw);
     final extracted = _extractor.extract(raw);
+
     setState(() {
       _rawStt = raw;
-      _cleanedDraft = cleaned;
-      _taskController.text = cleaned;
+      _cleanedDraft = _appendText(_taskController.text, cleaned);
+      _taskController.text = _cleanedDraft;
+      _taskController.selection = TextSelection.collapsed(
+        offset: _taskController.text.length,
+      );
       _constraints.addAll(extracted);
-      _isListening = false;
+      _voiceStatus = _VoiceInteractionStatus.idle;
+      _partialStt = '';
       _promptPreview = _buildPrompt();
     });
+  }
+
+  String _appendText(String current, String value) {
+    final trimmedValue = value.trim();
+    if (trimmedValue.isEmpty) {
+      return current;
+    }
+
+    final trimmedCurrent = current.trim();
+    if (trimmedCurrent.isEmpty) {
+      return trimmedValue;
+    }
+    return '$trimmedCurrent\n$trimmedValue';
+  }
+
+  void _showVoiceUnavailable() {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('当前设备不支持语音，请手动输入')),
+    );
+  }
+
+  void _showVoiceError(Object error) {
+    final message = error is VoiceUnavailableException
+        ? error.message
+        : '语音识别失败：${error.toString()}';
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        duration: const Duration(seconds: 3),
+        action: SnackBarAction(
+          label: '手动输入',
+          onPressed: () {
+            FocusScope.of(context).requestFocus(FocusNode());
+          },
+        ),
+      ),
+    );
   }
 
   void _appendContext(String value) {
@@ -348,20 +589,48 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
       return;
     }
 
-    setState(() => _isSending = true);
     final state = AppStateScope.of(context);
-    final host = state.defaultHost;
+    final project = _selectedProjectPath(state.projectPaths);
+    final projectPath = normalizeRemoteProjectPath(project?.path ?? '');
+    if (projectPath.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('请先配置并选择项目目录。')),
+      );
+      return;
+    }
+
+    setState(() => _isSending = true);
+    final host = _selectedHost(state.hosts);
+    if (host == null) {
+      setState(() => _isSending = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('请先添加主机连接配置。')),
+      );
+      return;
+    }
+    if (host.password.trim().isEmpty) {
+      setState(() => _isSending = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('请先在主机连接中填写 SSH 密码。')),
+      );
+      return;
+    }
+
     final now = DateTime.now();
     final taskId = 'task-${now.microsecondsSinceEpoch}';
     final prompt = _buildPrompt();
-    final privateKeyPem = await _privateKeyPemFor(host.privateKeyPath);
+    final tmuxSessionName = _taskTmuxSessionName(host.tmuxSessionName, taskId);
+    final taskHost = host.copyWith(
+      projectPath: projectPath,
+      tmuxSessionName: tmuxSessionName,
+    );
     final secretRecords = _secrets
         .map(
             (secret) => secret.toRedactedRecord(taskId: taskId, createdAt: now))
         .toList();
-    var task = TaskSession(
+    final task = TaskSession(
       id: taskId,
-      host: host,
+      host: taskHost,
       title: _titleFrom(taskText),
       status: TaskStatus.running,
       createdAt: now,
@@ -402,6 +671,19 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
         templateVersion: PromptTemplateBuilder.templateVersion,
         createdAt: now,
       ),
+      turns: [
+        NativeOutputTurn(
+          id: 'turn-$taskId-1',
+          taskId: taskId,
+          turnIndex: 1,
+          userInput: _secretRedactor.redactInlineSecrets(taskText),
+          rawOutput: '',
+          cleanedOutput: '',
+          startedAt: now,
+          lastOutputAt: now,
+          status: NativeOutputTurnStatus.running,
+        ),
+      ],
       metricEvents: [
         MetricEvent.create(
           taskId: taskId,
@@ -418,108 +700,145 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
       ],
     );
     await state.saveTask(task);
-
-    await for (final update in state.agentSessionService.execute(
+    if (!mounted) {
+      return;
+    }
+    state.startTaskExecution(
+      task,
       AgentExecutionRequest(
         prompt: prompt,
-        scenario: _scenario,
         hostId: host.id,
         host: host.host,
         port: host.port,
         username: host.username,
-        projectPath: host.projectPath,
-        tmuxSessionName: host.tmuxSessionName,
+        projectPath: projectPath,
+        tmuxSessionName: tmuxSessionName,
         agentCommand: host.agentCommand,
-        privateKeyPem: privateKeyPem,
+        tmuxCommand: host.tmuxCommand,
+        pathPrepend: host.pathPrepend,
+        shellWrapper: host.shellWrapper,
+        password: host.password,
       ),
-    )) {
-      final updateAt = DateTime.now();
-      final rawLog = '${task.rawLog}${update.rawOutput}';
-      final executionLogs = [
-        ...task.executionLogs,
-        ExecutionLog(
-          id: 'log-${updateAt.microsecondsSinceEpoch}',
-          taskId: task.id,
-          rawOutput: update.rawOutput,
-          createdAt: updateAt,
-        ),
-      ];
-      if (update.approval != null) {
-        final approval = update.approval!;
-        task = task.copyWith(
-          status: TaskStatus.needApproval,
-          rawLog: rawLog,
-          approval: approval,
-          approvalRequests: [...task.approvalRequests, approval],
-          executionLogs: executionLogs,
-          updatedAt: updateAt,
-          shortSummary: approval.reason,
-          metricEvents: [
-            ...task.metricEvents,
-            MetricEvent.create(
-              taskId: task.id,
-              eventType: 'approval_requested',
-              payloadJson: '{"risk":"${approval.risk}"}',
-              now: updateAt,
-            ),
-          ],
-        );
-      } else if (update.result != null) {
-        final completedAt = DateTime.now();
-        final resultStatus = update.result!.status;
-        task = task.copyWith(
-          status: resultStatus == 'success'
-              ? TaskStatus.completed
-              : TaskStatus.failed,
-          rawLog: rawLog,
-          result: update.result,
-          updatedAt: completedAt,
-          completedAt: completedAt,
-          shortSummary: update.result!.summary,
-          summary: update.result!.summary,
-          executionLogs: executionLogs,
-          metricEvents: [
-            ...task.metricEvents,
-            MetricEvent.create(
-              taskId: task.id,
-              eventType: 'task_completed',
-              payloadJson: '{"result_status":"$resultStatus"}',
-              now: completedAt,
-            ),
-          ],
-          clearApproval: true,
-        );
-      } else {
-        task = task.copyWith(
-          rawLog: rawLog,
-          updatedAt: updateAt,
-          executionLogs: executionLogs,
-          metricEvents: [
-            ...task.metricEvents,
-            MetricEvent.create(
-              taskId: task.id,
-              eventType: 'agent_output',
-              payloadJson: '{"bytes":${update.rawOutput.length}}',
-              now: updateAt,
-            ),
-          ],
-        );
-      }
-      await state.saveTask(task);
-    }
+    );
 
-    if (!mounted) {
+    setState(() => _isSending = false);
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute<void>(
+        builder: (_) => TaskDetailScreen(taskId: task.id),
+      ),
+    );
+  }
+
+  void _scheduleAgentInstructionDiscovery(
+    ProjectPathConfig? project,
+    HostConfig? host,
+  ) {
+    if (project == null ||
+        host == null ||
+        project.id == _agentInstructionProjectPathId ||
+        _isDiscoveringAgentInstructions) {
       return;
     }
-    setState(() => _isSending = false);
-    await state.voiceService.speakSummary(task.shortSummary);
-    if (mounted) {
-      Navigator.of(context).pushReplacement(
-        MaterialPageRoute<void>(
-          builder: (_) => TaskDetailScreen(taskId: task.id),
+    Future.microtask(() => _refreshAgentInstructionDiscovery(project, host));
+  }
+
+  Future<void> _refreshAgentInstructionDiscovery(
+    ProjectPathConfig project,
+    HostConfig host,
+  ) async {
+    final state = AppStateScope.of(context);
+    setState(() {
+      _isDiscoveringAgentInstructions = true;
+      _agentInstructionProjectPathId = project.id;
+      _agentInstructionWarning = '';
+    });
+
+    if (host.password.trim().isEmpty) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _isDiscoveringAgentInstructions = false;
+        _agentInstructionMessage =
+            'No AGENTS.md detected. Armin will use lightweight built-in prompt governance.';
+        _agentInstructionWarning =
+            'AGENTS.md detection will run after Host password is configured.';
+      });
+      return;
+    }
+
+    try {
+      final result = await state.agentSessionService.discoverAgentInstructions(
+        AgentInstructionDiscoveryRequest(
+          host: host.host,
+          port: host.port,
+          username: host.username,
+          password: host.password,
+          projectPath: normalizeRemoteProjectPath(project.path),
+          pathPrepend: host.pathPrepend,
+          shellWrapper: host.shellWrapper,
         ),
       );
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _isDiscoveringAgentInstructions = false;
+        _agentInstructionMessage = result.uiMessage;
+        _agentInstructionWarning = '';
+      });
+    } catch (_) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _isDiscoveringAgentInstructions = false;
+        _agentInstructionMessage =
+            'No AGENTS.md detected. Armin will use lightweight built-in prompt governance.';
+        _agentInstructionWarning =
+            'AGENTS.md detection failed. Built-in prompt governance is still enabled.';
+      });
     }
+  }
+
+  ProjectPathConfig? _selectedProjectPath(List<ProjectPathConfig> items) {
+    if (items.isEmpty) {
+      return null;
+    }
+    final selectedId = _selectedProjectPathId;
+    if (selectedId != null) {
+      for (final item in items) {
+        if (item.id == selectedId) {
+          return item;
+        }
+      }
+    }
+    final defaultPath = AppStateScope.of(context).defaultProjectPath;
+    _selectedProjectPathId = defaultPath?.id ?? items.first.id;
+    return defaultPath ?? items.first;
+  }
+
+  HostConfig? _selectedHost(List<HostConfig> items) {
+    if (items.isEmpty) {
+      return null;
+    }
+    final selectedId = _selectedHostId;
+    if (selectedId != null) {
+      for (final item in items) {
+        if (item.id == selectedId) {
+          return item;
+        }
+      }
+    }
+    final defaultHost = AppStateScope.of(context).defaultHost;
+    _selectedHostId = defaultHost?.id ?? items.first.id;
+    return defaultHost ?? items.first;
+  }
+
+  String _taskTmuxSessionName(String _, String taskId) {
+    final id = taskId.replaceFirst('task-', '');
+    final shortId = id.length <= 8 ? id : id.substring(id.length - 8);
+    return 'armin-$shortId';
   }
 
   String _titleFrom(String taskText) {
@@ -529,34 +848,59 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
     }
     return '${trimmed.substring(0, 32)}...';
   }
+}
 
-  Future<String?> _privateKeyPemFor(String rawPath) async {
-    final path = rawPath.trim();
-    if (path.isEmpty) {
-      return null;
-    }
-    final expandedPath = path.startsWith('~/')
-        ? '${Platform.environment['HOME'] ?? ''}/${path.substring(2)}'
-        : path;
-    final file = File(expandedPath);
-    if (!await file.exists()) {
-      return null;
-    }
-    return file.readAsString();
+class _VoiceDock extends StatefulWidget {
+  const _VoiceDock({
+    required this.status,
+    required this.onStart,
+    required this.onStop,
+  });
+
+  final _VoiceInteractionStatus status;
+  final VoidCallback onStart;
+  final VoidCallback onStop;
+
+  @override
+  State<_VoiceDock> createState() => _VoiceDockState();
+}
+
+class _AgentInstructionNotice extends StatelessWidget {
+  const _AgentInstructionNotice({
+    required this.message,
+    required this.warning,
+  });
+
+  final String message;
+  final String warning;
+
+  @override
+  Widget build(BuildContext context) {
+    final hasWarning = warning.trim().isNotEmpty;
+    final color = hasWarning ? Colors.orange.shade800 : ArminTheme.primary;
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(
+          hasWarning ? Icons.info_outline : Icons.check_circle_outline,
+          size: 18,
+          color: color,
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            hasWarning ? '$message\n$warning' : message,
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: ArminTheme.ink.withValues(alpha: 0.72),
+                ),
+          ),
+        ),
+      ],
+    );
   }
 }
 
-class _VoiceCard extends StatefulWidget {
-  const _VoiceCard({required this.isListening, required this.onListen});
-
-  final bool isListening;
-  final VoidCallback onListen;
-
-  @override
-  State<_VoiceCard> createState() => _VoiceCardState();
-}
-
-class _VoiceCardState extends State<_VoiceCard>
+class _VoiceDockState extends State<_VoiceDock>
     with SingleTickerProviderStateMixin {
   late final AnimationController _controller;
 
@@ -567,18 +911,18 @@ class _VoiceCardState extends State<_VoiceCard>
       vsync: this,
       duration: const Duration(milliseconds: 900),
     );
-    if (widget.isListening) {
+    if (_isListening) {
       _controller.repeat(reverse: true);
     }
   }
 
   @override
-  void didUpdateWidget(covariant _VoiceCard oldWidget) {
+  void didUpdateWidget(covariant _VoiceDock oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (widget.isListening && !_controller.isAnimating) {
+    if (_isListening && !_controller.isAnimating) {
       _controller.repeat(reverse: true);
     }
-    if (!widget.isListening && _controller.isAnimating) {
+    if (!_isListening && _controller.isAnimating) {
       _controller.stop();
       _controller.value = 0;
     }
@@ -592,65 +936,85 @@ class _VoiceCardState extends State<_VoiceCard>
 
   @override
   Widget build(BuildContext context) {
-    return _SurfaceCard(
-      child: InkWell(
-        onTap: widget.isListening ? null : widget.onListen,
-        borderRadius: BorderRadius.circular(18),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 22),
-          child: Column(
-            children: [
-              AnimatedBuilder(
-                animation: _controller,
-                builder: (context, _) {
-                  final pulse = widget.isListening ? _controller.value : 0.0;
-                  return SizedBox(
-                    width: 132,
-                    height: 116,
-                    child: Stack(
-                      alignment: Alignment.center,
-                      children: [
-                        _PulseRing(size: 104 + pulse * 24, opacity: 0.18),
-                        _PulseRing(size: 88 + pulse * 18, opacity: 0.28),
-                        Container(
-                          width: 78,
-                          height: 78,
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            color: const Color(0xFFE4F4EF),
-                            border: Border.all(
-                              color: ArminTheme.mint.withValues(alpha: 0.55),
-                              width: 2,
-                            ),
-                          ),
-                          child: Center(
-                            child: _VoiceWaveform(
-                              progress:
-                                  widget.isListening ? _controller.value : 0.35,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  );
-                },
-              ),
-              const SizedBox(height: 10),
-              Text(
-                widget.isListening ? '正在听...' : '按住说话',
-                style: Theme.of(context).textTheme.titleMedium,
-              ),
-              const SizedBox(height: 4),
-              Text(
-                widget.isListening ? '正在生成语音波形' : '松开发送，或点击停止',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-            ],
+    final statusText = switch (widget.status) {
+      _VoiceInteractionStatus.idle => '准备录音',
+      _VoiceInteractionStatus.listening => '正在听',
+      _VoiceInteractionStatus.transcribing => '正在整理语音',
+    };
+    final buttonText = switch (widget.status) {
+      _VoiceInteractionStatus.idle => '按住说话',
+      _VoiceInteractionStatus.listening => '松开发送到草稿',
+      _VoiceInteractionStatus.transcribing => '正在整理语音',
+    };
+
+    return Row(
+      children: [
+        SizedBox(
+          width: 86,
+          child: Text(
+            statusText,
+            style: Theme.of(context).textTheme.bodySmall,
           ),
         ),
-      ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: GestureDetector(
+            key: const ValueKey('voice-hold-button'),
+            onTapDown: (_) => widget.onStart(),
+            onTapUp: (_) => widget.onStop(),
+            onTapCancel: widget.onStop,
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 180),
+              height: 58,
+              decoration: BoxDecoration(
+                color: _isListening ? ArminTheme.primary : ArminTheme.mint,
+                borderRadius: BorderRadius.circular(999),
+                border: Border.all(
+                  color: ArminTheme.primary.withValues(alpha: 0.28),
+                ),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  AnimatedBuilder(
+                    animation: _controller,
+                    builder: (context, _) {
+                      return SizedBox(
+                        width: 54,
+                        height: 34,
+                        child: Stack(
+                          alignment: Alignment.center,
+                          children: [
+                            if (_isListening)
+                              _PulseRing(
+                                size: 32 + _controller.value * 10,
+                                opacity: 0.18,
+                              ),
+                            _VoiceWaveform(
+                              progress: _isListening ? _controller.value : 0.35,
+                            ),
+                          ],
+                        ),
+                      );
+                    },
+                  ),
+                  const SizedBox(width: 10),
+                  Text(
+                    buttonText,
+                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                          color: _isListening ? Colors.white : ArminTheme.ink,
+                        ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ],
     );
   }
+
+  bool get _isListening => widget.status == _VoiceInteractionStatus.listening;
 }
 
 class _PulseRing extends StatelessWidget {

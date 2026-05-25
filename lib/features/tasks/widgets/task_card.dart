@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../../core/models/task_status.dart';
@@ -58,7 +60,7 @@ class TaskCard extends StatelessWidget {
               ),
               const SizedBox(height: 10),
               Text(
-                '${task.host.name} / ${task.host.projectPath}',
+                _hostLabel(task),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: Theme.of(context).textTheme.bodySmall,
@@ -71,14 +73,56 @@ class TaskCard extends StatelessWidget {
   }
 }
 
-class _FeaturedTaskCard extends StatelessWidget {
+class _FeaturedTaskCard extends StatefulWidget {
   const _FeaturedTaskCard({required this.task, required this.onTap});
 
   final TaskSession task;
   final VoidCallback onTap;
 
   @override
+  State<_FeaturedTaskCard> createState() => _FeaturedTaskCardState();
+}
+
+class _FeaturedTaskCardState extends State<_FeaturedTaskCard> {
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _syncTimer();
+  }
+
+  @override
+  void didUpdateWidget(covariant _FeaturedTaskCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.task.status != widget.task.status ||
+        oldWidget.task.completedAt != widget.task.completedAt) {
+      _syncTimer();
+    }
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  void _syncTimer() {
+    _timer?.cancel();
+    _timer = null;
+    if (_isLiveTask(widget.task)) {
+      _timer = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (mounted) {
+          setState(() {});
+        }
+      });
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final task = widget.task;
+    final progressValue = _progressValue(task.status);
     return Container(
       margin: const EdgeInsets.only(bottom: 20),
       decoration: BoxDecoration(
@@ -97,7 +141,7 @@ class _FeaturedTaskCard extends StatelessWidget {
         ],
       ),
       child: InkWell(
-        onTap: onTap,
+        onTap: widget.onTap,
         borderRadius: BorderRadius.circular(16),
         child: Padding(
           padding: const EdgeInsets.all(18),
@@ -109,7 +153,7 @@ class _FeaturedTaskCard extends StatelessWidget {
                   _DarkBadge(status: task.status),
                   const Spacer(),
                   Text(
-                    _durationLabel(task),
+                    '${_durationPrefix(task)} ${_durationLabel(task)}',
                     style: const TextStyle(color: Colors.white, fontSize: 12),
                   ),
                 ],
@@ -136,10 +180,32 @@ class _FeaturedTaskCard extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 18),
+              Row(
+                children: [
+                  Text(
+                    '执行进度',
+                    style: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.72),
+                      fontSize: 12,
+                    ),
+                  ),
+                  const Spacer(),
+                  Text(
+                    _progressLabel(task.status),
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
               ClipRRect(
                 borderRadius: BorderRadius.circular(999),
                 child: LinearProgressIndicator(
-                  value: task.status == TaskStatus.completed ? 1 : 0.34,
+                  value:
+                      task.status == TaskStatus.running ? null : progressValue,
                   minHeight: 8,
                   color: ArminTheme.mint,
                   backgroundColor: Colors.white.withValues(alpha: 0.22),
@@ -181,6 +247,17 @@ class _FeaturedTaskCard extends StatelessWidget {
       ),
     );
   }
+
+  bool _isLiveTask(TaskSession task) {
+    return task.completedAt == null &&
+        (task.status == TaskStatus.running ||
+            task.status == TaskStatus.pending ||
+            task.status == TaskStatus.paused ||
+            task.status == TaskStatus.needApproval ||
+            task.status == TaskStatus.turnIdle ||
+            task.status == TaskStatus.needAttention ||
+            task.status == TaskStatus.observerDetached);
+  }
 }
 
 class _DarkBadge extends StatelessWidget {
@@ -192,9 +269,17 @@ class _DarkBadge extends StatelessWidget {
   Widget build(BuildContext context) {
     final label = switch (status) {
       TaskStatus.running => '运行中',
+      TaskStatus.paused => '已暂停',
+      TaskStatus.stopped => '已停止',
       TaskStatus.completed => '已完成',
+      TaskStatus.userCompleted => '已完成',
       TaskStatus.needApproval => '需确认',
+      TaskStatus.turnIdle => '等待继续',
+      TaskStatus.needAttention => '需处理',
+      TaskStatus.observerDetached => '已断开监听',
+      TaskStatus.runtimeLost => '运行丢失',
       TaskStatus.failed => '失败',
+      TaskStatus.userFailed => '失败',
       TaskStatus.pending => '等待中',
       TaskStatus.draft => '草稿',
     };
@@ -241,4 +326,62 @@ String _durationLabel(TaskSession task) {
     return '${duration.inSeconds}s';
   }
   return '${minutes}m ${seconds}s';
+}
+
+double _progressValue(TaskStatus status) {
+  return switch (status) {
+    TaskStatus.completed => 1,
+    TaskStatus.userCompleted => 1,
+    TaskStatus.failed ||
+    TaskStatus.userFailed ||
+    TaskStatus.runtimeLost ||
+    TaskStatus.stopped =>
+      1,
+    TaskStatus.paused => 0.5,
+    TaskStatus.running || TaskStatus.needApproval => 0.34,
+    TaskStatus.turnIdle || TaskStatus.needAttention => 0.72,
+    TaskStatus.observerDetached => 0.72,
+    TaskStatus.pending || TaskStatus.draft => 0,
+  };
+}
+
+String _progressLabel(TaskStatus status) {
+  return switch (status) {
+    TaskStatus.running => '运行中',
+    TaskStatus.needApproval => '等待确认',
+    TaskStatus.turnIdle => '等待继续',
+    TaskStatus.needAttention => '需处理',
+    TaskStatus.observerDetached => '已断开监听',
+    TaskStatus.paused => '已暂停',
+    TaskStatus.completed => '100%',
+    TaskStatus.userCompleted => '100%',
+    TaskStatus.failed => '失败',
+    TaskStatus.userFailed => '失败',
+    TaskStatus.runtimeLost => '运行丢失',
+    TaskStatus.stopped => '已停止',
+    TaskStatus.pending => '等待开始',
+    TaskStatus.draft => '草稿',
+  };
+}
+
+String _durationPrefix(TaskSession task) {
+  if (task.completedAt == null &&
+      (task.status == TaskStatus.running ||
+          task.status == TaskStatus.pending ||
+          task.status == TaskStatus.paused ||
+          task.status == TaskStatus.needApproval ||
+          task.status == TaskStatus.turnIdle ||
+          task.status == TaskStatus.needAttention ||
+          task.status == TaskStatus.observerDetached)) {
+    return '已运行';
+  }
+  return '总耗时';
+}
+
+String _hostLabel(TaskSession task) {
+  final projectPath = task.host.projectPath.trim();
+  if (projectPath.isEmpty) {
+    return task.host.name;
+  }
+  return '${task.host.name} / $projectPath';
 }

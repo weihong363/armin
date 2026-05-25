@@ -19,6 +19,28 @@ class ApprovalRequest {
   final DateTime? createdAt;
   final DateTime? resolvedAt;
 
+  ApprovalRequest copyWith({
+    String? id,
+    String? taskId,
+    String? reason,
+    String? command,
+    String? risk,
+    String? status,
+    DateTime? createdAt,
+    DateTime? resolvedAt,
+  }) {
+    return ApprovalRequest(
+      id: id ?? this.id,
+      taskId: taskId ?? this.taskId,
+      reason: reason ?? this.reason,
+      command: command ?? this.command,
+      risk: risk ?? this.risk,
+      status: status ?? this.status,
+      createdAt: createdAt ?? this.createdAt,
+      resolvedAt: resolvedAt ?? this.resolvedAt,
+    );
+  }
+
   factory ApprovalRequest.fromJson(Map<String, Object?> json) {
     return ApprovalRequest(
       id: json['id'] as String? ?? '',

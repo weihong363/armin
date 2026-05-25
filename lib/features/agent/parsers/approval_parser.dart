@@ -2,21 +2,27 @@ import 'approval_request.dart';
 
 class ApprovalParser {
   ApprovalRequest? parse(String output) {
-    final startIndex = output.indexOf('NEED_APPROVAL_START');
-    final endIndex = output.indexOf('NEED_APPROVAL_END');
-    if (startIndex < 0 || endIndex < 0 || endIndex <= startIndex) {
-      return null;
+    final blocks = RegExp(
+      r'NEED_APPROVAL_START([\s\S]*?)NEED_APPROVAL_END',
+    ).allMatches(output).toList().reversed;
+
+    for (final match in blocks) {
+      final block = match.group(1)?.trim() ?? '';
+      final reason = _singleLine(block, 'reason') ?? '';
+      final command = _singleLine(block, 'command') ?? '';
+      final risk = _singleLine(block, 'risk') ?? 'medium';
+      if (!_isRealApproval(reason: reason, command: command, risk: risk)) {
+        continue;
+      }
+
+      return ApprovalRequest(
+        reason: reason,
+        command: command,
+        risk: risk,
+      );
     }
 
-    final block = output
-        .substring(startIndex + 'NEED_APPROVAL_START'.length, endIndex)
-        .trim();
-
-    return ApprovalRequest(
-      reason: _singleLine(block, 'reason') ?? '',
-      command: _singleLine(block, 'command') ?? '',
-      risk: _singleLine(block, 'risk') ?? 'medium',
-    );
+    return null;
   }
 
   String? _singleLine(String block, String key) {
@@ -25,5 +31,24 @@ class ApprovalParser {
       multiLine: true,
     ).firstMatch(block);
     return match?.group(1)?.trim();
+  }
+
+  bool _isRealApproval({
+    required String reason,
+    required String command,
+    required String risk,
+  }) {
+    final normalizedRisk = risk.trim().toLowerCase();
+    return !_isPlaceholder(reason) &&
+        !_isPlaceholder(command) &&
+        const {'low', 'medium', 'high'}.contains(normalizedRisk);
+  }
+
+  bool _isPlaceholder(String value) {
+    final trimmed = value.trim();
+    return trimmed.isEmpty ||
+        trimmed == '...' ||
+        trimmed == '<...>' ||
+        trimmed.contains('|');
   }
 }

@@ -22,14 +22,20 @@ void main() {
       ],
     );
 
-    expect(prompt, contains('请完成以下任务'));
-    expect(prompt, contains('最小改动'));
-    expect(prompt, contains('不要提交 Git'));
+    expect(prompt, startsWith('Armin context governance:'));
+    expect(prompt, contains('Only inspect files directly related'));
+    expect(prompt, contains('Never scan the entire repository'));
+    expect(prompt, contains('错误日志'));
+    expect(prompt, contains('修复登录失败'));
     expect(prompt, contains('GITHUB_TOKEN: [REDACTED]'));
     expect(prompt, isNot(contains('abc123')));
     expect(prompt, isNot(contains('hunter2')));
     expect(prompt, isNot(contains('secret-value')));
-    expect(prompt, contains('TASK_RESULT_START'));
-    expect(prompt, contains('NEED_APPROVAL_START'));
+    expect(prompt, isNot(contains('TASK_RESULT_START')));
+    expect(prompt, isNot(contains('NEED_APPROVAL_START')));
+    expect(prompt, isNot(contains('完成后只输出')));
+    expect(prompt, isNot(contains('普通开发操作默认允许')));
+    expect(prompt, isNot(contains('不要自动 git commit')));
+    expect(prompt, isNot(contains('安装/升级依赖')));
   });
 }

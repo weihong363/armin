@@ -37,7 +37,7 @@ void main() {
 
     expect(agent.lastRequest, isNull);
     expect(store.savedTasks, isEmpty);
-    expect(find.text('请先在 Host 配置中填写 SSH password。'), findsOneWidget);
+    expect(find.text('请先在主机连接中填写 SSH 密码。'), findsOneWidget);
   });
 
   testWidgets('send requires project path before creating task',
@@ -55,7 +55,7 @@ void main() {
 
     expect(agent.lastRequest, isNull);
     expect(store.savedTasks, isEmpty);
-    expect(find.text('请先配置并选择 Project Path。'), findsOneWidget);
+    expect(find.text('请先配置并选择项目目录。'), findsOneWidget);
   });
 
   testWidgets('send passes SSH password to agent request', (tester) async {

@@ -48,6 +48,34 @@ void main() {
     final field = tester.widget<TextField>(find.byType(TextField).first);
     expect(field.controller!.text, '修复首页登录失败');
   });
+
+  testWidgets('header settings button opens unified settings screen',
+      (tester) async {
+    await _pumpHome(tester, voiceService: MockVoiceService());
+
+    await tester.tap(find.byKey(const ValueKey('home-settings-button')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('设置'), findsWidgets);
+    expect(find.text('执行环境'), findsOneWidget);
+    expect(find.text('主机连接'), findsOneWidget);
+    expect(find.text('项目目录'), findsOneWidget);
+    expect(find.text('语音与播报'), findsWidgets);
+  });
+
+  testWidgets('bottom navigation opens history instead of duplicating settings',
+      (tester) async {
+    await _pumpHome(tester, voiceService: MockVoiceService());
+
+    expect(find.text('主机'), findsNothing);
+    expect(find.text('我'), findsNothing);
+    expect(find.text('历史'), findsOneWidget);
+    await tester.tap(find.text('历史'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('历史任务'), findsOneWidget);
+    expect(find.text('暂无历史任务'), findsOneWidget);
+  });
 }
 
 Future<void> _pumpHome(

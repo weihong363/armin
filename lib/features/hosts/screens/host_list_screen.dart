@@ -17,7 +17,7 @@ class HostListScreen extends StatelessWidget {
     final state = AppStateScope.of(context);
 
     return Scaffold(
-      appBar: AppBar(title: const Text('SSH Hosts')),
+      appBar: AppBar(title: const Text('主机连接')),
       body: ListView.builder(
         padding: const EdgeInsets.all(16),
         itemCount: state.hosts.length,
@@ -109,7 +109,7 @@ class HostListScreen extends StatelessWidget {
                     '${_passwordStatusText(host.password)}'),
                 isThreeLine: true,
                 trailing: PopupMenuButton<_HostListAction>(
-                  tooltip: 'Host actions',
+                  tooltip: '主机操作',
                   onSelected: (action) {
                     switch (action) {
                       case _HostListAction.edit:
@@ -139,7 +139,7 @@ class HostListScreen extends StatelessWidget {
       ),
       floatingActionButton: FloatingActionButton.extended(
         icon: const Icon(Icons.add),
-        label: const Text('Add Host'),
+        label: const Text('添加主机'),
         onPressed: () {
           Navigator.of(context).push(
             MaterialPageRoute<void>(
@@ -153,9 +153,9 @@ class HostListScreen extends StatelessWidget {
 
   String _passwordStatusText(String password) {
     if (password.trim().isEmpty) {
-      return 'SSH password not set for this run';
+      return '本次运行未设置 SSH 密码';
     }
-    return 'SSH password ready for this run';
+    return '本次运行已准备 SSH 密码';
   }
 
   void _openHostForm(

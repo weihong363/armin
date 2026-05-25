@@ -19,7 +19,7 @@ enum HostMachineType {
 extension HostMachineTypeDefaults on HostMachineType {
   String get label {
     return switch (this) {
-      HostMachineType.generic => 'Generic / custom',
+      HostMachineType.generic => '通用 / 自定义',
       HostMachineType.macAppleSilicon => 'macOS Apple Silicon',
       HostMachineType.macIntel => 'macOS Intel',
       HostMachineType.linux => 'Linux',
@@ -58,12 +58,10 @@ extension HostMachineTypeDefaults on HostMachineType {
 
   String get description {
     return switch (this) {
-      HostMachineType.generic => 'Uses tmux from the remote shell PATH.',
-      HostMachineType.macAppleSilicon =>
-        'Homebrew tools are usually under /opt/homebrew/bin.',
-      HostMachineType.macIntel =>
-        'Homebrew tools are usually under /usr/local/bin.',
-      HostMachineType.linux => 'System tools are usually under /usr/bin.',
+      HostMachineType.generic => '使用远端 shell PATH 中的 tmux。',
+      HostMachineType.macAppleSilicon => 'Homebrew 工具通常位于 /opt/homebrew/bin。',
+      HostMachineType.macIntel => 'Homebrew 工具通常位于 /usr/local/bin。',
+      HostMachineType.linux => '系统工具通常位于 /usr/bin。',
     };
   }
 }

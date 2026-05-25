@@ -15,27 +15,25 @@ void main() {
       (tester) async {
     await _pumpHostList(tester, host: _host(password: ''));
 
-    expect(find.textContaining('SSH password not set for this run'),
-        findsOneWidget);
+    expect(find.textContaining('本次运行未设置 SSH 密码'), findsOneWidget);
   });
 
   testWidgets('host list shows password ready state for this run',
       (tester) async {
     await _pumpHostList(tester, host: _host(password: 'secret-password'));
 
-    expect(
-        find.textContaining('SSH password ready for this run'), findsOneWidget);
+    expect(find.textContaining('本次运行已准备 SSH 密码'), findsOneWidget);
   });
 
   testWidgets('host list can duplicate host config', (tester) async {
     await _pumpHostList(tester, host: _host(password: 'secret-password'));
 
-    await tester.tap(find.byTooltip('Host actions'));
+    await tester.tap(find.byTooltip('主机操作'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('复制配置'));
     await tester.pumpAndSettle();
 
-    expect(find.text('Add Host'), findsOneWidget);
+    expect(find.text('添加主机'), findsOneWidget);
     expect(find.widgetWithText(TextFormField, 'Dev Copy'), findsOneWidget);
     expect(
       find.widgetWithText(TextFormField, 'armin-codex-copy'),

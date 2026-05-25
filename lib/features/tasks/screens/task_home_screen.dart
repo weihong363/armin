@@ -4,9 +4,8 @@ import '../../../app_state_scope.dart';
 import '../../../core/models/task_status.dart';
 import '../../../shared/theme/armin_theme.dart';
 import '../../history/screens/task_detail_screen.dart';
-import '../../hosts/screens/host_list_screen.dart';
-import '../../projects/screens/project_path_list_screen.dart';
-import '../../voice/screens/voice_settings_screen.dart';
+import '../../history/screens/task_history_screen.dart';
+import '../../settings/screens/settings_screen.dart';
 import '../../voice/services/voice_service.dart';
 import '../models/task_session.dart';
 import '../services/speech_draft_cleaner.dart';
@@ -86,27 +85,10 @@ class _TaskHomeScreenState extends State<TaskHomeScreen> {
                             ),
                           ),
                           IconButton.filledTonal(
-                            tooltip: 'Projects',
-                            icon: const Icon(Icons.folder_outlined),
-                            onPressed: () {
-                              Navigator.of(context).push(
-                                MaterialPageRoute<void>(
-                                  builder: (_) => const ProjectPathListScreen(),
-                                ),
-                              );
-                            },
-                          ),
-                          const SizedBox(width: 8),
-                          IconButton.filledTonal(
-                            tooltip: 'Hosts',
+                            key: const ValueKey('home-settings-button'),
+                            tooltip: '设置',
                             icon: const Icon(Icons.settings_outlined),
-                            onPressed: () {
-                              Navigator.of(context).push(
-                                MaterialPageRoute<void>(
-                                  builder: (_) => const HostListScreen(),
-                                ),
-                              );
-                            },
+                            onPressed: () => _openSettings(context),
                           ),
                         ],
                       ),
@@ -193,33 +175,28 @@ class _TaskHomeScreenState extends State<TaskHomeScreen> {
           ),
           NavigationDestination(
             icon: Icon(Icons.history_outlined),
+            selectedIcon: Icon(Icons.history),
             label: '历史',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.dns_outlined),
-            label: '主机',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.person_outline),
-            label: '我',
           ),
         ],
         onDestinationSelected: (index) {
-          if (index == 2) {
-            Navigator.of(context).push(
-              MaterialPageRoute<void>(
-                builder: (_) => const HostListScreen(),
-              ),
-            );
-          } else if (index == 3) {
-            Navigator.of(context).push(
-              MaterialPageRoute<void>(
-                builder: (_) => const VoiceSettingsScreen(),
-              ),
-            );
+          if (index == 1) {
+            _openHistory(context);
           }
         },
       ),
+    );
+  }
+
+  void _openSettings(BuildContext context) {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(builder: (_) => const SettingsScreen()),
+    );
+  }
+
+  void _openHistory(BuildContext context) {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(builder: (_) => const TaskHistoryScreen()),
     );
   }
 

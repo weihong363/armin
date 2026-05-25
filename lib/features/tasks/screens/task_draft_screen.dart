@@ -154,7 +154,7 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
             key: const ValueKey('host-selector'),
             initialValue: selectedHost?.id,
             decoration: const InputDecoration(
-              labelText: 'Host',
+              labelText: '执行主机',
             ),
             items: [
               for (final host in state.hosts)
@@ -175,7 +175,7 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
           if (state.hosts.isEmpty) ...[
             const SizedBox(height: 8),
             Text(
-              '请先添加 SSH Host，然后在这里选择执行主机。',
+              '请先添加主机连接，然后在这里选择执行主机。',
               style: Theme.of(context).textTheme.bodySmall,
             ),
           ],
@@ -187,7 +187,7 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
                   key: const ValueKey('project-path-selector'),
                   initialValue: selectedProjectPath?.id,
                   decoration: const InputDecoration(
-                    labelText: 'Project path',
+                    labelText: '项目目录',
                   ),
                   items: [
                     for (final projectPath in state.projectPaths)
@@ -208,7 +208,7 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
               ),
               const SizedBox(width: 8),
               IconButton.filledTonal(
-                tooltip: 'Project Path 设置',
+                tooltip: '项目目录设置',
                 icon: const Icon(Icons.folder_open_outlined),
                 onPressed: () {
                   Navigator.of(context).push(
@@ -223,7 +223,7 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
           if (state.projectPaths.isEmpty) ...[
             const SizedBox(height: 8),
             Text(
-              '请先添加 Project Path，然后在这里选择执行目录。',
+              '请先添加项目目录，然后在这里选择执行目录。',
               style: Theme.of(context).textTheme.bodySmall,
             ),
           ],
@@ -594,7 +594,7 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
     final projectPath = normalizeRemoteProjectPath(project?.path ?? '');
     if (projectPath.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('请先配置并选择 Project Path。')),
+        const SnackBar(content: Text('请先配置并选择项目目录。')),
       );
       return;
     }
@@ -604,14 +604,14 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
     if (host == null) {
       setState(() => _isSending = false);
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('请先添加 SSH Host 配置。')),
+        const SnackBar(content: Text('请先添加主机连接配置。')),
       );
       return;
     }
     if (host.password.trim().isEmpty) {
       setState(() => _isSending = false);
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('请先在 Host 配置中填写 SSH password。')),
+        const SnackBar(content: Text('请先在主机连接中填写 SSH 密码。')),
       );
       return;
     }

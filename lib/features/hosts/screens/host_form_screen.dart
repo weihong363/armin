@@ -97,35 +97,34 @@ class _HostFormScreenState extends State<HostFormScreen> {
 
     return Scaffold(
       appBar: AppBar(
-          title: Text(widget.duplicate || widget.host == null
-              ? 'Add Host'
-              : 'Edit Host')),
+          title:
+              Text(widget.duplicate || widget.host == null ? '添加主机' : '编辑主机')),
       body: Form(
         key: _formKey,
         child: ListView(
           padding: const EdgeInsets.all(16),
           children: [
-            _field(_nameController, 'Host name'),
-            Text('Host / IP', style: Theme.of(context).textTheme.bodySmall),
+            _field(_nameController, '主机名称'),
+            Text('主机 / IP', style: Theme.of(context).textTheme.bodySmall),
             const SizedBox(height: 6),
             _IpAddressField(
               controllers: _ipControllers,
               focusNodes: _ipFocusNodes,
             ),
             const SizedBox(height: 12),
-            _field(_portController, 'Port', keyboardType: TextInputType.number),
-            _field(_usernameController, 'Username'),
+            _field(_portController, '端口', keyboardType: TextInputType.number),
+            _field(_usernameController, '用户名'),
             _field(
               _passwordController,
-              'SSH password',
+              'SSH 密码',
               obscureText: true,
             ),
-            _field(_tmuxController, 'tmux session name'),
+            _field(_tmuxController, 'tmux 会话名称'),
             _commandEnvironmentSection(),
-            _field(_agentCommandController, 'Agent command'),
+            _field(_agentCommandController, 'Agent 命令'),
             const SizedBox(height: 12),
             SwitchListTile(
-              title: const Text('设为默认 Host'),
+              title: const Text('设为默认主机'),
               subtitle: Text(
                 isSingleHost ? '唯一主机，自动设为默认' : '新建任务时将自动使用此主机',
               ),
@@ -144,7 +143,7 @@ class _HostFormScreenState extends State<HostFormScreen> {
             ),
             const SizedBox(height: 12),
             Text(
-              'Phase 2 uses password auth first. Password is kept in memory only for this MVP. TODO: persist it with Android Keystore / EncryptedSharedPreferences.',
+              '当前使用密码认证，密码仅保留在本次运行内存中。',
               style: Theme.of(context).textTheme.bodySmall,
             ),
             const SizedBox(height: 12),
@@ -157,15 +156,13 @@ class _HostFormScreenState extends State<HostFormScreen> {
                       child: CircularProgressIndicator(strokeWidth: 2),
                     )
                   : const Icon(Icons.sensors_outlined),
-              label: Text(_isTestingConnection
-                  ? 'Testing SSH...'
-                  : 'Test SSH Connection'),
+              label: Text(_isTestingConnection ? '正在测试 SSH...' : '测试 SSH 连接'),
               onPressed: _isTestingConnection ? null : _testConnection,
             ),
             const SizedBox(height: 12),
             FilledButton.icon(
               icon: const Icon(Icons.save_outlined),
-              label: const Text('Save Host'),
+              label: const Text('保存主机'),
               onPressed: _save,
             ),
           ],
@@ -213,7 +210,7 @@ class _HostFormScreenState extends State<HostFormScreen> {
             const SizedBox(height: 12),
             DropdownButtonFormField<HostMachineType>(
               initialValue: _machineType,
-              decoration: const InputDecoration(labelText: 'Host type'),
+              decoration: const InputDecoration(labelText: '主机类型'),
               items: [
                 for (final type in HostMachineType.values)
                   DropdownMenuItem(
@@ -235,20 +232,19 @@ class _HostFormScreenState extends State<HostFormScreen> {
             ),
             const SizedBox(height: 6),
             Text(
-              '${_machineType.description} You can still override tmux path and PATH below.',
+              '${_machineType.description} 你仍可在下方覆盖 tmux 路径和 PATH。',
               style: Theme.of(context).textTheme.bodySmall,
             ),
             const SizedBox(height: 12),
-            _field(_tmuxCommandController, 'tmux command path'),
+            _field(_tmuxCommandController, 'tmux 命令路径'),
             _field(
               _pathPrependController,
-              'optional PATH prepend',
+              '可选 PATH 前置内容',
               required: false,
             ),
             DropdownButtonFormField<ShellWrapper>(
               initialValue: _shellWrapper,
-              decoration:
-                  const InputDecoration(labelText: 'optional shell wrapper'),
+              decoration: const InputDecoration(labelText: '可选 shell 包装器'),
               items: const [
                 DropdownMenuItem(
                   value: ShellWrapper.none,
@@ -271,7 +267,7 @@ class _HostFormScreenState extends State<HostFormScreen> {
             ),
             const SizedBox(height: 8),
             Text(
-              'If tmux works in your SSH app but not in Armin, set the tmux path or prepend PATH here.',
+              '如果 tmux 在 SSH 应用中可用、但在 Armin 中不可用，请在这里设置 tmux 路径或补充 PATH。',
               style: Theme.of(context).textTheme.bodySmall,
             ),
           ],
@@ -290,8 +286,7 @@ class _HostFormScreenState extends State<HostFormScreen> {
         username.isEmpty ||
         password.trim().isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-            content: Text('Host, username, and SSH password are required.')),
+        const SnackBar(content: Text('请填写有效主机 IP、用户名和 SSH 密码。')),
       );
       return;
     }
@@ -326,7 +321,7 @@ class _HostFormScreenState extends State<HostFormScreen> {
         return;
       }
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('SSH connection failed: ${e.toString()}')),
+        SnackBar(content: Text('SSH 连接失败：${e.toString()}')),
       );
     } finally {
       if (mounted) {
@@ -343,7 +338,7 @@ class _HostFormScreenState extends State<HostFormScreen> {
     final ipAddress = _ipAddress();
     if (!_isValidIpAddress(ipAddress)) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Valid host IP is required.')),
+        const SnackBar(content: Text('请输入有效的主机 IP。')),
       );
       return;
     }

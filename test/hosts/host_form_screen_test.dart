@@ -23,19 +23,18 @@ void main() {
       ),
     );
 
-    await tester.enterText(
-        find.widgetWithText(TextFormField, 'Host name'), 'Dev');
+    await tester.enterText(find.widgetWithText(TextFormField, '主机名称'), 'Dev');
     await _enterIpAddress(tester, const ['127', '0', '0', '1']);
     await tester.enterText(
-        find.widgetWithText(TextFormField, 'Username'), 'ironion');
+        find.widgetWithText(TextFormField, '用户名'), 'ironion');
     await tester.enterText(
-        find.widgetWithText(TextFormField, 'SSH password'), 'secret-password');
+        find.widgetWithText(TextFormField, 'SSH 密码'), 'secret-password');
     await tester.scrollUntilVisible(
-      find.text('Save Host'),
+      find.text('保存主机'),
       240,
       scrollable: find.byType(Scrollable).first,
     );
-    await tester.tap(find.text('Save Host'));
+    await tester.tap(find.text('保存主机'));
     await tester.pumpAndSettle();
 
     // Reload hosts to get the latest data
@@ -68,13 +67,12 @@ void main() {
 
     expect(find.text('Auth type'), findsNothing);
     expect(find.text('Private key path'), findsNothing);
-    expect(find.widgetWithText(TextFormField, 'SSH password'), findsOneWidget);
+    expect(find.widgetWithText(TextFormField, 'SSH 密码'), findsOneWidget);
     expect(
-      find.text(
-          'If tmux works in your SSH app but not in Armin, set the tmux path or prepend PATH here.'),
+      find.text('如果 tmux 在 SSH 应用中可用、但在 Armin 中不可用，请在这里设置 tmux 路径或补充 PATH。'),
       findsOneWidget,
     );
-    expect(find.text('Host type'), findsOneWidget);
+    expect(find.text('主机类型'), findsOneWidget);
   });
 
   testWidgets('host type applies default tmux command path', (tester) async {
@@ -91,11 +89,11 @@ void main() {
     );
 
     await tester.scrollUntilVisible(
-      find.text('Host type'),
+      find.text('主机类型'),
       240,
       scrollable: find.byType(Scrollable).first,
     );
-    await tester.tap(find.text('Generic / custom'));
+    await tester.tap(find.text('通用 / 自定义'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('macOS Apple Silicon').last);
     await tester.pumpAndSettle();
@@ -134,15 +132,15 @@ void main() {
 
     await _enterIpAddress(tester, const ['127', '0', '0', '1']);
     await tester.enterText(
-        find.widgetWithText(TextFormField, 'Username'), 'ironion');
+        find.widgetWithText(TextFormField, '用户名'), 'ironion');
     await tester.enterText(
-        find.widgetWithText(TextFormField, 'SSH password'), 'secret-password');
+        find.widgetWithText(TextFormField, 'SSH 密码'), 'secret-password');
     await tester.scrollUntilVisible(
-      find.text('Test SSH Connection'),
+      find.text('测试 SSH 连接'),
       240,
       scrollable: find.byType(Scrollable).first,
     );
-    await tester.tap(find.text('Test SSH Connection'));
+    await tester.tap(find.text('测试 SSH 连接'));
     await tester.pumpAndSettle();
 
     expect(agent.lastRequest?.host, '127.0.0.1');
@@ -172,18 +170,17 @@ void main() {
 
     await _enterIpAddress(tester, const ['127', '0', '0', '1']);
     await tester.enterText(
-        find.widgetWithText(TextFormField, 'Username'), 'ironion');
+        find.widgetWithText(TextFormField, '用户名'), 'ironion');
     await tester.scrollUntilVisible(
-      find.text('Test SSH Connection'),
+      find.text('测试 SSH 连接'),
       240,
       scrollable: find.byType(Scrollable).first,
     );
-    await tester.tap(find.text('Test SSH Connection'));
+    await tester.tap(find.text('测试 SSH 连接'));
     await tester.pumpAndSettle();
 
     expect(agent.lastRequest, isNull);
-    expect(find.text('Host, username, and SSH password are required.'),
-        findsOneWidget);
+    expect(find.text('请填写有效主机 IP、用户名和 SSH 密码。'), findsOneWidget);
   });
 }
 

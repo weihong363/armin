@@ -10,9 +10,9 @@ class ProjectPathListScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final state = AppStateScope.of(context);
     return Scaffold(
-      appBar: AppBar(title: const Text('Project Paths')),
+      appBar: AppBar(title: const Text('项目目录')),
       body: state.projectPaths.isEmpty
-          ? const Center(child: Text('暂无 Project Path'))
+          ? const Center(child: Text('暂无项目目录'))
           : ListView.separated(
               padding: const EdgeInsets.all(16),
               itemCount: state.projectPaths.length,
@@ -32,7 +32,7 @@ class ProjectPathListScreen extends StatelessWidget {
                         : Icons.folder_outlined,
                   ),
                   trailing: IconButton(
-                    tooltip: 'Delete',
+                    tooltip: '删除',
                     icon: const Icon(Icons.delete_outline),
                     onPressed: () => _confirmDelete(context, item),
                   ),
@@ -49,7 +49,7 @@ class ProjectPathListScreen extends StatelessWidget {
             ),
       floatingActionButton: FloatingActionButton.extended(
         icon: const Icon(Icons.add),
-        label: const Text('Add Path'),
+        label: const Text('添加目录'),
         onPressed: () {
           Navigator.of(context).push(
             MaterialPageRoute<void>(
@@ -69,7 +69,7 @@ class ProjectPathListScreen extends StatelessWidget {
       context: context,
       builder: (context) {
         return AlertDialog(
-          title: const Text('删除 Project Path?'),
+          title: const Text('删除项目目录？'),
           content: Text(item.path),
           actions: [
             TextButton(
@@ -125,9 +125,7 @@ class _ProjectPathFormScreenState extends State<ProjectPathFormScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.projectPath == null
-            ? 'Add Project Path'
-            : 'Edit Project Path'),
+        title: Text(widget.projectPath == null ? '添加项目目录' : '编辑项目目录'),
       ),
       body: Form(
         key: _formKey,
@@ -136,28 +134,28 @@ class _ProjectPathFormScreenState extends State<ProjectPathFormScreen> {
           children: [
             TextFormField(
               controller: _nameController,
-              decoration: const InputDecoration(labelText: 'Name'),
+              decoration: const InputDecoration(labelText: '名称'),
               validator: _required,
             ),
             const SizedBox(height: 12),
             TextFormField(
               controller: _pathController,
               decoration: const InputDecoration(
-                labelText: 'Remote project path',
+                labelText: '远端项目路径',
                 hintText: '/path/to/repo',
               ),
               validator: _required,
             ),
             const SizedBox(height: 12),
             SwitchListTile(
-              title: const Text('设为默认 Project Path'),
+              title: const Text('设为默认项目目录'),
               value: _isDefault,
               onChanged: (value) => setState(() => _isDefault = value),
             ),
             const SizedBox(height: 24),
             FilledButton.icon(
               icon: const Icon(Icons.save_outlined),
-              label: const Text('Save Project Path'),
+              label: const Text('保存项目目录'),
               onPressed: _save,
             ),
           ],
@@ -168,7 +166,7 @@ class _ProjectPathFormScreenState extends State<ProjectPathFormScreen> {
 
   String? _required(String? value) {
     if (value == null || value.trim().isEmpty) {
-      return 'Required';
+      return '必填';
     }
     return null;
   }

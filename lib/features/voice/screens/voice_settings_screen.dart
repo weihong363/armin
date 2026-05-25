@@ -12,7 +12,7 @@ class VoiceSettingsScreen extends StatelessWidget {
     final state = AppStateScope.of(context);
     final settings = state.speechSettings;
     return Scaffold(
-      appBar: AppBar(title: const Text('语音设置')),
+      appBar: AppBar(title: const Text('语音与播报')),
       body: ListView(
         padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
         children: [
@@ -67,7 +67,7 @@ class VoiceSettingsScreen extends StatelessWidget {
             ],
             selected: {settings.voiceStyle},
             onSelectionChanged: settings.enabled
-                ? (selected) => _update(
+                ? (selected) => _previewStyle(
                       context,
                       settings.copyWith(voiceStyle: selected.single),
                     )
@@ -80,5 +80,22 @@ class VoiceSettingsScreen extends StatelessWidget {
 
   void _update(BuildContext context, TaskSpeechSettings settings) {
     AppStateScope.of(context).updateSpeechSettings(settings);
+  }
+
+  Future<void> _previewStyle(
+    BuildContext context,
+    TaskSpeechSettings settings,
+  ) async {
+    final state = AppStateScope.of(context);
+    state.updateSpeechSettings(settings);
+    await state.voiceService.speakSummary(_previewText(settings.voiceStyle));
+  }
+
+  String _previewText(SpeechVoiceStyle style) {
+    return switch (style) {
+      SpeechVoiceStyle.systemDefault => '你好，我是 Armin。这是系统默认语音。',
+      SpeechVoiceStyle.clearFemale => '你好，我是 Armin。任务结果已整理完成。',
+      SpeechVoiceStyle.fastFemale => '你好，我是 Armin。任务结果已完成，请查看重点。',
+    };
   }
 }

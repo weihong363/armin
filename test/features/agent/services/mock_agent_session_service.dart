@@ -61,6 +61,12 @@ TASK_RESULT_END
   Future<void> sendFollowUp(AgentControlRequest request) async {}
 
   @override
+  Future<void> selectTerminalOption(
+    AgentControlRequest request,
+    String optionKey,
+  ) async {}
+
+  @override
   Future<void> pause(AgentControlRequest request) async {}
 
   @override

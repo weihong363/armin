@@ -25,8 +25,6 @@ void main() {
         TaskStatus.running);
     expect(machine.next(TaskStatus.running, TaskStatus.stopped),
         TaskStatus.stopped);
-    expect(machine.next(TaskStatus.running, TaskStatus.completed),
-        TaskStatus.completed);
     expect(machine.next(TaskStatus.running, TaskStatus.turnIdle),
         TaskStatus.turnIdle);
     expect(machine.next(TaskStatus.turnIdle, TaskStatus.running),
@@ -44,6 +42,10 @@ void main() {
 
     expect(
       () => machine.next(TaskStatus.completed, TaskStatus.running),
+      throwsStateError,
+    );
+    expect(
+      () => machine.next(TaskStatus.running, TaskStatus.completed),
       throwsStateError,
     );
   });

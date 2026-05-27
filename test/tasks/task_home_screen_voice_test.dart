@@ -9,9 +9,10 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   testWidgets('home microphone shows recognized voice output', (tester) async {
+    final voiceService = MockVoiceService(recognizedText: '修复首页登录失败');
     await _pumpHome(
       tester,
-      voiceService: MockVoiceService(recognizedText: '修复首页登录失败'),
+      voiceService: voiceService,
     );
 
     await _pressAndReleaseHomeMic(tester);
@@ -19,6 +20,7 @@ void main() {
     expect(find.byKey(const ValueKey('home-voice-panel')), findsOneWidget);
     expect(find.text('修复首页登录失败'), findsOneWidget);
     expect(find.text('写入草稿'), findsOneWidget);
+    expect(voiceService.stopSpeakingCount, 1);
   });
 
   testWidgets('home voice panel can return to home', (tester) async {

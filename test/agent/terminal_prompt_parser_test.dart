@@ -1,0 +1,33 @@
+import 'package:armin/features/agent/parsers/terminal_prompt_parser.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+void main() {
+  test('parses Codex execution prompt options from terminal output', () {
+    const output = '''
+\x1B[33mAllow execution of [ls]? Redirection detected.\x1B[0m
+
+\x1B[32m> 1. Allow once\x1B[0m
+  2. Always allow this exact command for future sessions
+  3. Reject and type something
+  4. No
+''';
+
+    final prompt = const TerminalPromptParser().parse(output);
+
+    expect(prompt?.question, 'Allow execution of [ls]? Redirection detected.');
+    expect(prompt?.options, hasLength(4));
+    expect(prompt?.options.first.key, '1');
+    expect(prompt?.options.first.label, 'Allow once');
+    expect(prompt?.options.last.label, 'No');
+  });
+
+  test('ignores ordinary numbered terminal output', () {
+    final prompt = const TerminalPromptParser().parse('''
+Validation complete:
+1. flutter test passed
+2. flutter analyze passed
+''');
+
+    expect(prompt, isNull);
+  });
+}

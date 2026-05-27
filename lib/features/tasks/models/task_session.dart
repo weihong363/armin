@@ -1,6 +1,7 @@
 import '../../../core/models/task_status.dart';
 import '../../agent/parsers/approval_request.dart';
 import '../../agent/parsers/task_result.dart';
+import '../../agent/parsers/terminal_prompt.dart';
 import '../../hosts/models/host_config.dart';
 import 'execution_log.dart';
 import 'metric_event.dart';
@@ -36,6 +37,7 @@ class TaskSession {
     this.summary,
     this.result,
     this.approval,
+    this.terminalPrompt,
     this.voiceInputs = const [],
     this.draftRecord,
     this.promptRecord,
@@ -68,6 +70,7 @@ class TaskSession {
   final String? summary;
   final TaskResult? result;
   final ApprovalRequest? approval;
+  final TerminalPrompt? terminalPrompt;
   final List<VoiceInput> voiceInputs;
   final TaskDraft? draftRecord;
   final PromptRecord? promptRecord;
@@ -109,6 +112,8 @@ class TaskSession {
       summary: json['summary'] as String?,
       result: _objectOf(json['result'], TaskResult.fromJson),
       approval: _objectOf(json['approval'], ApprovalRequest.fromJson),
+      terminalPrompt:
+          _objectOf(json['terminalPrompt'], TerminalPrompt.fromJson),
       voiceInputs: _listOf(json['voiceInputs'], VoiceInput.fromJson),
       draftRecord: _objectOf(json['draftRecord'], TaskDraft.fromJson),
       promptRecord: _objectOf(json['promptRecord'], PromptRecord.fromJson),
@@ -144,6 +149,7 @@ class TaskSession {
     String? summary,
     TaskResult? result,
     ApprovalRequest? approval,
+    TerminalPrompt? terminalPrompt,
     List<VoiceInput>? voiceInputs,
     TaskDraft? draftRecord,
     PromptRecord? promptRecord,
@@ -153,6 +159,7 @@ class TaskSession {
     List<Subtask>? subtasks,
     List<NativeOutputTurn>? turns,
     bool clearApproval = false,
+    bool clearTerminalPrompt = false,
   }) {
     return TaskSession(
       id: id ?? this.id,
@@ -177,6 +184,8 @@ class TaskSession {
       summary: summary ?? this.summary,
       result: result ?? this.result,
       approval: clearApproval ? null : approval ?? this.approval,
+      terminalPrompt:
+          clearTerminalPrompt ? null : terminalPrompt ?? this.terminalPrompt,
       voiceInputs: voiceInputs ?? this.voiceInputs,
       draftRecord: draftRecord ?? this.draftRecord,
       promptRecord: promptRecord ?? this.promptRecord,
@@ -212,6 +221,7 @@ class TaskSession {
       'summary': summary,
       'result': result?.toJson(),
       'approval': approval?.toJson(),
+      'terminalPrompt': terminalPrompt?.toJson(),
       'voiceInputs': voiceInputs.map((input) => input.toJson()).toList(),
       'draftRecord': draftRecord?.toJson(),
       'promptRecord': promptRecord?.toJson(),

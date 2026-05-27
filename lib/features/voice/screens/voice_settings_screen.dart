@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../../app_state_scope.dart';
+import '../../tasks/services/output_summary_provider.dart';
 import '../services/device_voice_service.dart';
 import '../services/task_speech_policy.dart';
 
@@ -46,6 +47,28 @@ class VoiceSettingsScreen extends StatelessWidget {
                       settings.copyWith(speakAttention: value),
                     )
                 : null,
+          ),
+          SwitchListTile(
+            title: const Text('端侧摘要增强（实验）'),
+            subtitle: const Text('仅提炼结果重点，不参与 Agent 执行；不可用时自动回退'),
+            value: settings.preferLocalSummaryModel,
+            onChanged: (value) => _update(
+              context,
+              settings.copyWith(preferLocalSummaryModel: value),
+            ),
+          ),
+          FutureBuilder<LocalSummaryCapability>(
+            future: state.localSummaryCapability(),
+            builder: (context, snapshot) {
+              final message = snapshot.data?.message ?? '正在检测端侧摘要能力...';
+              return Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: Text(
+                  message,
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              );
+            },
           ),
           const SizedBox(height: 16),
           Text('音色风格', style: Theme.of(context).textTheme.titleSmall),

@@ -69,6 +69,47 @@ flutter test
     expect(decision.text, contains('本轮输出已暂停，可以继续补充指令'));
   });
 
+  test('turn idle speech excludes follow-up input echoed in output', () async {
+    final previous = _task(status: TaskStatus.running);
+    final current = previous.copyWith(
+      status: TaskStatus.turnIdle,
+      summary: '输出 hello world\nhello',
+      turns: [
+        _turnWithInput(1, '检查当前项目'),
+        _turnWithInput(2, '输出 hello world'),
+      ],
+    );
+
+    final decision = await policy.decide(
+      previous: previous,
+      current: current,
+      settings: settings,
+    );
+
+    expect(decision.text, contains('hello'));
+    expect(decision.text, isNot(contains('输出 hello world')));
+  });
+
+  test('turn idle with prompt echo only speaks state rather than input',
+      () async {
+    final previous = _task(status: TaskStatus.running);
+    final current = previous.copyWith(
+      status: TaskStatus.turnIdle,
+      summary: '输出 hello world',
+      turns: [_turnWithInput(1, '输出 hello world')],
+    );
+
+    final decision = await policy.decide(
+      previous: previous,
+      current: current,
+      settings: settings,
+    );
+
+    expect(decision.shouldSpeak, isTrue);
+    expect(decision.text, '本轮输出已暂停，可以继续补充指令');
+    expect(decision.text, isNot(contains('输出 hello world')));
+  });
+
   test('need approval task speaks confirmation prompt without command detail',
       () async {
     final previous = _task(status: TaskStatus.running);
@@ -227,6 +268,11 @@ NativeOutputTurn _turn(int index) {
     lastOutputAt: now,
     status: NativeOutputTurnStatus.turnIdle,
   );
+}
+
+NativeOutputTurn _turnWithInput(int index, String input) {
+  final turn = _turn(index);
+  return turn.copyWith(userInput: input);
 }
 
 class _CapturingSummaryProvider implements OutputSummaryProvider {

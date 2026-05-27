@@ -30,6 +30,40 @@ Ran jq -r '.pet_id' output/hatch-pet/*/pet_request.json
     expect(summary.displaySummary, isNot(contains('Ran jq')));
   });
 
+  test('rule provider removes follow-up prompt echoes from readable output',
+      () async {
+    const followUp = OutputSummaryRequest(
+      cleanedOutput: '''
+输出 hello world
+hello
+''',
+      status: TaskStatus.turnIdle,
+      taskTitle: '初始任务',
+      promptInputs: ['输出 hello world'],
+    );
+
+    final summary =
+        await const RuleBasedOutputSummaryProvider().summarize(followUp);
+
+    expect(summary.displaySummary, 'hello');
+    expect(summary.speechSummary, 'hello');
+    expect(summary.displaySummary, isNot(contains('输出 hello world')));
+  });
+
+  test('rule provider does not speak a prompt when no output exists', () async {
+    const echoOnly = OutputSummaryRequest(
+      cleanedOutput: '输出 hello world',
+      status: TaskStatus.turnIdle,
+      promptInputs: ['输出 hello world'],
+    );
+
+    final summary =
+        await const RuleBasedOutputSummaryProvider().summarize(echoOnly);
+
+    expect(summary.displaySummary, isEmpty);
+    expect(summary.speechSummary, isEmpty);
+  });
+
   test('local model provider falls back when unavailable', () async {
     final summary = await const LocalSmallModelSummaryProvider().summarize(
       request,
@@ -57,6 +91,122 @@ Ran jq -r '.pet_id' output/hatch-pet/*/pet_request.json
     expect(summary.fallbackReason, startsWith('local small model failed:'));
   });
 
+  test('local model capability detects unsupported device and falls back',
+      () async {
+    final provider = LocalSmallModelSummaryProvider(
+      availabilityCheck: () async => false,
+      runner: (_) async => const OutputSummary(
+        displaySummary: 'model summary',
+        speechSummary: 'model summary',
+      ),
+    );
+
+    final capability = await provider.capability();
+    final summary = await provider.summarize(request);
+
+    expect(capability.available, isFalse);
+    expect(capability.message, contains('不支持'));
+    expect(summary.displaySummary, '实际的 pets 有 momo、luna、nori。');
+    expect(summary.fallbackReason, 'local small model not supported');
+  });
+
+  test('selectable provider switches to safe local model summary', () async {
+    final provider = SelectableOutputSummaryProvider(
+      localModel: LocalSmallModelSummaryProvider(
+        runner: (_) async => const OutputSummary(
+          displaySummary: '已完成处理。password=hunter2',
+          speechSummary: '已完成处理。token=secret-token',
+        ),
+      ),
+    );
+
+    final ruleSummary = await provider.summarize(request);
+    provider.setPreferLocalModel(true);
+    final modelSummary = await provider.summarize(request);
+
+    expect(ruleSummary.displaySummary, '实际的 pets 有 momo、luna、nori。');
+    expect(modelSummary.displaySummary, contains('password=[REDACTED]'));
+    expect(modelSummary.displaySummary, isNot(contains('hunter2')));
+    expect(modelSummary.speechSummary, contains('token=[REDACTED]'));
+    expect(modelSummary.speechSummary, isNot(contains('secret-token')));
+  });
+
+  test('local model never receives unredacted task output or prompt text',
+      () async {
+    OutputSummaryRequest? receivedRequest;
+    final provider = LocalSmallModelSummaryProvider(
+      runner: (modelRequest) async {
+        receivedRequest = modelRequest;
+        return const OutputSummary(
+          displaySummary: '摘要完成。',
+          speechSummary: '摘要完成。',
+        );
+      },
+    );
+
+    await provider.summarize(
+      const OutputSummaryRequest(
+        cleanedOutput: '已连接 password=hunter2 token=secret-token',
+        status: TaskStatus.turnIdle,
+        taskTitle: '检查 api_key=private-key',
+        promptInputs: [
+          '使用 cookie=session-value',
+          '-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----',
+        ],
+        agentCommand: 'qodercli access_key=machine-token',
+      ),
+    );
+
+    final modelInput = receivedRequest!;
+    expect(modelInput.cleanedOutput, contains('password=[REDACTED]'));
+    expect(modelInput.cleanedOutput, contains('token=[REDACTED]'));
+    expect(modelInput.taskTitle, contains('api_key=[REDACTED]'));
+    expect(modelInput.promptInputs.first, contains('cookie=[REDACTED]'));
+    expect(modelInput.promptInputs.last, '[REDACTED_PRIVATE_KEY]');
+    expect(modelInput.agentCommand, contains('access_key=[REDACTED]'));
+    expect(modelInput.cleanedOutput, isNot(contains('hunter2')));
+    expect(modelInput.promptInputs, isNot(contains('session-value')));
+  });
+
+  test('local model fallback receives a redacted request', () async {
+    OutputSummaryRequest? fallbackRequest;
+    final provider = LocalSmallModelSummaryProvider(
+      fallback: _CapturingSummaryProvider(
+        onSummarize: (safeRequest) {
+          fallbackRequest = safeRequest;
+          return const OutputSummary(
+            displaySummary: '规则摘要。',
+            speechSummary: '规则摘要。',
+          );
+        },
+      ),
+    );
+
+    await provider.summarize(
+      const OutputSummaryRequest(
+        cleanedOutput: 'password=hunter2',
+        status: TaskStatus.turnIdle,
+      ),
+    );
+
+    expect(fallbackRequest!.cleanedOutput, 'password=[REDACTED]');
+  });
+
+  test('rule summary redacts secrets before display and speech', () async {
+    const sensitive = OutputSummaryRequest(
+      cleanedOutput: '已连接成功，password=hunter2 token=secret-token。',
+      status: TaskStatus.turnIdle,
+    );
+
+    final summary =
+        await const RuleBasedOutputSummaryProvider().summarize(sensitive);
+
+    expect(summary.displaySummary, contains('password=[REDACTED]'));
+    expect(summary.displaySummary, contains('token=[REDACTED]'));
+    expect(summary.speechSummary, isNot(contains('hunter2')));
+    expect(summary.speechSummary, isNot(contains('secret-token')));
+  });
+
   test('speech summary excludes raw terminal noise', () async {
     const noisy = OutputSummaryRequest(
       cleanedOutput: '''
@@ -81,4 +231,15 @@ You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro).
     expect(summary.speechSummary, isNot(contains('/Users/ironion')));
     expect(summary.speechSummary, isNot(contains('Use /skills')));
   });
+}
+
+class _CapturingSummaryProvider implements OutputSummaryProvider {
+  const _CapturingSummaryProvider({required this.onSummarize});
+
+  final OutputSummary Function(OutputSummaryRequest request) onSummarize;
+
+  @override
+  Future<OutputSummary> summarize(OutputSummaryRequest request) async {
+    return onSummarize(request);
+  }
 }

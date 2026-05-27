@@ -7,30 +7,30 @@ import 'package:flutter/foundation.dart';
 import '../../hosts/models/host_config.dart';
 import '../../tasks/services/agent_instruction_discovery.dart';
 import '../parsers/approval_parser.dart';
-import '../parsers/task_result_parser.dart';
+import '../parsers/terminal_prompt_parser.dart';
 import 'agent_session_service.dart';
 import 'codex_output_cleaner.dart';
 import 'native_output_observer.dart';
+import 'runtime_policy.dart';
 
 class SSHAgentSessionService implements AgentSessionService {
   SSHAgentSessionService({
-    TaskResultParser? resultParser,
     ApprovalParser? approvalParser,
+    TerminalPromptParser terminalPromptParser = const TerminalPromptParser(),
     Duration pollInterval = const Duration(seconds: 1),
-    int maxPolls = 900,
+    RuntimePolicy runtimePolicy = const RuntimePolicy(),
     CodexOutputCleaner cleaner = const CodexOutputCleaner(),
-  })  : _resultParser = resultParser ?? TaskResultParser(),
-        _approvalParser = approvalParser ?? ApprovalParser(),
+  })  : _approvalParser = approvalParser ?? ApprovalParser(),
+        _terminalPromptParser = terminalPromptParser,
         _pollInterval = pollInterval,
-        _maxPolls = maxPolls,
+        _runtimePolicy = runtimePolicy,
         _cleaner = cleaner;
 
-  final TaskResultParser _resultParser;
   final ApprovalParser _approvalParser;
+  final TerminalPromptParser _terminalPromptParser;
   final Duration _pollInterval;
-  final int _maxPolls;
+  final RuntimePolicy _runtimePolicy;
   final CodexOutputCleaner _cleaner;
-  static const int _settledStablePolls = 20;
 
   @override
   Future<AgentConnectionTestResult> testConnection(
@@ -128,7 +128,11 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
       final command = _buildExecutionScript(request);
       final session = await client.execute(command);
       final output = StringBuffer();
-      final observer = NativeOutputObserver(cleaner: _cleaner);
+      final observer = NativeOutputObserver(
+        cleaner: _cleaner,
+        idleThreshold: _runtimePolicy.idleThreshold,
+        reconnectThreshold: _runtimePolicy.reconnectThreshold,
+      );
       late final StreamSubscription<Uint8List> stdoutSub;
       late final StreamSubscription<Uint8List> stderrSub;
       late final StreamController<AgentExecutionUpdate> controller;
@@ -172,25 +176,34 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
             await controller.close();
             return;
           }
-          final approval = _approvalParser.parse(fullOutput);
-          final result = _resultParser.parse(fullOutput);
-          if (approval != null || result != null) {
+          if (_isRuntimeLimitReached(fullOutput)) {
             controller.add(
               AgentExecutionUpdate(
                 rawOutput: '',
                 cleanedOutput: _cleaner.clean(fullOutput),
-                observerState: approval != null
-                    ? NativeOutputObserverState.needAttention
-                    : NativeOutputObserverState.turnIdle,
-                turnIdle: approval == null,
-                needsAttention: approval != null,
+                observerState: NativeOutputObserverState.runtimeLost,
+                runtimeLost: true,
+                done: true,
+              ),
+            );
+            await controller.close();
+            return;
+          }
+          final approval = _approvalParser.parse(fullOutput);
+          if (approval != null) {
+            controller.add(
+              AgentExecutionUpdate(
+                rawOutput: '',
+                cleanedOutput: _cleaner.clean(fullOutput),
+                observerState: NativeOutputObserverState.needAttention,
+                needsAttention: true,
                 approval: approval,
-                result: result,
                 done: true,
               ),
             );
           } else {
             final snapshot = observer.observeSettled(fullOutput);
+            final terminalPrompt = _terminalPromptParser.parse(fullOutput);
             controller.add(
               AgentExecutionUpdate(
                 rawOutput: '',
@@ -198,7 +211,9 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
                 observerState: snapshot.state,
                 turnIdle: snapshot.turnIdle,
                 runtimeLost: snapshot.runtimeLost,
-                needsAttention: snapshot.needsAttention,
+                needsAttention:
+                    terminalPrompt != null || snapshot.needsAttention,
+                terminalPrompt: terminalPrompt,
                 done: true,
               ),
             );
@@ -221,12 +236,14 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
     NativeOutputObserver observer,
   ) {
     final snapshot = observer.observe(output.toString());
+    final terminalPrompt = _terminalPromptParser.parse(output.toString());
     return AgentExecutionUpdate(
       rawOutput: chunk,
       cleanedOutput: snapshot.cleanedOutput,
       observerState: snapshot.state,
       runtimeLost: snapshot.runtimeLost,
-      needsAttention: snapshot.needsAttention,
+      needsAttention: terminalPrompt != null || snapshot.needsAttention,
+      terminalPrompt: terminalPrompt,
     );
   }
 
@@ -245,10 +262,26 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
         output.contains('Armin could not capture tmux pane because session');
   }
 
+  bool _isRuntimeLimitReached(String output) {
+    return output.contains('Armin runtime limit reached while session');
+  }
+
   @override
   Future<void> sendFollowUp(AgentControlRequest request) async {
     _validateControlRequest(request);
     await _pasteText(request, _buildFollowUpText(request));
+  }
+
+  @override
+  Future<void> selectTerminalOption(
+    AgentControlRequest request,
+    String optionKey,
+  ) async {
+    _validateControlRequest(request);
+    if (!RegExp(r'^\d{1,2}$').hasMatch(optionKey)) {
+      throw ArgumentError('Terminal prompt option key is invalid.');
+    }
+    await _sendKeys(request, optionKey);
   }
 
   String _buildFollowUpText(AgentControlRequest request) {
@@ -285,18 +318,22 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
   @override
   Future<String> captureLog(AgentControlRequest request) async {
     _validateControlRequest(request);
-    final tmux = _tmuxCommand(request.tmuxCommand);
-    final command = '$tmux capture-pane -p -t '
-        '${_shellQuote(request.tmuxSessionName)} -S -200 2>/dev/null || true';
     final output = await _runControlCommand(
       request,
       _wrapRemoteCommand(
-        command,
+        _buildCaptureLogCommand(request),
         pathPrepend: request.pathPrepend,
         shellWrapper: request.shellWrapper,
       ),
     );
     return output.trim();
+  }
+
+  String _buildCaptureLogCommand(AgentControlRequest request) {
+    final tmux = _tmuxCommand(request.tmuxCommand);
+    return '$tmux capture-pane -p -t '
+        '${_shellQuote(request.tmuxSessionName)} '
+        '-S -${_runtimePolicy.finalCaptureLines} 2>/dev/null || true';
   }
 
   Future<SSHClient> _connect({
@@ -338,10 +375,7 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
   }
 
   Future<void> _sendKeys(AgentControlRequest request, String text) async {
-    final tmux = _tmuxCommand(request.tmuxCommand);
-    final command =
-        '$tmux send-keys -t ${_shellQuote(request.tmuxSessionName)} '
-        '-- ${_shellQuote(text)} C-m';
+    final command = _buildSendKeysCommand(request, text);
     await _runControlCommand(
         request,
         _wrapRemoteCommand(
@@ -349,6 +383,12 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
           pathPrepend: request.pathPrepend,
           shellWrapper: request.shellWrapper,
         ));
+  }
+
+  String _buildSendKeysCommand(AgentControlRequest request, String text) {
+    final tmux = _tmuxCommand(request.tmuxCommand);
+    return '$tmux send-keys -t ${_shellQuote(request.tmuxSessionName)} '
+        '-- ${_shellQuote(text)} C-m';
   }
 
   Future<void> _pasteText(AgentControlRequest request, String text) async {
@@ -374,6 +414,7 @@ pane="\$($tmux display-message -p -t $session '#{pane_id}')"
 $tmux send-keys -t "\$pane" C-u
 printf %s ${_shellQuote(text)} | $tmux load-buffer -
 $tmux paste-buffer -d -t "\$pane"
+sleep 0.2
 $tmux send-keys -t "\$pane" Enter$clearHistory
 ''';
   }
@@ -438,6 +479,9 @@ $tmux send-keys -t "\$pane" Enter$clearHistory
     );
     final prompt = _shellQuote(request.prompt);
     final delayMs = _pollInterval.inMilliseconds;
+    final stablePolls = _runtimePolicy.stablePollCount(_pollInterval);
+    final maxPolls = _runtimePolicy.maxPollCount(_pollInterval);
+    final monitorStart = -_runtimePolicy.monitorCaptureLines;
     final sessionSetup = request.attachOnly
         ? '''
 if ! $tmux has-session -t $session 2>/dev/null; then
@@ -456,7 +500,7 @@ fi
 i=0
 update_prompt_skipped=0
 while [ "\$i" -lt 20 ]; do
-  ready_output="\$($tmux capture-pane -p -t $session -S -80 2>/dev/null || true)"
+  ready_output="\$($tmux capture-pane -p -t $session -S $monitorStart 2>/dev/null || true)"
 ${_buildReadyCheck(profile)}
 ${_buildUpdatePromptSkip(profile, tmux, session)}
   if printf "%s" "\$ready_output" | grep -q "Armin ${profile.label} exited with status"; then
@@ -480,14 +524,14 @@ sleep 2
     final script = '''
 set -eu
 $sessionSetup
-initial_output="\$($tmux capture-pane -p -t $session -S -200 2>/dev/null || true)"
+initial_output="\$($tmux capture-pane -p -t $session -S $monitorStart 2>/dev/null || true)"
 initial_hash="\$(printf "%s" "\$initial_output" | shasum | awk "{print \\\$1}")"
 last_hash="\$initial_hash"
 stable_count=0
 changed_after_start=0
 i=0
-while [ "\$i" -lt $_maxPolls ]; do
-  pane_output="\$($tmux capture-pane -p -t $session -S -200 2>/dev/null || true)"
+while [ "\$i" -lt $maxPolls ]; do
+  pane_output="\$($tmux capture-pane -p -t $session -S $monitorStart 2>/dev/null || true)"
   if [ -z "\$pane_output" ] && ! $tmux has-session -t $session 2>/dev/null; then
     echo "Armin could not capture tmux pane because session ${_shellQuote(request.tmuxSessionName)} is not running."
     break
@@ -510,12 +554,17 @@ while [ "\$i" -lt $_maxPolls ]; do
     printf "%s\\n" "\$pane_output"
     break
   fi
-  if [ "\$changed_after_start" -eq 1 ] && [ "\$stable_count" -ge $_settledStablePolls ]; then
+  if printf "%s" "\$pane_output" | grep -E -q "Allow execution of|Allow command execution|Would you like to run"; then
     printf "%s\\n" "\$pane_output"
     break
   fi
-  if [ "\$i" -eq ${_maxPolls - 1} ]; then
+  if [ "\$changed_after_start" -eq 1 ] && [ "\$stable_count" -ge $stablePolls ]; then
     printf "%s\\n" "\$pane_output"
+    break
+  fi
+  if [ "\$i" -eq ${maxPolls - 1} ]; then
+    printf "%s\\n" "\$pane_output"
+    echo "Armin runtime limit reached while session ${_shellQuote(request.tmuxSessionName)} remains active."
     break
   fi
   i=\$((i + 1))
@@ -640,6 +689,19 @@ fi
   @visibleForTesting
   String buildPasteTextCommandForTest(AgentControlRequest request) {
     return _buildPasteTextCommand(request, _buildFollowUpText(request));
+  }
+
+  @visibleForTesting
+  String buildCaptureLogCommandForTest(AgentControlRequest request) {
+    return _buildCaptureLogCommand(request);
+  }
+
+  @visibleForTesting
+  String buildTerminalOptionCommandForTest(
+    AgentControlRequest request,
+    String optionKey,
+  ) {
+    return _buildSendKeysCommand(request, optionKey);
   }
 
   @visibleForTesting

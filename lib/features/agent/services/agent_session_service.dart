@@ -2,6 +2,7 @@ import '../../hosts/models/host_config.dart';
 import '../../tasks/services/agent_instruction_discovery.dart';
 import '../parsers/approval_request.dart';
 import '../parsers/task_result.dart';
+import '../parsers/terminal_prompt.dart';
 import 'native_output_observer.dart';
 
 export '../../tasks/services/agent_instruction_discovery.dart'
@@ -53,6 +54,7 @@ class AgentExecutionUpdate {
     this.needsAttention = false,
     this.result,
     this.approval,
+    this.terminalPrompt,
     this.done = false,
   });
 
@@ -64,6 +66,7 @@ class AgentExecutionUpdate {
   final bool needsAttention;
   final TaskResult? result;
   final ApprovalRequest? approval;
+  final TerminalPrompt? terminalPrompt;
   final bool done;
 }
 
@@ -159,6 +162,11 @@ abstract class AgentSessionService {
   );
 
   Future<void> sendFollowUp(AgentControlRequest request);
+
+  Future<void> selectTerminalOption(
+    AgentControlRequest request,
+    String optionKey,
+  );
 
   Future<void> pause(AgentControlRequest request);
 

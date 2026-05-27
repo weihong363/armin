@@ -4,7 +4,7 @@ import 'package:armin/features/tasks/services/secret_redactor.dart';
 
 void main() {
   test('redacts token password private key and cookie values', () {
-    final redacted = SecretRedactor().redactInlineSecrets(
+    final redacted = const SecretRedactor().redactInlineSecrets(
       'token=abc password=hunter2 private_key=key cookie=session secret=value api_key=api access_key=access',
     );
 
@@ -19,7 +19,7 @@ void main() {
   });
 
   test('redacts private key blocks', () {
-    final redacted = SecretRedactor().redactInlineSecrets('''
+    final redacted = const SecretRedactor().redactInlineSecrets('''
 -----BEGIN PRIVATE KEY-----
 super-secret
 -----END PRIVATE KEY-----

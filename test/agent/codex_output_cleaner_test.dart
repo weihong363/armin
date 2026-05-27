@@ -28,6 +28,8 @@ Armin context governance:
 https://chatgpt.com/codex?app-landing-page=true
 mapping values are not allowed in this context at line 2 column 152
 Find and fix a bug in @filename
+Implement {feature}
+Explain this codebase
 输出 hello
 hello
 ''';
@@ -39,6 +41,8 @@ hello
     expect(cleaned, isNot(contains('chatgpt.com')));
     expect(cleaned, isNot(contains('mapping values')));
     expect(cleaned, isNot(contains('@filename')));
+    expect(cleaned, isNot(contains('Implement {feature}')));
+    expect(cleaned, isNot(contains('Explain this codebase')));
     expect(cleaned, contains('输出 hello'));
     expect(cleaned, contains('hello'));
   });

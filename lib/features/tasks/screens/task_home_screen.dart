@@ -238,6 +238,7 @@ class _TaskHomeScreenState extends State<TaskHomeScreen> {
     });
 
     try {
+      await voiceService.stopSpeaking();
       await voiceService.startListening(
         onPartial: (partial) {
           if (!mounted) {

@@ -1,6 +1,8 @@
 import '../models/secret_entry.dart';
 
 class SecretRedactor {
+  const SecretRedactor();
+
   static final RegExp sensitiveInlinePattern = RegExp(
     r'((token|password|private[_ -]?key|cookie|api[_ -]?key|access[_ -]?key|secret)\s*[:=]\s*)([^\s,;]+)',
     caseSensitive: false,

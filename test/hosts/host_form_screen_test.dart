@@ -67,6 +67,7 @@ void main() {
 
     expect(find.text('Auth type'), findsNothing);
     expect(find.text('Private key path'), findsNothing);
+    expect(find.text('tmux 会话名称'), findsNothing);
     expect(find.widgetWithText(TextFormField, 'SSH 密码'), findsOneWidget);
     expect(
       find.text('如果 tmux 在 SSH 应用中可用、但在 Armin 中不可用，请在这里设置 tmux 路径或补充 PATH。'),
@@ -228,6 +229,12 @@ class _ConnectionTestAgent implements AgentSessionService {
 
   @override
   Future<void> sendFollowUp(AgentControlRequest request) async {}
+
+  @override
+  Future<void> selectTerminalOption(
+    AgentControlRequest request,
+    String optionKey,
+  ) async {}
 
   @override
   Future<void> stop(AgentControlRequest request) async {}

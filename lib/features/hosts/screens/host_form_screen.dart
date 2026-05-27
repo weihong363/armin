@@ -119,7 +119,6 @@ class _HostFormScreenState extends State<HostFormScreen> {
               'SSH 密码',
               obscureText: true,
             ),
-            _field(_tmuxController, 'tmux 会话名称'),
             _commandEnvironmentSection(),
             _field(_agentCommandController, 'Agent 命令'),
             const SizedBox(height: 12),
@@ -143,7 +142,7 @@ class _HostFormScreenState extends State<HostFormScreen> {
             ),
             const SizedBox(height: 12),
             Text(
-              '当前使用密码认证，密码仅保留在本次运行内存中。',
+              '当前仅支持密码认证。密码通过设备安全存储保存，不写入普通任务历史。',
               style: Theme.of(context).textTheme.bodySmall,
             ),
             const SizedBox(height: 12),

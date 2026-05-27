@@ -14,24 +14,29 @@ class TaskSpeechSettings {
     this.speakResults = true,
     this.speakAttention = true,
     this.voiceStyle = SpeechVoiceStyle.clearFemale,
+    this.preferLocalSummaryModel = false,
   });
 
   final bool enabled;
   final bool speakResults;
   final bool speakAttention;
   final SpeechVoiceStyle voiceStyle;
+  final bool preferLocalSummaryModel;
 
   TaskSpeechSettings copyWith({
     bool? enabled,
     bool? speakResults,
     bool? speakAttention,
     SpeechVoiceStyle? voiceStyle,
+    bool? preferLocalSummaryModel,
   }) {
     return TaskSpeechSettings(
       enabled: enabled ?? this.enabled,
       speakResults: speakResults ?? this.speakResults,
       speakAttention: speakAttention ?? this.speakAttention,
       voiceStyle: voiceStyle ?? this.voiceStyle,
+      preferLocalSummaryModel:
+          preferLocalSummaryModel ?? this.preferLocalSummaryModel,
     );
   }
 }
@@ -109,6 +114,10 @@ class TaskSpeechPolicy {
         cleanedOutput: source,
         status: task.status,
         taskTitle: task.title,
+        promptInputs: [
+          task.userText,
+          ...task.turns.map((turn) => turn.userInput),
+        ],
         agentCommand: task.host.agentCommand,
       ),
     );
@@ -137,17 +146,26 @@ class TaskSpeechPolicy {
 
   String _decorate(TaskStatus status, String text) {
     return switch (status) {
-      TaskStatus.completed => '任务已完成。$text',
-      TaskStatus.userCompleted => '任务已标记完成。$text',
-      TaskStatus.failed => '任务失败。$text。建议先查看失败原因，再决定是否重试',
-      TaskStatus.userFailed => '任务已标记失败。$text',
-      TaskStatus.runtimeLost => '运行时可能已断开。$text。建议重新连接后确认远端状态',
-      TaskStatus.turnIdle => '$text。本轮输出已暂停，可以继续补充指令',
-      TaskStatus.needAttention => '当前需要处理。$text',
-      TaskStatus.needApproval => '需要你确认一个操作。$text',
+      TaskStatus.completed => _withDetail('任务已完成', text),
+      TaskStatus.userCompleted => _withDetail('任务已标记完成', text),
+      TaskStatus.failed => text.isEmpty
+          ? '任务失败。建议先查看失败原因，再决定是否重试'
+          : '任务失败。$text。建议先查看失败原因，再决定是否重试',
+      TaskStatus.userFailed => _withDetail('任务已标记失败', text),
+      TaskStatus.runtimeLost => text.isEmpty
+          ? '运行时可能已断开。建议重新连接后确认远端状态'
+          : '运行时可能已断开。$text。建议重新连接后确认远端状态',
+      TaskStatus.turnIdle =>
+        text.isEmpty ? '本轮输出已暂停，可以继续补充指令' : '$text。本轮输出已暂停，可以继续补充指令',
+      TaskStatus.needAttention => _withDetail('当前需要处理', text),
+      TaskStatus.needApproval => _withDetail('需要你确认一个操作', text),
       TaskStatus.observerDetached => '已断开手机监听。远端任务可能仍在运行',
       _ => text,
     };
+  }
+
+  String _withDetail(String statusText, String detail) {
+    return detail.isEmpty ? '$statusText。' : '$statusText。$detail';
   }
 
   String _limitSentences(String text) {

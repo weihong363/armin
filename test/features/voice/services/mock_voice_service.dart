@@ -9,6 +9,7 @@ class MockVoiceService implements VoiceService {
   final String recognizedText;
   final bool available;
   final List<String> spokenSummaries = [];
+  int stopSpeakingCount = 0;
   String _latestWords = '';
 
   @override
@@ -39,5 +40,10 @@ class MockVoiceService implements VoiceService {
   @override
   Future<void> speakSummary(String summary) async {
     spokenSummaries.add(summary);
+  }
+
+  @override
+  Future<void> stopSpeaking() async {
+    stopSpeakingCount++;
   }
 }

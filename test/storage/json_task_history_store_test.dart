@@ -7,6 +7,7 @@ import 'package:armin/core/models/task_status.dart';
 import 'package:armin/core/storage/json_task_history_store.dart';
 import 'package:armin/core/storage/secure_password_store.dart';
 import 'package:armin/features/hosts/models/host_config.dart';
+import 'package:armin/features/agent/parsers/terminal_prompt.dart';
 import 'package:armin/features/projects/models/project_path_config.dart';
 import 'package:armin/features/tasks/models/native_output_turn.dart';
 import 'package:armin/features/tasks/models/task_session.dart';
@@ -156,6 +157,31 @@ void main() {
     expect(tasks.single.turns, hasLength(1));
     expect(tasks.single.turns.single.status, NativeOutputTurnStatus.turnIdle);
     expect(tasks.single.turns.single.userInput, '输出 hello');
+  });
+
+  test('JsonTaskHistoryStore persists pending terminal prompts', () async {
+    final tempDir = await Directory.systemTemp.createTemp('armin-store-test');
+    addTearDown(() => tempDir.delete(recursive: true));
+    final store = JsonTaskHistoryStore(
+      file: File('${tempDir.path}/history.json'),
+      passwordStore: SecurePasswordStore(storage: MockSecureStorage()),
+    );
+    final task = _task(DateTime(2026, 5, 26)).copyWith(
+      terminalPrompt: const TerminalPrompt(
+        question: 'Allow execution of [ls]?',
+        options: [TerminalPromptOption(key: '1', label: 'Allow once')],
+      ),
+    );
+
+    await store.saveTask(task);
+    final reloaded = JsonTaskHistoryStore(
+      file: File('${tempDir.path}/history.json'),
+      passwordStore: SecurePasswordStore(storage: MockSecureStorage()),
+    );
+
+    final savedTask = (await reloaded.loadTasks()).single;
+    expect(savedTask.terminalPrompt?.question, 'Allow execution of [ls]?');
+    expect(savedTask.terminalPrompt?.options.single.key, '1');
   });
 
   test('JsonTaskHistoryStore reads old tasks without turns', () async {

@@ -1,4 +1,5 @@
 import 'package:armin/features/agent/services/agent_session_service.dart';
+import 'package:armin/features/agent/services/runtime_policy.dart';
 import 'package:armin/features/agent/services/ssh_agent_session_service.dart';
 import 'package:armin/features/hosts/models/host_config.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -117,9 +118,11 @@ void main() {
     expect(command, contains('Enter'));
     expect(command, contains('stable_count'));
     expect(command, contains('stable_count" -ge 20'));
+    expect(command, contains('Allow execution of|Allow command execution'));
     expect(command, contains("'\"'\"'/usr/bin/tmux'\"'\"' capture-pane"));
-    expect(command, contains('-S -200'));
+    expect(command, contains('-S -80'));
     expect(command, isNot(contains('-S -2000')));
+    expect(command, contains('runtime limit reached while session'));
   });
 
   test('connection test command checks tmux and agent availability', () {
@@ -273,6 +276,42 @@ void main() {
     expect(command, isNot(contains('new-session -d')));
   });
 
+  test('runtime policy configures quiet threshold runtime and capture windows',
+      () {
+    final service = SSHAgentSessionService(
+      pollInterval: const Duration(seconds: 1),
+      runtimePolicy: const RuntimePolicy(
+        idleThreshold: Duration(seconds: 3),
+        maxRuntime: Duration(seconds: 7),
+        monitorCaptureLines: 40,
+        finalCaptureLines: 120,
+      ),
+    );
+    const executionRequest = AgentExecutionRequest(
+      prompt: '',
+      host: '127.0.0.1',
+      username: 'ironion',
+      tmuxSessionName: 'armin-2800',
+      password: 'secret-password',
+      attachOnly: true,
+    );
+    const controlRequest = AgentControlRequest(
+      host: '127.0.0.1',
+      port: 22,
+      username: 'ironion',
+      tmuxSessionName: 'armin-2800',
+      password: 'secret-password',
+    );
+
+    final execution = service.buildExecutionCommandForTest(executionRequest);
+    final finalCapture = service.buildCaptureLogCommandForTest(controlRequest);
+
+    expect(execution, contains('-S -40'));
+    expect(execution, contains('stable_count" -ge 3'));
+    expect(execution, contains('while [ "\$i" -lt 7 ]'));
+    expect(finalCapture, contains('-S -120'));
+  });
+
   test('missing readable result log keeps captured pane output', () {
     final service = SSHAgentSessionService();
 
@@ -342,7 +381,28 @@ decision: approved
     expect(command, contains("'#{pane_id}'"));
     expect(command, contains(r'send-keys -t "$pane" C-u'));
     expect(command, contains(r'paste-buffer -d -t "$pane"'));
+    expect(
+      command,
+      contains('paste-buffer -d -t "\$pane"\nsleep 0.2\n'
+          '\'tmux\' send-keys -t "\$pane" Enter'),
+    );
     expect(command, contains(r'send-keys -t "$pane" Enter'));
     expect(command, contains('输出 hello world'));
+  });
+
+  test('terminal prompt option sends the numbered selection and Enter', () {
+    final service = SSHAgentSessionService();
+    const request = AgentControlRequest(
+      host: '127.0.0.1',
+      port: 22,
+      username: 'ironion',
+      tmuxSessionName: 'armin-2800',
+      password: 'secret-password',
+    );
+
+    final command = service.buildTerminalOptionCommandForTest(request, '1');
+
+    expect(command, contains("send-keys -t 'armin-2800'"));
+    expect(command, contains("-- '1' C-m"));
   });
 }

@@ -79,6 +79,8 @@ class CodexOutputCleaner {
         lower.contains('mapping values are not allowed in this context') ||
         lower.startsWith('are not allowed in this context') ||
         lower == 'find and fix a bug in @filename' ||
+        lower == 'implement {feature}' ||
+        lower == 'explain this codebase' ||
         RegExp(r'^\d+\.\s').hasMatch(lower);
   }
 

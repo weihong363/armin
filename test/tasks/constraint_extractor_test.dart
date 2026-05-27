@@ -5,7 +5,7 @@ import 'package:armin/features/tasks/services/constraint_extractor.dart';
 
 void main() {
   test('extracts common spoken constraints', () {
-    final constraints = ConstraintExtractor().extract(
+    final constraints = const ConstraintExtractor().extract(
       '先看看登录问题，先别大改，跑一下测试，别提交',
     );
 

@@ -5,7 +5,7 @@ import 'secret_redactor.dart';
 
 class PromptTemplateBuilder {
   PromptTemplateBuilder({SecretRedactor? redactor, PromptGovernor? governor})
-      : _redactor = redactor ?? SecretRedactor(),
+      : _redactor = redactor ?? const SecretRedactor(),
         _governor = governor ?? const PromptGovernor();
 
   static const templateVersion = 'armin-task-v1';

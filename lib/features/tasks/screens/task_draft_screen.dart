@@ -32,11 +32,13 @@ class TaskDraftScreen extends StatefulWidget {
   const TaskDraftScreen({
     this.initialTaskText = '',
     this.selectedHostId,
+    this.initialProjectPath,
     super.key,
   });
 
   final String initialTaskText;
   final String? selectedHostId;
+  final String? initialProjectPath;
 
   @override
   State<TaskDraftScreen> createState() => _TaskDraftScreenState();
@@ -49,9 +51,9 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
   final _secretValueController = TextEditingController();
   final _secretUsageController = TextEditingController();
   final _cleaner = SpeechDraftCleaner();
-  final _extractor = ConstraintExtractor();
+  final _extractor = const ConstraintExtractor();
   final _promptBuilder = PromptTemplateBuilder();
-  final _secretRedactor = SecretRedactor();
+  final _secretRedactor = const SecretRedactor();
   final List<SecretEntry> _secrets = [];
   final Set<TaskConstraint> _constraints = {
     TaskConstraint.minimalChange,
@@ -384,6 +386,7 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
     });
 
     try {
+      await voiceService.stopSpeaking();
       await voiceService.startListening(
         onPartial: (partial) {
           if (!mounted) {
@@ -809,6 +812,17 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
     if (selectedId != null) {
       for (final item in items) {
         if (item.id == selectedId) {
+          return item;
+        }
+      }
+    }
+    final initialPath = normalizeRemoteProjectPath(
+      widget.initialProjectPath ?? '',
+    );
+    if (initialPath.isNotEmpty) {
+      for (final item in items) {
+        if (normalizeRemoteProjectPath(item.path) == initialPath) {
+          _selectedProjectPathId = item.id;
           return item;
         }
       }

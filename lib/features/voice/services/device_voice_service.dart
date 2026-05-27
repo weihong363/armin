@@ -116,6 +116,11 @@ class DeviceVoiceService implements VoiceService {
     }
   }
 
+  @override
+  Future<void> stopSpeaking() async {
+    await _flutterTts.stop();
+  }
+
   void updateVoiceStyle(SpeechVoiceStyle style) {
     if (_voiceStyle == style) {
       return;

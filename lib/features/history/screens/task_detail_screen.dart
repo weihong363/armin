@@ -8,12 +8,15 @@ import '../../../shared/theme/armin_theme.dart';
 import '../../../shared/widgets/status_badge.dart';
 import '../../tasks/models/native_output_turn.dart';
 import '../../tasks/models/task_session.dart';
+import '../../tasks/models/voice_input.dart';
 import '../../tasks/services/output_summary_provider.dart';
+import '../../tasks/services/voice_task_command_processor.dart';
 import '../../tasks/screens/task_draft_screen.dart';
 
 enum _TaskDetailAction {
   rerun,
   forceStop,
+  cleanupSession,
   delete,
 }
 
@@ -46,19 +49,27 @@ class TaskDetailScreen extends StatelessWidget {
                     _rerunTask(context, task);
                   case _TaskDetailAction.forceStop:
                     await _forceStopTask(context, task);
+                  case _TaskDetailAction.cleanupSession:
+                    await _cleanupSession(context, task);
                   case _TaskDetailAction.delete:
                     _confirmDelete(context, task);
                 }
               },
               itemBuilder: (context) => [
-                const PopupMenuItem(
+                PopupMenuItem(
                   value: _TaskDetailAction.rerun,
-                  child: Text('重新执行'),
+                  enabled: _canRerun(task),
+                  child: const Text('重新执行'),
                 ),
                 PopupMenuItem(
                   value: _TaskDetailAction.forceStop,
                   enabled: _canForceStop(task),
                   child: const Text('强制停止'),
+                ),
+                PopupMenuItem(
+                  value: _TaskDetailAction.cleanupSession,
+                  enabled: _canCleanupSession(task),
+                  child: const Text('清理远端会话'),
                 ),
                 PopupMenuItem(
                   value: _TaskDetailAction.delete,
@@ -122,20 +133,42 @@ class TaskDetailScreen extends StatelessWidget {
   void _rerunTask(BuildContext context, TaskSession task) {
     Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (_) => TaskDraftScreen(initialTaskText: task.userText),
+        builder: (_) => TaskDraftScreen(
+          initialTaskText: task.userText,
+          selectedHostId: task.host.id,
+          initialProjectPath: task.host.projectPath,
+        ),
       ),
     );
   }
 
   Future<void> _forceStopTask(BuildContext context, TaskSession task) async {
     try {
-      await AppStateScope.of(context).stopTask(task);
+      await AppStateScope.read(context).stopTask(task);
     } catch (error) {
       if (!context.mounted) {
         return;
       }
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('强制停止失败：$error')),
+      );
+    }
+  }
+
+  Future<void> _cleanupSession(BuildContext context, TaskSession task) async {
+    try {
+      await AppStateScope.read(context).cleanupRemoteSession(task);
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('已请求清理远端 tmux 会话。')),
+        );
+      }
+    } catch (error) {
+      if (!context.mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('清理远端会话失败：$error')),
       );
     }
   }
@@ -165,7 +198,7 @@ class TaskDetailScreen extends StatelessWidget {
     );
     if (confirmed == true && context.mounted) {
       try {
-        await AppStateScope.of(context).deleteTask(task.id);
+        await AppStateScope.read(context).deleteTask(task.id);
       } catch (error) {
         if (!context.mounted) {
           return;
@@ -196,6 +229,24 @@ class TaskDetailScreen extends StatelessWidget {
         task.status == TaskStatus.needAttention ||
         task.status == TaskStatus.observerDetached ||
         task.status == TaskStatus.pending;
+  }
+
+  bool _canRerun(TaskSession task) {
+    return task.status == TaskStatus.completed ||
+        task.status == TaskStatus.failed ||
+        task.status == TaskStatus.userCompleted ||
+        task.status == TaskStatus.userFailed ||
+        task.status == TaskStatus.stopped ||
+        task.status == TaskStatus.runtimeLost;
+  }
+
+  bool _canCleanupSession(TaskSession task) {
+    return task.status == TaskStatus.completed ||
+        task.status == TaskStatus.failed ||
+        task.status == TaskStatus.userCompleted ||
+        task.status == TaskStatus.userFailed ||
+        task.status == TaskStatus.stopped ||
+        task.status == TaskStatus.runtimeLost;
   }
 }
 
@@ -326,6 +377,13 @@ class _TimelinePanel extends StatelessWidget {
         title: '发送到 Agent',
         subtitle: '通过 SSH/tmux 发送任务',
       ),
+      for (final input in _followUpVoiceInputs(task))
+        _TimelineItem(
+          icon: Icons.mic_none_outlined,
+          time: _timeLabel(input.createdAt),
+          title: '语音追加',
+          subtitle: input.rawSttText,
+        ),
       _TimelineItem(
         icon: _timelineResultIcon(task.status),
         time:
@@ -350,6 +408,13 @@ class _TimelinePanel extends StatelessWidget {
         );
       },
     );
+  }
+
+  Iterable<VoiceInput> _followUpVoiceInputs(TaskSession task) {
+    final hasInitialVoice = task.rawSttText.trim().isNotEmpty &&
+        task.voiceInputs.isNotEmpty &&
+        task.voiceInputs.first.rawSttText.trim() == task.rawSttText.trim();
+    return task.voiceInputs.skip(hasInitialVoice ? 1 : 0);
   }
 }
 
@@ -545,6 +610,10 @@ class _ResultPanelState extends State<_ResultPanel> {
             cleanedOutput: source,
             status: task.status,
             taskTitle: task.title,
+            promptInputs: [
+              task.userText,
+              ...task.turns.map((turn) => turn.userInput),
+            ],
             agentCommand: task.host.agentCommand,
           ),
         );
@@ -620,7 +689,7 @@ class _OutputSegmentCard extends StatelessWidget {
 
   Future<void> _speakSegment(BuildContext context, String text) async {
     try {
-      await AppStateScope.of(context).voiceService.speakSummary(text);
+      await AppStateScope.read(context).voiceService.speakSummary(text);
     } catch (error) {
       if (!context.mounted) {
         return;
@@ -709,6 +778,8 @@ class _RuntimeControlPanel extends StatefulWidget {
 }
 
 class _RuntimeControlPanelState extends State<_RuntimeControlPanel> {
+  static const _voiceCommandProcessor = VoiceTaskCommandProcessor();
+
   @override
   Widget build(BuildContext context) {
     final task = widget.task;
@@ -719,90 +790,121 @@ class _RuntimeControlPanelState extends State<_RuntimeControlPanel> {
         label: controlState.label,
         color: controlState.color,
       ),
-      child: Wrap(
-        spacing: 10,
-        runSpacing: 10,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _ControlButton(
-            icon: Icons.add_comment_outlined,
-            label: '追加指令',
-            tone: ControlTone.neutral,
-            onPressed: controlState == RuntimeControlState.stopped
-                ? null
-                : () => _showFollowUpSheet(context),
-          ),
-          _ControlButton(
-            icon: Icons.check_circle_outline,
-            label: '标记完成',
-            tone: ControlTone.neutral,
-            onPressed: controlState == RuntimeControlState.stopped ||
-                    controlState == RuntimeControlState.detached
-                ? null
-                : () => _runControlAction(
+          if (task.terminalPrompt != null) ...[
+            Text(
+              task.terminalPrompt!.question,
+              style: Theme.of(context).textTheme.bodyMedium,
+            ),
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                for (final option in task.terminalPrompt!.options)
+                  FilledButton.tonal(
+                    onPressed: () => _runControlAction(
                       context,
-                      () => AppStateScope.of(context).markTaskCompleted(task),
+                      () => AppStateScope.read(context)
+                          .selectTerminalOption(task, option),
                     ),
-          ),
-          _ControlButton(
-            icon: Icons.report_gmailerrorred_outlined,
-            label: '标记失败',
-            tone: ControlTone.danger,
-            onPressed: controlState == RuntimeControlState.stopped
-                ? null
-                : () => _runControlAction(
-                      context,
-                      () => AppStateScope.of(context).markTaskFailed(task),
-                    ),
-          ),
-          _ControlButton(
-            icon: controlState == RuntimeControlState.paused
-                ? Icons.play_arrow_outlined
-                : Icons.pause_outlined,
-            label: controlState == RuntimeControlState.paused ? '恢复' : '暂停',
-            tone: ControlTone.neutral,
-            onPressed: controlState == RuntimeControlState.stopped ||
-                    controlState == RuntimeControlState.detached
-                ? null
-                : () => _runControlAction(
-                      context,
-                      () => controlState == RuntimeControlState.paused
-                          ? AppStateScope.of(context).resumeTask(task)
-                          : AppStateScope.of(context).pauseTask(task),
-                    ),
-          ),
-          _ControlButton(
-            icon: Icons.stop_rounded,
-            label: '停止',
-            tone: ControlTone.danger,
-            onPressed: controlState == RuntimeControlState.stopped
-                ? null
-                : () => _runControlAction(
-                      context,
-                      () => AppStateScope.of(context).stopTask(task),
-                    ),
-          ),
-          _ControlButton(
-            icon: Icons.sensors_outlined,
-            label: '重新监听',
-            tone: ControlTone.neutral,
-            onPressed: controlState == RuntimeControlState.detached
-                ? () => _runControlAction(
-                      context,
-                      () => AppStateScope.of(context).reconnectTask(task),
-                    )
-                : null,
-          ),
-          _ControlButton(
-            icon: Icons.link_off_outlined,
-            label: '断开监听',
-            tone: ControlTone.danger,
-            onPressed: controlState == RuntimeControlState.stopped ||
-                    controlState == RuntimeControlState.detached
-                ? null
-                : () => _runControlAction(
-                      context,
-                      () => AppStateScope.of(context).disconnectTask(task),
-                    ),
+                    child: Text('${option.key}. ${option.label}'),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 16),
+          ],
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: [
+              _ControlButton(
+                icon: Icons.add_comment_outlined,
+                label: '追加指令',
+                tone: ControlTone.neutral,
+                onPressed: controlState == RuntimeControlState.stopped
+                    ? null
+                    : () => _showFollowUpSheet(context),
+              ),
+              _ControlButton(
+                icon: Icons.check_circle_outline,
+                label: '标记完成',
+                tone: ControlTone.neutral,
+                onPressed: controlState == RuntimeControlState.stopped ||
+                        controlState == RuntimeControlState.detached
+                    ? null
+                    : () => _runControlAction(
+                          context,
+                          () => AppStateScope.read(context)
+                              .markTaskCompleted(task),
+                        ),
+              ),
+              _ControlButton(
+                icon: Icons.report_gmailerrorred_outlined,
+                label: '标记失败',
+                tone: ControlTone.danger,
+                onPressed: controlState == RuntimeControlState.stopped
+                    ? null
+                    : () => _runControlAction(
+                          context,
+                          () =>
+                              AppStateScope.read(context).markTaskFailed(task),
+                        ),
+              ),
+              _ControlButton(
+                icon: controlState == RuntimeControlState.paused
+                    ? Icons.play_arrow_outlined
+                    : Icons.pause_outlined,
+                label: controlState == RuntimeControlState.paused ? '恢复' : '暂停',
+                tone: ControlTone.neutral,
+                onPressed: controlState == RuntimeControlState.stopped ||
+                        controlState == RuntimeControlState.detached
+                    ? null
+                    : () => _runControlAction(
+                          context,
+                          () => controlState == RuntimeControlState.paused
+                              ? AppStateScope.read(context).resumeTask(task)
+                              : AppStateScope.read(context).pauseTask(task),
+                        ),
+              ),
+              _ControlButton(
+                icon: Icons.stop_rounded,
+                label: '停止',
+                tone: ControlTone.danger,
+                onPressed: controlState == RuntimeControlState.stopped
+                    ? null
+                    : () => _runControlAction(
+                          context,
+                          () => AppStateScope.read(context).stopTask(task),
+                        ),
+              ),
+              _ControlButton(
+                icon: Icons.sensors_outlined,
+                label: '重新监听',
+                tone: ControlTone.neutral,
+                onPressed: controlState == RuntimeControlState.detached
+                    ? () => _runControlAction(
+                          context,
+                          () => AppStateScope.read(context).reconnectTask(task),
+                        )
+                    : null,
+              ),
+              _ControlButton(
+                icon: Icons.link_off_outlined,
+                label: '断开监听',
+                tone: ControlTone.danger,
+                onPressed: controlState == RuntimeControlState.stopped ||
+                        controlState == RuntimeControlState.detached
+                    ? null
+                    : () => _runControlAction(
+                          context,
+                          () =>
+                              AppStateScope.read(context).disconnectTask(task),
+                        ),
+              ),
+            ],
           ),
         ],
       ),
@@ -826,166 +928,268 @@ class _RuntimeControlPanelState extends State<_RuntimeControlPanel> {
   }
 
   void _showFollowUpSheet(BuildContext context) {
-    final controller = TextEditingController();
+    final state = AppStateScope.read(context);
     var listening = false;
     var busy = false;
     var partial = '';
+    VoiceTaskCommandResult? voiceCommand;
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
       showDragHandle: true,
       builder: (sheetContext) {
-        return StatefulBuilder(
-          builder: (sheetContext, setSheetState) {
-            Future<void> startVoice() async {
-              if (listening || busy) {
-                return;
-              }
-              final voiceService = AppStateScope.of(context).voiceService;
-              if (!voiceService.isAvailable) {
-                ScaffoldMessenger.of(sheetContext).showSnackBar(
-                  const SnackBar(content: Text('当前设备不支持语音，请手动输入')),
-                );
-                return;
-              }
-              setSheetState(() {
-                listening = true;
-                partial = '';
-              });
-              try {
-                await voiceService.startListening(
-                  onPartial: (value) {
-                    if (!sheetContext.mounted) {
-                      return;
-                    }
-                    setSheetState(() => partial = value);
-                  },
-                );
-              } catch (error) {
-                if (!sheetContext.mounted) {
+        return _FollowUpControllerHost(
+          builder: (controller) => StatefulBuilder(
+            builder: (sheetContext, setSheetState) {
+              Future<void> startVoice() async {
+                if (listening || busy) {
                   return;
                 }
-                setSheetState(() => listening = false);
-                ScaffoldMessenger.of(sheetContext).showSnackBar(
-                  SnackBar(content: Text('语音输入失败：$error')),
-                );
-              }
-            }
-
-            Future<void> stopVoice() async {
-              if (!listening) {
-                return;
-              }
-              final voiceService = AppStateScope.of(context).voiceService;
-              setSheetState(() {
-                listening = false;
-                busy = true;
-              });
-              try {
-                final stopped = await voiceService.stopListening();
-                final raw =
-                    stopped.trim().isNotEmpty ? stopped.trim() : partial.trim();
-                if (raw.isEmpty) {
-                  if (sheetContext.mounted) {
-                    ScaffoldMessenger.of(sheetContext).showSnackBar(
-                      const SnackBar(content: Text('未检测到语音')),
-                    );
+                final voiceService = state.voiceService;
+                if (!voiceService.isAvailable) {
+                  ScaffoldMessenger.of(sheetContext).showSnackBar(
+                    const SnackBar(content: Text('当前设备不支持语音，请手动输入')),
+                  );
+                  return;
+                }
+                setSheetState(() {
+                  listening = true;
+                  partial = '';
+                });
+                try {
+                  await voiceService.stopSpeaking();
+                  await voiceService.startListening(
+                    onPartial: (value) {
+                      if (!sheetContext.mounted) {
+                        return;
+                      }
+                      setSheetState(() => partial = value);
+                    },
+                  );
+                } catch (error) {
+                  if (!sheetContext.mounted) {
+                    return;
                   }
-                  return;
-                }
-                final prefix = controller.text.trim();
-                controller.text = prefix.isEmpty ? raw : '$prefix\n$raw';
-                controller.selection = TextSelection.collapsed(
-                  offset: controller.text.length,
-                );
-              } finally {
-                if (sheetContext.mounted) {
-                  setSheetState(() => busy = false);
+                  setSheetState(() => listening = false);
+                  ScaffoldMessenger.of(sheetContext).showSnackBar(
+                    SnackBar(content: Text('语音输入失败：$error')),
+                  );
                 }
               }
-            }
 
-            final bottomInset = MediaQuery.viewInsetsOf(sheetContext).bottom;
-            final maxHeight = MediaQuery.sizeOf(sheetContext).height * 0.82;
-            return AnimatedPadding(
-              duration: const Duration(milliseconds: 180),
-              curve: Curves.easeOutCubic,
-              padding: EdgeInsets.only(bottom: bottomInset),
-              child: SafeArea(
-                top: false,
-                child: ConstrainedBox(
-                  constraints: BoxConstraints(maxHeight: maxHeight),
-                  child: SingleChildScrollView(
-                    keyboardDismissBehavior:
-                        ScrollViewKeyboardDismissBehavior.onDrag,
-                    padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text('追加指令',
-                            style: Theme.of(sheetContext).textTheme.titleLarge),
-                        const SizedBox(height: 12),
-                        TextField(
-                          controller: controller,
-                          keyboardType: TextInputType.multiline,
-                          minLines: 3,
-                          maxLines: 5,
-                          decoration: const InputDecoration(
-                            hintText: '继续补充你的要求...',
-                          ),
-                        ),
-                        if (partial.trim().isNotEmpty) ...[
-                          const SizedBox(height: 8),
-                          Text(
-                            partial,
-                            style: Theme.of(sheetContext).textTheme.bodySmall,
-                          ),
-                        ],
-                        const SizedBox(height: 12),
-                        Row(
-                          children: [
-                            _VoiceFollowUpButton(
-                              disabled: busy,
-                              listening: listening,
-                              busy: busy,
-                              onStart: startVoice,
-                              onStop: stopVoice,
+              Future<void> stopVoice() async {
+                if (!listening) {
+                  return;
+                }
+                final voiceService = state.voiceService;
+                setSheetState(() {
+                  listening = false;
+                  busy = true;
+                });
+                try {
+                  final stopped = await voiceService.stopListening();
+                  final raw = stopped.trim().isNotEmpty
+                      ? stopped.trim()
+                      : partial.trim();
+                  if (raw.isEmpty) {
+                    if (sheetContext.mounted) {
+                      ScaffoldMessenger.of(sheetContext).showSnackBar(
+                        const SnackBar(content: Text('未检测到语音')),
+                      );
+                    }
+                    return;
+                  }
+                  final prefix = controller.text.trim();
+                  controller.text = prefix.isEmpty ? raw : '$prefix\n$raw';
+                  controller.selection = TextSelection.collapsed(
+                    offset: controller.text.length,
+                  );
+                  voiceCommand = prefix.isEmpty
+                      ? _voiceCommandProcessor.interpret(
+                          raw, widget.task.status)
+                      : null;
+                } finally {
+                  if (sheetContext.mounted) {
+                    setSheetState(() => busy = false);
+                  }
+                }
+              }
+
+              final bottomInset = MediaQuery.viewInsetsOf(sheetContext).bottom;
+              final maxHeight = MediaQuery.sizeOf(sheetContext).height * 0.82;
+              return AnimatedPadding(
+                duration: const Duration(milliseconds: 180),
+                curve: Curves.easeOutCubic,
+                padding: EdgeInsets.only(bottom: bottomInset),
+                child: SafeArea(
+                  top: false,
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(maxHeight: maxHeight),
+                    child: SingleChildScrollView(
+                      keyboardDismissBehavior:
+                          ScrollViewKeyboardDismissBehavior.onDrag,
+                      padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('追加指令',
+                              style:
+                                  Theme.of(sheetContext).textTheme.titleLarge),
+                          const SizedBox(height: 12),
+                          TextField(
+                            controller: controller,
+                            keyboardType: TextInputType.multiline,
+                            minLines: 3,
+                            maxLines: 5,
+                            decoration: const InputDecoration(
+                              hintText: '继续补充你的要求...',
                             ),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: FilledButton.icon(
-                                onPressed: busy
-                                    ? null
-                                    : () async {
-                                        final instruction =
-                                            controller.text.trim();
-                                        if (instruction.isNotEmpty) {
-                                          await AppStateScope.of(context)
-                                              .sendFollowUp(
-                                                  widget.task, instruction);
-                                        }
-                                        if (sheetContext.mounted) {
-                                          Navigator.of(sheetContext).pop();
-                                        }
-                                      },
-                                icon: const Icon(Icons.send_outlined),
-                                label: const Text('发送'),
-                              ),
+                            onChanged: (_) {
+                              if (voiceCommand != null) {
+                                setSheetState(() => voiceCommand = null);
+                              }
+                            },
+                          ),
+                          if (partial.trim().isNotEmpty) ...[
+                            const SizedBox(height: 8),
+                            Text(
+                              partial,
+                              style: Theme.of(sheetContext).textTheme.bodySmall,
                             ),
                           ],
-                        ),
-                      ],
+                          if (voiceCommand?.isSemanticMatch ?? false) ...[
+                            const SizedBox(height: 8),
+                            Text(
+                              '已识别：${voiceCommand!.label}',
+                              style: Theme.of(sheetContext)
+                                  .textTheme
+                                  .bodySmall
+                                  ?.copyWith(
+                                    color: Theme.of(sheetContext)
+                                        .colorScheme
+                                        .primary,
+                                  ),
+                            ),
+                          ],
+                          const SizedBox(height: 12),
+                          Row(
+                            children: [
+                              _VoiceFollowUpButton(
+                                disabled: busy,
+                                listening: listening,
+                                busy: busy,
+                                onStart: startVoice,
+                                onStop: stopVoice,
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: FilledButton.icon(
+                                  onPressed: busy
+                                      ? null
+                                      : () async {
+                                          final instruction =
+                                              controller.text.trim();
+                                          if (instruction.isEmpty) {
+                                            return;
+                                          }
+                                          try {
+                                            final command =
+                                                voiceCommand?.sourceText ==
+                                                        instruction
+                                                    ? voiceCommand
+                                                    : null;
+                                            if (command == null) {
+                                              await state.sendFollowUp(
+                                                  widget.task, instruction);
+                                            } else {
+                                              await _runVoiceCommand(
+                                                  context, command);
+                                            }
+                                          } catch (error) {
+                                            if (sheetContext.mounted) {
+                                              ScaffoldMessenger.of(sheetContext)
+                                                  .showSnackBar(
+                                                SnackBar(
+                                                  content:
+                                                      Text('指令执行失败：$error'),
+                                                ),
+                                              );
+                                            }
+                                            return;
+                                          }
+                                          if (sheetContext.mounted) {
+                                            Navigator.of(sheetContext).pop();
+                                          }
+                                        },
+                                  icon: const Icon(Icons.send_outlined),
+                                  label: const Text('发送'),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
                     ),
                   ),
                 ),
-              ),
-            );
-          },
+              );
+            },
+          ),
         );
       },
-    ).whenComplete(controller.dispose);
+    );
   }
+
+  Future<void> _runVoiceCommand(
+    BuildContext context,
+    VoiceTaskCommandResult command,
+  ) {
+    final state = AppStateScope.read(context);
+    return switch (command.action) {
+      VoiceTaskAction.sendInstruction => state.sendFollowUp(
+          widget.task,
+          command.instruction,
+          addedConstraints: command.constraints,
+          rawVoiceText: command.sourceText,
+        ),
+      VoiceTaskAction.stopTask =>
+        state.stopTask(widget.task, rawVoiceText: command.sourceText),
+      VoiceTaskAction.markCompleted => state.markTaskCompleted(
+          widget.task,
+          rawVoiceText: command.sourceText,
+        ),
+      VoiceTaskAction.resumeTask =>
+        state.resumeTask(widget.task, rawVoiceText: command.sourceText),
+      VoiceTaskAction.reconnectObserver => state.reconnectTask(
+          widget.task,
+          rawVoiceText: command.sourceText,
+        ),
+    };
+  }
+}
+
+class _FollowUpControllerHost extends StatefulWidget {
+  const _FollowUpControllerHost({required this.builder});
+
+  final Widget Function(TextEditingController controller) builder;
+
+  @override
+  State<_FollowUpControllerHost> createState() =>
+      _FollowUpControllerHostState();
+}
+
+class _FollowUpControllerHostState extends State<_FollowUpControllerHost> {
+  final _controller = TextEditingController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.builder(_controller);
 }
 
 class _LogPanel extends StatefulWidget {
@@ -1056,7 +1260,7 @@ class _LogPanelState extends State<_LogPanel> {
                                       await _runControlAction(
                                         context,
                                         () async {
-                                          await AppStateScope.of(context)
+                                          await AppStateScope.read(context)
                                               .resolveApproval(task,
                                                   approved: true);
                                           succeeded = true;
@@ -1080,7 +1284,7 @@ class _LogPanelState extends State<_LogPanel> {
                                       await _runControlAction(
                                         context,
                                         () async {
-                                          await AppStateScope.of(context)
+                                          await AppStateScope.read(context)
                                               .resolveApproval(task,
                                                   approved: false);
                                           succeeded = true;
@@ -1756,11 +1960,17 @@ String _eventLabel(String eventType) {
     'task_started' => '任务开始',
     'agent_output' => '收到输出',
     'approval_requested' => '请求确认',
+    'terminal_prompt_requested' => '等待终端选择',
+    'terminal_prompt_resolved' => '已选择终端选项',
+    'voice_follow_up' => '语音追加',
     'turn_idle' => '等待继续',
     'need_attention' => '需要处理',
     'observer_detached' => '断开监听',
     'observer_reconnected' => '重新监听',
+    'observer_connection_lost' => '监听连接中断',
     'runtime_lost' => '运行丢失',
+    'runtime_cleanup' => '清理远端会话',
+    'runtime_cleanup_failed' => '清理未确认',
     'user_mark_completed' => '用户确认完成',
     'user_mark_failed' => '用户标记失败',
     'task_completed' => '任务完成',
@@ -1774,11 +1984,17 @@ IconData _eventIcon(String eventType) {
     'task_started' => Icons.play_arrow_outlined,
     'agent_output' => Icons.terminal_outlined,
     'approval_requested' => Icons.verified_user_outlined,
+    'terminal_prompt_requested' => Icons.touch_app_outlined,
+    'terminal_prompt_resolved' => Icons.check_circle_outline,
+    'voice_follow_up' => Icons.mic_none_outlined,
     'turn_idle' => Icons.pause_circle_outline,
     'need_attention' => Icons.priority_high_outlined,
     'observer_detached' => Icons.link_off_outlined,
     'observer_reconnected' => Icons.sensors_outlined,
+    'observer_connection_lost' => Icons.wifi_off_outlined,
     'runtime_lost' => Icons.signal_wifi_connected_no_internet_4_outlined,
+    'runtime_cleanup' => Icons.cleaning_services_outlined,
+    'runtime_cleanup_failed' => Icons.warning_amber_outlined,
     'user_mark_completed' => Icons.check_circle_outline,
     'user_mark_failed' => Icons.report_gmailerrorred_outlined,
     'task_completed' => Icons.check_circle_outline,
@@ -1789,11 +2005,17 @@ IconData _eventIcon(String eventType) {
 Color _eventColor(String eventType) {
   return switch (eventType) {
     'approval_requested' => Colors.orange.shade800,
+    'terminal_prompt_requested' => Colors.orange.shade800,
+    'terminal_prompt_resolved' => ArminTheme.primary,
+    'voice_follow_up' => ArminTheme.primary,
     'turn_idle' => Colors.teal.shade700,
     'need_attention' => Colors.orange.shade800,
     'observer_detached' => Colors.blueGrey.shade700,
     'observer_reconnected' => ArminTheme.primary,
+    'observer_connection_lost' => Colors.orange.shade800,
     'runtime_lost' => Colors.red.shade800,
+    'runtime_cleanup' => ArminTheme.primary,
+    'runtime_cleanup_failed' => Colors.orange.shade800,
     'user_mark_completed' => Colors.green.shade700,
     'user_mark_failed' => Colors.red.shade700,
     'task_completed' => Colors.green.shade700,

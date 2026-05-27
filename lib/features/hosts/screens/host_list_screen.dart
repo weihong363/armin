@@ -105,9 +105,8 @@ class HostListScreen extends StatelessWidget {
                   ],
                 ),
                 subtitle: Text('${host.username}@${host.address}:${host.port}\n'
-                    '${host.tmuxSessionName}\n'
                     '${_passwordStatusText(host.password)}'),
-                isThreeLine: true,
+                isThreeLine: false,
                 trailing: PopupMenuButton<_HostListAction>(
                   tooltip: '主机操作',
                   onSelected: (action) {
@@ -153,9 +152,9 @@ class HostListScreen extends StatelessWidget {
 
   String _passwordStatusText(String password) {
     if (password.trim().isEmpty) {
-      return '本次运行未设置 SSH 密码';
+      return '未保存 SSH 密码';
     }
-    return '本次运行已准备 SSH 密码';
+    return 'SSH 密码已安全保存';
   }
 
   void _openHostForm(

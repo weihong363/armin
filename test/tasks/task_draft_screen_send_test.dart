@@ -106,6 +106,44 @@ void main() {
     expect(store.savedTasks.last.host.id, 'host-2');
   });
 
+  testWidgets('historical rerun restores prior host and project path',
+      (tester) async {
+    final store = _TaskStore(
+      hosts: [
+        _host(password: 'default-password'),
+        _host(
+          id: 'host-2',
+          name: 'Qoder',
+          host: '127.0.0.2',
+          password: 'history-password',
+          agentCommand: 'qodercli',
+        ),
+      ],
+      projectPaths: [
+        _projectPath(),
+        _projectPath(id: 'project-2', name: 'Momo', path: '~workspace/momo'),
+      ],
+    );
+    final agent = _CaptureAgentSessionService();
+    await _pumpScreen(
+      tester,
+      store: store,
+      agent: agent,
+      screen: const TaskDraftScreen(
+        initialTaskText: '继续历史任务',
+        selectedHostId: 'host-2',
+        initialProjectPath: '~workspace/momo',
+      ),
+    );
+
+    await tester.tap(find.text('发送给 Agent'));
+    await tester.pumpAndSettle();
+
+    expect(agent.lastRequest?.hostId, 'host-2');
+    expect(agent.lastRequest?.agentCommand, 'qodercli');
+    expect(agent.lastRequest?.projectPath, '~/workspace/momo');
+  });
+
   testWidgets('send creates first native output turn', (tester) async {
     final store = _TaskStore(hosts: [_host(password: 'secret-password')]);
     final agent = _CaptureAgentSessionService();
@@ -234,6 +272,7 @@ Future<void> _pumpScreen(
   WidgetTester tester, {
   required _TaskStore store,
   required _CaptureAgentSessionService agent,
+  Widget screen = const TaskDraftScreen(),
 }) async {
   final state = ArminAppState(
     store: store,
@@ -244,7 +283,7 @@ Future<void> _pumpScreen(
   await tester.pumpWidget(
     AppStateScope(
       state: state,
-      child: const MaterialApp(home: TaskDraftScreen()),
+      child: MaterialApp(home: screen),
     ),
   );
   await tester.pump();
@@ -337,11 +376,15 @@ class _TaskStore implements TaskHistoryStore {
   }
 }
 
-ProjectPathConfig _projectPath({String path = '/tmp/armin-task'}) {
+ProjectPathConfig _projectPath({
+  String id = 'project-1',
+  String name = 'Armin',
+  String path = '/tmp/armin-task',
+}) {
   final now = DateTime(2026, 5, 17);
   return ProjectPathConfig(
-    id: 'project-1',
-    name: 'Armin',
+    id: id,
+    name: name,
     path: path,
     createdAt: now,
     updatedAt: now,
@@ -413,6 +456,12 @@ class _CaptureAgentSessionService implements AgentSessionService {
       done: true,
     );
   }
+
+  @override
+  Future<void> selectTerminalOption(
+    AgentControlRequest request,
+    String optionKey,
+  ) async {}
 
   @override
   Future<void> pause(AgentControlRequest request) async {}

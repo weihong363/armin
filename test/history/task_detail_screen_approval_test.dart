@@ -1,15 +1,19 @@
+import 'dart:async';
+
 import 'package:armin/app_state_scope.dart';
 import 'package:armin/core/models/task_status.dart';
 import 'package:armin/core/services/armin_app_state.dart';
 import 'package:armin/core/storage/task_history_store.dart';
 import 'package:armin/features/agent/parsers/approval_request.dart';
+import 'package:armin/features/agent/parsers/task_result.dart';
 import 'package:armin/features/agent/parsers/terminal_prompt.dart';
 import 'package:armin/features/agent/services/agent_session_service.dart';
 import 'package:armin/features/history/screens/task_detail_screen.dart';
 import 'package:armin/features/hosts/models/host_config.dart';
 import 'package:armin/features/projects/models/project_path_config.dart';
-import 'package:armin/features/tasks/models/task_session.dart';
+import 'package:armin/features/tasks/models/native_output_turn.dart';
 import 'package:armin/features/tasks/models/task_constraint.dart';
+import 'package:armin/features/tasks/models/task_session.dart';
 import 'package:armin/features/voice/services/voice_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -203,6 +207,39 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('manual follow-up shows progress while instruction is sending',
+      (tester) async {
+    final task = _task().copyWith(status: TaskStatus.turnIdle);
+    final agent = _DelayedFollowUpAgent();
+    final state = ArminAppState(
+      store: _TaskStore(task),
+      agentSessionService: agent,
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await tester.pumpWidget(
+      AppStateScope(
+        state: state,
+        child: const MaterialApp(home: TaskDetailScreen(taskId: 'task-1')),
+      ),
+    );
+    await tester.tap(find.text('追加指令'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), '继续检查输出');
+    await tester.tap(find.text('发送'));
+    await tester.pump();
+
+    expect(agent.lastFollowUp, '继续检查输出');
+    expect(find.text('发送中...'), findsOneWidget);
+
+    agent.completeFollowUp();
+    await tester.pumpAndSettle();
+
+    expect(state.tasks.single.status, TaskStatus.running);
+    expect(find.text('发送中...'), findsNothing);
+  });
+
   testWidgets('voice stop command executes local stop instead of follow-up',
       (tester) async {
     final task = _task().copyWith(status: TaskStatus.turnIdle);
@@ -338,6 +375,157 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(voice.spokenSummaries.single, contains('hello world'));
+  });
+
+  testWidgets('timeline filters terminal chrome from stored summary',
+      (tester) async {
+    final task = _task().copyWith(
+      status: TaskStatus.turnIdle,
+      shortSummary: '''
+████████████████████
+Signed in Browser Login
+Thinking...
+Summer：一位迷人的美国沙滩女孩 Codex 宠物。
+''',
+    );
+    final state = ArminAppState(
+      store: _TaskStore(task),
+      agentSessionService: const _NoopAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await tester.pumpWidget(
+      AppStateScope(
+        state: state,
+        child: const MaterialApp(home: TaskDetailScreen(taskId: 'task-1')),
+      ),
+    );
+
+    expect(find.textContaining('Summer：一位迷人的美国沙滩女孩'), findsOneWidget);
+    expect(find.textContaining('Signed in Browser Login'), findsNothing);
+    expect(find.textContaining('Thinking'), findsNothing);
+    expect(find.textContaining('█'), findsNothing);
+  });
+
+  testWidgets('result prefers latest semantic turn over stale terminal result',
+      (tester) async {
+    final now = DateTime(2026, 5, 18);
+    final task = _task().copyWith(
+      status: TaskStatus.running,
+      result: const TaskResult(
+        status: 'turn_idle',
+        summary: 'Signed in Browser Login',
+        changedFiles: [],
+        validation: [],
+        risks: [],
+        nextActions: [],
+      ),
+      turns: [
+        NativeOutputTurn(
+          id: 'turn-task-1-2',
+          taskId: 'task-1',
+          turnIndex: 2,
+          userInput: '输出 Summer',
+          rawOutput: '',
+          cleanedOutput: 'Summer：一位迷人的美国沙滩女孩 Codex 宠物。',
+          startedAt: now,
+          lastOutputAt: now,
+          status: NativeOutputTurnStatus.running,
+        ),
+      ],
+    );
+    final state = ArminAppState(
+      store: _TaskStore(task),
+      agentSessionService: const _NoopAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await tester.pumpWidget(
+      AppStateScope(
+        state: state,
+        child: const MaterialApp(home: TaskDetailScreen(taskId: 'task-1')),
+      ),
+    );
+    await tester.tap(find.text('结果'));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('Summer：一位迷人的美国沙滩女孩'), findsOneWidget);
+    expect(find.textContaining('Signed in Browser Login'), findsNothing);
+  });
+
+  testWidgets(
+      'result lists semantic output from every turn without prompt echoes',
+      (tester) async {
+    final now = DateTime(2026, 5, 18);
+    final task = _task().copyWith(
+      status: TaskStatus.turnIdle,
+      turns: [
+        NativeOutputTurn(
+          id: 'turn-task-1-1',
+          taskId: 'task-1',
+          turnIndex: 1,
+          userInput: '列出所有宠物',
+          rawOutput: '',
+          cleanedOutput: '列出所有宠物',
+          startedAt: now,
+          lastOutputAt: now,
+          status: NativeOutputTurnStatus.turnIdle,
+        ),
+        NativeOutputTurn(
+          id: 'turn-task-1-2',
+          taskId: 'task-1',
+          turnIndex: 2,
+          userInput: '继续输出 Summer',
+          rawOutput: '',
+          cleanedOutput: '列出所有宠物\n继续输出 Summer\nSummer：海滩风格 Codex 宠物。',
+          startedAt: now,
+          lastOutputAt: now,
+          status: NativeOutputTurnStatus.turnIdle,
+        ),
+        NativeOutputTurn(
+          id: 'turn-task-1-3',
+          taskId: 'task-1',
+          turnIndex: 3,
+          userInput: '补充尺寸',
+          rawOutput: '',
+          cleanedOutput: '''
+列出所有宠物
+继续输出 Summer
+Summer：海滩风格 Codex 宠物。
+补充尺寸
+精灵图集尺寸为 1536 x 1872。
+''',
+          startedAt: now,
+          lastOutputAt: now,
+          status: NativeOutputTurnStatus.turnIdle,
+        ),
+      ],
+    );
+    final state = ArminAppState(
+      store: _TaskStore(task),
+      agentSessionService: const _NoopAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await tester.pumpWidget(
+      AppStateScope(
+        state: state,
+        child: const MaterialApp(home: TaskDetailScreen(taskId: 'task-1')),
+      ),
+    );
+    await tester.tap(find.text('结果'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Turn 1'), findsNothing);
+    expect(find.text('Turn 2'), findsOneWidget);
+    expect(find.text('Turn 3'), findsOneWidget);
+    expect(find.textContaining('Summer：海滩风格 Codex 宠物'), findsOneWidget);
+    expect(find.textContaining('精灵图集尺寸为 1536 x 1872'), findsOneWidget);
+    expect(find.text('继续输出 Summer'), findsNothing);
+    expect(find.text('补充尺寸'), findsNothing);
   });
 
   testWidgets('failed task header does not label the finish time completed',
@@ -588,6 +776,18 @@ class _CapturingAgent extends _NoopAgent {
   Future<void> cleanup(AgentControlRequest request) async {
     cleanedUp = true;
   }
+}
+
+class _DelayedFollowUpAgent extends _CapturingAgent {
+  final Completer<void> _followUpCompleter = Completer<void>();
+
+  @override
+  Future<void> sendFollowUp(AgentControlRequest request) async {
+    lastFollowUp = request.instruction;
+    await _followUpCompleter.future;
+  }
+
+  void completeFollowUp() => _followUpCompleter.complete();
 }
 
 class _SilentVoiceService implements VoiceService {

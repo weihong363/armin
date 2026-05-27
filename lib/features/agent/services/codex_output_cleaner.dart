@@ -37,6 +37,7 @@ class CodexOutputCleaner {
   bool _isNoiseLine(String line) {
     final lower = line.toLowerCase();
     return line == '|' ||
+        _isTerminalGraphicLine(line) ||
         line.startsWith('┌') ||
         line.startsWith('└') ||
         line.startsWith('┐') ||
@@ -67,6 +68,9 @@ class CodexOutputCleaner {
         lower.startsWith('edited ') ||
         lower.startsWith('opened ') ||
         lower.startsWith('checked ') ||
+        lower == 'thinking...' ||
+        lower == 'thinking…' ||
+        lower.contains('signed in browser login') ||
         lower.contains(' to view transcript') ||
         lower.contains('npm install -g @openai/codex') ||
         lower.contains('github.com/openai/codex/releases') ||
@@ -82,6 +86,14 @@ class CodexOutputCleaner {
         lower == 'implement {feature}' ||
         lower == 'explain this codebase' ||
         RegExp(r'^\d+\.\s').hasMatch(lower);
+  }
+
+  bool _isTerminalGraphicLine(String line) {
+    final compact = line.replaceAll(RegExp(r'\s+'), '');
+    return compact.length >= 2 &&
+        RegExp(
+          r'^[█▓▒░▀▄▌▐▖▗▘▝▚▞▟▙▛▜▔▁▂▃▄▅▆▇╭╮╰╯─│┌┐└┘┬┴├┤┼━┃╋]+$',
+        ).hasMatch(compact);
   }
 
   bool _isGovernanceRule(String lower) {

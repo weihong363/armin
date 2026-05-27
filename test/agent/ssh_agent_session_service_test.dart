@@ -363,7 +363,7 @@ decision: approved
     expect(update, isNot(contains('New instruction:')));
   });
 
-  test('follow-up paste targets the active tmux pane and presses Enter', () {
+  test('follow-up paste targets the active tmux pane and submits with C-m', () {
     final service = SSHAgentSessionService();
 
     const request = AgentControlRequest(
@@ -384,9 +384,9 @@ decision: approved
     expect(
       command,
       contains('paste-buffer -d -t "\$pane"\nsleep 0.2\n'
-          '\'tmux\' send-keys -t "\$pane" Enter'),
+          '\'tmux\' send-keys -t "\$pane" C-m'),
     );
-    expect(command, contains(r'send-keys -t "$pane" Enter'));
+    expect(command, contains(r'send-keys -t "$pane" C-m'));
     expect(command, contains('输出 hello world'));
   });
 

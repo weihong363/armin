@@ -415,7 +415,7 @@ $tmux send-keys -t "\$pane" C-u
 printf %s ${_shellQuote(text)} | $tmux load-buffer -
 $tmux paste-buffer -d -t "\$pane"
 sleep 0.2
-$tmux send-keys -t "\$pane" Enter$clearHistory
+$tmux send-keys -t "\$pane" C-m$clearHistory
 ''';
   }
 

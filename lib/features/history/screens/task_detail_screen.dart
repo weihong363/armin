@@ -6,6 +6,7 @@ import '../../../app_state_scope.dart';
 import '../../../core/models/task_status.dart';
 import '../../../shared/theme/armin_theme.dart';
 import '../../../shared/widgets/status_badge.dart';
+import '../../agent/services/codex_output_cleaner.dart';
 import '../../tasks/models/native_output_turn.dart';
 import '../../tasks/models/task_session.dart';
 import '../../tasks/models/voice_input.dart';
@@ -298,6 +299,7 @@ class _SummaryBannerState extends State<_SummaryBanner> {
   @override
   Widget build(BuildContext context) {
     final task = widget.task;
+    final readableSummary = const CodexOutputCleaner().clean(task.shortSummary);
     return DecoratedBox(
       decoration: BoxDecoration(
         color: const Color(0xFFF1F8F5),
@@ -323,7 +325,7 @@ class _SummaryBannerState extends State<_SummaryBanner> {
             Text(task.title, style: Theme.of(context).textTheme.titleLarge),
             const SizedBox(height: 10),
             Text(
-              task.shortSummary.isEmpty ? task.userText : task.shortSummary,
+              readableSummary.isEmpty ? task.userText : readableSummary,
               style: Theme.of(context).textTheme.bodyMedium,
               maxLines: 4,
               overflow: TextOverflow.ellipsis,
@@ -358,6 +360,7 @@ class _TimelinePanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final readableSummary = const CodexOutputCleaner().clean(task.shortSummary);
     final items = [
       _TimelineItem(
         icon: Icons.mic_none_outlined,
@@ -389,7 +392,7 @@ class _TimelinePanel extends StatelessWidget {
         time:
             task.completedAt == null ? '--:--' : _timeLabel(task.completedAt!),
         title: _timelineResultTitle(task.status),
-        subtitle: task.shortSummary.isEmpty ? '任务执行中' : task.shortSummary,
+        subtitle: readableSummary.isEmpty ? '任务执行中' : readableSummary,
         color: _timelineResultColor(task.status),
       ),
     ];
@@ -530,12 +533,12 @@ class _ResultPanel extends StatefulWidget {
 }
 
 class _ResultPanelState extends State<_ResultPanel> {
-  Future<OutputSummary>? _summaryFuture;
+  Future<List<_TurnOutputSummary>>? _summariesFuture;
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    _summaryFuture ??= _outputSummary(widget.task);
+    _summariesFuture ??= _outputSummaries(widget.task);
   }
 
   @override
@@ -545,7 +548,7 @@ class _ResultPanelState extends State<_ResultPanel> {
         oldWidget.task.updatedAt != widget.task.updatedAt ||
         oldWidget.task.summary != widget.task.summary ||
         oldWidget.task.result?.summary != widget.task.result?.summary) {
-      _summaryFuture = _outputSummary(widget.task);
+      _summariesFuture = _outputSummaries(widget.task);
     }
   }
 
@@ -558,17 +561,20 @@ class _ResultPanelState extends State<_ResultPanel> {
       children: [
         _InfoCard(
           title: '输出',
-          child: FutureBuilder<OutputSummary>(
-            future: _summaryFuture,
+          child: FutureBuilder<List<_TurnOutputSummary>>(
+            future: _summariesFuture,
             builder: (context, snapshot) {
-              final segments = _outputSegments(snapshot.data);
-              if (segments.isEmpty) {
+              final outputs = snapshot.data ?? const [];
+              if (outputs.isEmpty) {
                 return const Text('暂无结果');
               }
               return Column(
                 children: [
-                  for (final segment in segments)
-                    _OutputSegmentCard(text: segment),
+                  for (final output in outputs)
+                    _OutputSegmentCard(
+                      title: output.title,
+                      text: output.text,
+                    ),
                 ],
               );
             },
@@ -603,56 +609,86 @@ class _ResultPanelState extends State<_ResultPanel> {
     );
   }
 
-  Future<OutputSummary> _outputSummary(TaskSession task) {
-    final source = _bestOutputSource(task);
-    return AppStateScope.of(context).outputSummaryProvider.summarize(
-          OutputSummaryRequest(
-            cleanedOutput: source,
-            status: task.status,
-            taskTitle: task.title,
-            promptInputs: [
-              task.userText,
-              ...task.turns.map((turn) => turn.userInput),
-            ],
-            agentCommand: task.host.agentCommand,
-          ),
+  Future<List<_TurnOutputSummary>> _outputSummaries(TaskSession task) async {
+    final provider = AppStateScope.of(context).outputSummaryProvider;
+    final summaries = <_TurnOutputSummary>[];
+    for (var index = 0; index < task.turns.length; index++) {
+      final turn = task.turns[index];
+      final summary = await provider.summarize(
+        OutputSummaryRequest(
+          cleanedOutput: _incrementalTurnOutput(task.turns, index),
+          status: task.status,
+          taskTitle: task.title,
+          promptInputs: [turn.userInput],
+          agentCommand: task.host.agentCommand,
+        ),
+      );
+      final text = summary.displaySummary.trim();
+      if (text.isNotEmpty) {
+        summaries.add(
+          _TurnOutputSummary(title: 'Turn ${turn.turnIndex}', text: text),
         );
-  }
-
-  List<String> _outputSegments(OutputSummary? summary) {
-    final display = summary?.displaySummary.trim() ?? '';
-    if (display.isEmpty) {
-      return const [];
-    }
-    return display
-        .split(RegExp(r'\n{2,}'))
-        .map((segment) => segment.trim())
-        .where((segment) => segment.isNotEmpty)
-        .toList(growable: false);
-  }
-
-  String _bestOutputSource(TaskSession task) {
-    final resultSummary = task.result?.summary.trim() ?? '';
-    if (resultSummary.isNotEmpty) {
-      return resultSummary;
-    }
-    final summary = task.summary?.trim() ?? '';
-    if (summary.isNotEmpty) {
-      return summary;
-    }
-    for (final turn in task.turns.reversed) {
-      final cleaned = turn.cleanedOutput.trim();
-      if (cleaned.isNotEmpty) {
-        return cleaned;
       }
     }
-    return task.shortSummary.trim();
+    if (summaries.isNotEmpty) {
+      return summaries;
+    }
+    final legacy = await provider.summarize(
+      OutputSummaryRequest(
+        cleanedOutput: _legacyOutputSource(task),
+        status: task.status,
+        taskTitle: task.title,
+        promptInputs: [
+          task.userText,
+          ...task.turns.map((turn) => turn.userInput)
+        ],
+        agentCommand: task.host.agentCommand,
+      ),
+    );
+    final text = legacy.displaySummary.trim();
+    return text.isEmpty
+        ? const []
+        : [_TurnOutputSummary(title: '输出结果', text: text)];
+  }
+
+  String _incrementalTurnOutput(List<NativeOutputTurn> turns, int index) {
+    var output = turns[index].cleanedOutput.trim();
+    for (var previous = index - 1; previous >= 0; previous--) {
+      final earlier = turns[previous].cleanedOutput.trim();
+      if (earlier.isNotEmpty && output.contains(earlier)) {
+        output = output.replaceFirst(earlier, '').trim();
+        break;
+      }
+    }
+    return output;
+  }
+
+  String _legacyOutputSource(TaskSession task) {
+    final candidates = [
+      task.result?.summary ?? '',
+      task.summary ?? '',
+      task.shortSummary,
+    ];
+    for (final candidate in candidates) {
+      if (const CodexOutputCleaner().clean(candidate).trim().isNotEmpty) {
+        return candidate;
+      }
+    }
+    return '';
   }
 }
 
-class _OutputSegmentCard extends StatelessWidget {
-  const _OutputSegmentCard({required this.text});
+class _TurnOutputSummary {
+  const _TurnOutputSummary({required this.title, required this.text});
 
+  final String title;
+  final String text;
+}
+
+class _OutputSegmentCard extends StatelessWidget {
+  const _OutputSegmentCard({required this.title, required this.text});
+
+  final String title;
   final String text;
 
   @override
@@ -670,6 +706,8 @@ class _OutputSegmentCard extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              Text(title, style: Theme.of(context).textTheme.labelLarge),
+              const SizedBox(height: 8),
               SelectableText(text),
               const SizedBox(height: 8),
               Align(
@@ -931,6 +969,7 @@ class _RuntimeControlPanelState extends State<_RuntimeControlPanel> {
     final state = AppStateScope.read(context);
     var listening = false;
     var busy = false;
+    var submitting = false;
     var partial = '';
     VoiceTaskCommandResult? voiceCommand;
     showModalBottomSheet<void>(
@@ -1076,7 +1115,7 @@ class _RuntimeControlPanelState extends State<_RuntimeControlPanel> {
                           Row(
                             children: [
                               _VoiceFollowUpButton(
-                                disabled: busy,
+                                disabled: busy || submitting,
                                 listening: listening,
                                 busy: busy,
                                 onStart: startVoice,
@@ -1085,7 +1124,7 @@ class _RuntimeControlPanelState extends State<_RuntimeControlPanel> {
                               const SizedBox(width: 12),
                               Expanded(
                                 child: FilledButton.icon(
-                                  onPressed: busy
+                                  onPressed: busy || submitting
                                       ? null
                                       : () async {
                                           final instruction =
@@ -1093,6 +1132,8 @@ class _RuntimeControlPanelState extends State<_RuntimeControlPanel> {
                                           if (instruction.isEmpty) {
                                             return;
                                           }
+                                          setSheetState(
+                                              () => submitting = true);
                                           try {
                                             final command =
                                                 voiceCommand?.sourceText ==
@@ -1108,6 +1149,8 @@ class _RuntimeControlPanelState extends State<_RuntimeControlPanel> {
                                             }
                                           } catch (error) {
                                             if (sheetContext.mounted) {
+                                              setSheetState(
+                                                  () => submitting = false);
                                               ScaffoldMessenger.of(sheetContext)
                                                   .showSnackBar(
                                                 SnackBar(
@@ -1123,7 +1166,7 @@ class _RuntimeControlPanelState extends State<_RuntimeControlPanel> {
                                           }
                                         },
                                   icon: const Icon(Icons.send_outlined),
-                                  label: const Text('发送'),
+                                  label: Text(submitting ? '发送中...' : '发送'),
                                 ),
                               ),
                             ],

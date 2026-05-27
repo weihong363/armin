@@ -83,4 +83,22 @@ hello
     expect(cleaned, isNot(contains('Ran jq')));
     expect(cleaned, isNot(contains('chatgpt.com')));
   });
+
+  test('removes terminal login artwork and thinking status from output', () {
+    const raw = '''
+████████████████████
+██  ██  ██  Signed in Browser Login
+Thinking...
+• Summer：一位迷人的美国沙滩女孩 Codex 宠物，棕发波浪、暖棕肤色。
+pin-up 风格，含 9 个动画状态（idle/running/failed/review 等）。
+''';
+
+    final cleaned = const CodexOutputCleaner().clean(raw);
+
+    expect(cleaned, isNot(contains('█')));
+    expect(cleaned, isNot(contains('Signed in Browser Login')));
+    expect(cleaned, isNot(contains('Thinking')));
+    expect(cleaned, contains('Summer：一位迷人的美国沙滩女孩'));
+    expect(cleaned, contains('pin-up 风格'));
+  });
 }

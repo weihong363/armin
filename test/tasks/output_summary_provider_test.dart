@@ -64,6 +64,50 @@ hello
     expect(summary.speechSummary, isEmpty);
   });
 
+  test(
+      'rule provider preserves description when animation names contain failed',
+      () async {
+    const descriptiveResult = OutputSummaryRequest(
+      cleanedOutput: '''
+Summer：一位迷人的美国沙滩女孩 Codex 宠物，棕发波浪、暖棕肤色、海军蓝比基尼、自信活力的
+pin-up 风格，含 9 个动画状态（idle/running/waving/jumping/failed/waiting/review
+等），15361872 精灵图集，192208 像素格。
+''',
+      status: TaskStatus.turnIdle,
+    );
+
+    final summary = await const RuleBasedOutputSummaryProvider()
+        .summarize(descriptiveResult);
+
+    expect(summary.displaySummary, startsWith('Summer：一位迷人的美国沙滩女孩'));
+    expect(summary.displaySummary, contains('pin-up 风格，含 9 个动画状态'));
+    expect(summary.displaySummary, contains('failed/waiting/review'));
+    expect(summary.displaySummary, contains('15361872 精灵图集'));
+  });
+
+  test('rule provider excludes terminal chrome from visible result', () async {
+    const terminalSnapshot = OutputSummaryRequest(
+      cleanedOutput: '''
+████████████████████
+██  ██  ██  Signed in Browser Login
+Thinking...
+Summer：一位迷人的美国沙滩女孩 Codex 宠物，棕发波浪、暖棕肤色、海军蓝比基尼、自信活力的
+pin-up 风格，含 9 个动画状态（idle/running/waving/jumping/failed/waiting/review
+等），1536 x 1872 精灵图集，192 x 208 像素格。
+''',
+      status: TaskStatus.turnIdle,
+    );
+
+    final summary = await const RuleBasedOutputSummaryProvider()
+        .summarize(terminalSnapshot);
+
+    expect(summary.displaySummary, startsWith('Summer：一位迷人的美国沙滩女孩'));
+    expect(summary.displaySummary, contains('192 x 208 像素格'));
+    expect(summary.displaySummary, isNot(contains('Signed in Browser Login')));
+    expect(summary.displaySummary, isNot(contains('Thinking')));
+    expect(summary.displaySummary, isNot(contains('█')));
+  });
+
   test('local model provider falls back when unavailable', () async {
     final summary = await const LocalSmallModelSummaryProvider().summarize(
       request,

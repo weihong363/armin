@@ -152,9 +152,13 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
         line.contains('成功') ||
         line.contains('失败') ||
         line.contains('额度已用完') ||
-        lower.contains('error') ||
-        lower.contains('failed') ||
-        lower.contains('success');
+        _looksLikeEnglishStatusLine(lower);
+  }
+
+  bool _looksLikeEnglishStatusLine(String lower) {
+    return RegExp(r'^(?:error|failed|success)(?:\s*[:：-]|\s|$)')
+            .hasMatch(lower) ||
+        RegExp(r'\b(?:error|failed|success)\s*[:：-]').hasMatch(lower);
   }
 }
 

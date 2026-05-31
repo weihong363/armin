@@ -56,19 +56,21 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
     CodexOutputCleaner cleaner = const CodexOutputCleaner(),
     SecretRedactor redactor = const SecretRedactor(),
     this.maxDisplayLines = 4,
+    this.maxDisplayChars = 420,
   })  : _cleaner = cleaner,
         _redactor = redactor;
 
   final CodexOutputCleaner _cleaner;
   final SecretRedactor _redactor;
   final int maxDisplayLines;
+  final int maxDisplayChars;
 
   @override
   Future<OutputSummary> summarize(OutputSummaryRequest request) async {
     final cleaned =
         _redactor.redactInlineSecrets(_cleaner.clean(request.cleanedOutput));
     final importantLines = _importantLines(cleaned, request);
-    final display = importantLines.take(maxDisplayLines).join('\n');
+    final display = _compactDisplay(importantLines.take(maxDisplayLines));
     final speech = DeviceVoiceService.cleanSpeechSummary(display);
     return OutputSummary(
       displaySummary: display,
@@ -82,19 +84,209 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
       request.taskTitle,
       ...request.promptInputs,
     }.where((input) => input.trim().isNotEmpty).toList(growable: false);
-    final lines = cleaned
-        .replaceAll('\r', '\n')
-        .split('\n')
-        .map((line) => line.trim())
+    final lines = _semanticLines(cleaned)
         .where((line) => line.isNotEmpty)
         .where((line) => !_looksLikePromptEcho(line, promptInputs))
         .where((line) => !_looksLikeLowValueLine(line))
         .toList(growable: false);
+    final semanticLines = _joinContinuationLines(lines);
 
-    final directResults = lines.where(_looksLikeResultLine).toList();
-    return directResults.isEmpty
-        ? lines.take(maxDisplayLines).toList()
-        : directResults;
+    final scored = [
+      for (var index = 0; index < semanticLines.length; index++)
+        _ScoredLine(
+          line: semanticLines[index],
+          index: index,
+          score: _scoreLine(semanticLines[index]),
+        ),
+    ];
+    final useful = scored.where((item) => item.score >= 20).toList()
+      ..sort((a, b) {
+        final scoreCompare = b.score.compareTo(a.score);
+        return scoreCompare == 0 ? a.index.compareTo(b.index) : scoreCompare;
+      });
+    final selected = useful.isEmpty
+        ? scored.take(maxDisplayLines).toList()
+        : useful.take(maxDisplayLines).toList();
+    selected.sort((a, b) => a.index.compareTo(b.index));
+    return selected.map((item) => item.line).toList(growable: false);
+  }
+
+  List<String> _semanticLines(String cleaned) {
+    return cleaned
+        .replaceAll('\r', '\n')
+        .split('\n')
+        .map(_semanticLine)
+        .where((line) => line.isNotEmpty)
+        .toList(growable: false);
+  }
+
+  String _semanticLine(String line) {
+    var value = line.trim();
+    if (value.isEmpty) {
+      return '';
+    }
+    value = value
+        .replaceFirst(RegExp(r'^[>›]\s*'), '')
+        .replaceAll(RegExp(r"Glob\('[^']*'\)"), ' ')
+        .replaceAll(RegExp(r"Grep\('[^']*'[^)]*\)", caseSensitive: false), ' ')
+        .replaceAll(RegExp(r'Read\([^)]*\)'), ' ')
+        .replaceAll(RegExp(r'\bThinking\b[.…]*', caseSensitive: false), ' ')
+        .replaceAll(RegExp(r'[▪■●•]+'), ' ')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+    value = _dropToolTracePrefix(value);
+    return _normalizePetDescription(value);
+  }
+
+  String _dropToolTracePrefix(String line) {
+    final natural = RegExp(
+      r'([A-Za-z][A-Za-z0-9_-]*\s*[是:：].*)',
+      caseSensitive: false,
+    ).firstMatch(line);
+    if (natural != null) {
+      return natural.group(1)!.trim();
+    }
+    return line;
+  }
+
+  String _normalizePetDescription(String line) {
+    final petMatch =
+        RegExp(r'^([A-Za-z][A-Za-z0-9_-]*)\s+是\s+一\s+只\s+').firstMatch(line);
+    if (petMatch == null) {
+      return line;
+    }
+    final name = _titleCaseAsciiName(petMatch.group(1)!);
+    return line.replaceFirst(petMatch.group(0)!, '$name是一只');
+  }
+
+  String _titleCaseAsciiName(String name) {
+    if (name.isEmpty || name != name.toUpperCase()) {
+      return name;
+    }
+    return name[0] + name.substring(1).toLowerCase();
+  }
+
+  List<String> _joinContinuationLines(List<String> lines) {
+    final result = <String>[];
+    for (final line in lines) {
+      if (result.isNotEmpty && _looksLikeContinuation(line)) {
+        result[result.length - 1] = '${result.last} $line';
+      } else {
+        result.add(line);
+      }
+    }
+    return result;
+  }
+
+  bool _looksLikeContinuation(String line) {
+    final lower = line.toLowerCase();
+    if (RegExp(r'^\d+[.)]\s+').hasMatch(line) ||
+        RegExp(r'^[A-Za-z0-9_\-\u4e00-\u9fff]{1,16}[:：]').hasMatch(line)) {
+      return false;
+    }
+    if (lower == 'explored' ||
+        lower == 'thinking' ||
+        lower == 'thinking...' ||
+        lower == 'thinking…' ||
+        lower.startsWith('search ') ||
+        lower.startsWith('list ') ||
+        lower.startsWith('ran ') ||
+        lower.startsWith('glob(') ||
+        lower.startsWith('grep(') ||
+        lower.startsWith('read ') ||
+        lower.startsWith('read(') ||
+        lower.startsWith('edited ') ||
+        lower.startsWith('opened ') ||
+        lower.startsWith('checked ') ||
+        lower.startsWith('shift+tab ')) {
+      return false;
+    }
+    return true;
+  }
+
+  String _compactDisplay(Iterable<String> lines) {
+    final values = lines.map(_compactLine).where((line) => line.isNotEmpty);
+    final display = values.join('\n').trim();
+    if (display.length <= maxDisplayChars) {
+      return display;
+    }
+    return '${display.substring(0, maxDisplayChars).trimRight()}...';
+  }
+
+  String _compactLine(String line) {
+    if (line.length <= maxDisplayChars) {
+      return line;
+    }
+    final clauses = line
+        .split(RegExp(r'[，,；;。]\s*'))
+        .map((part) => part.trim())
+        .where((part) => part.isNotEmpty)
+        .toList(growable: false);
+    if (clauses.length <= 1) {
+      return '${line.substring(0, maxDisplayChars).trimRight()}...';
+    }
+
+    final selected = <String>[clauses.first];
+    for (final clause in clauses.skip(1)) {
+      if (_isKeyClause(clause)) {
+        selected.add(clause);
+      }
+      final joined = selected.join('，');
+      if (joined.length >= maxDisplayChars) {
+        break;
+      }
+    }
+    final compacted = selected.join('，');
+    if (compacted.length <= maxDisplayChars) {
+      return compacted;
+    }
+    return '${compacted.substring(0, maxDisplayChars).trimRight()}...';
+  }
+
+  bool _isKeyClause(String clause) {
+    final lower = clause.toLowerCase();
+    return RegExp(r'\d').hasMatch(clause) ||
+        clause.contains('结果') ||
+        clause.contains('实际') ||
+        clause.contains('找到') ||
+        clause.contains('包括') ||
+        clause.contains('分别是') ||
+        clause.contains('状态') ||
+        clause.contains('像素') ||
+        clause.contains('精灵图') ||
+        clause.contains('成功') ||
+        clause.contains('失败') ||
+        lower.contains('error') ||
+        lower.contains('failed') ||
+        lower.contains('success');
+  }
+
+  int _scoreLine(String line) {
+    final lower = line.toLowerCase();
+    var score = 0;
+    if (_looksLikeResultLine(line)) {
+      score += 40;
+    }
+    if (line.contains('结论') ||
+        line.contains('总结') ||
+        line.contains('最终') ||
+        line.contains('输出') ||
+        line.contains('摘要')) {
+      score += 25;
+    }
+    if (RegExp(r'^[A-Za-z0-9_\-\u4e00-\u9fff]+[:：]').hasMatch(line)) {
+      score += 25;
+    }
+    if (RegExp(r'\d').hasMatch(line)) {
+      score += 8;
+    }
+    if (lower.contains('pixel') ||
+        line.contains('像素') ||
+        line.contains('状态') ||
+        line.contains('精灵图')) {
+      score += 12;
+    }
+    return score;
   }
 
   Set<String> _taskWords(String taskTitle) {
@@ -138,7 +330,27 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
         lower.startsWith('任务:') ||
         lower.startsWith('补充上下文') ||
         lower.startsWith('执行约束') ||
-        lower.startsWith('风险信息');
+        lower.startsWith('风险信息') ||
+        lower.startsWith('user constraints') ||
+        lower.startsWith('## user constraints') ||
+        lower == 'explored' ||
+        lower == 'thinking' ||
+        lower == 'thinking...' ||
+        lower == 'thinking…' ||
+        lower.startsWith('search ') ||
+        lower.startsWith('list ') ||
+        lower.startsWith('ran ') ||
+        lower.startsWith('glob(') ||
+        lower.startsWith('grep(') ||
+        lower.startsWith('read ') ||
+        lower.startsWith('read(') ||
+        lower.startsWith('edited ') ||
+        lower.startsWith('opened ') ||
+        lower.startsWith('checked ') ||
+        lower.startsWith('shift+tab ') ||
+        line.startsWith('过程记录') ||
+        line.startsWith('继续从') ||
+        line.startsWith('我先看一下');
   }
 
   bool _looksLikeResultLine(String line) {
@@ -165,6 +377,18 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
 typedef LocalSmallModelSummaryRunner = Future<OutputSummary> Function(
   OutputSummaryRequest request,
 );
+
+class _ScoredLine {
+  const _ScoredLine({
+    required this.line,
+    required this.index,
+    required this.score,
+  });
+
+  final String line;
+  final int index;
+  final int score;
+}
 
 typedef LocalSmallModelAvailabilityCheck = Future<bool> Function();
 

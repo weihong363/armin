@@ -70,6 +70,14 @@ Ran jq -r '.pet_id' output/hatch-pet/*/pet_request.json
     expect(cleaned, '已完成修复。可以重新验证');
   });
 
+  test('speech summary removes unnatural spaces around Chinese text', () {
+    final cleaned = DeviceVoiceService.cleanSpeechSummaryForTest(
+      'TARO 是 一 只 小型 疲惫 兔子 开发者 桌面 宠物 ， 192 × 208 像素 格。',
+    );
+
+    expect(cleaned, 'TARO是一只小型疲惫兔子开发者桌面宠物，192 × 208像素格。');
+  });
+
   test('speech profile is slightly faster and steady', () {
     final zhProfile = DeviceVoiceService.speechProfileForTest('zh-CN');
     final enProfile = DeviceVoiceService.speechProfileForTest('en-US');
@@ -92,7 +100,8 @@ You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), v
 ''');
 
     expect(cleaned, contains('额度已用完，请稍后重试。'));
-    expect(cleaned, contains('结果较长，已保存在详情页。'));
+    expect(cleaned, isNot(contains('结果较长')));
+    expect(cleaned, isNot(contains('详情页')));
     expect(cleaned, isNot(contains('Search pet')));
     expect(cleaned, isNot(contains('jq -r')));
     expect(cleaned.length, lessThan(230));
@@ -116,13 +125,24 @@ Ran jq -r '.pet_id' output/hatch-pet/*/pet_request.json
 hello world
 ''');
 
-    expect(cleaned, contains('已找到 SUMMER。'));
+    expect(cleaned, contains('已找到SUMMER。'));
     expect(cleaned, contains('hello world'));
     expect(cleaned, isNot(contains('OpenAI Codex')));
     expect(cleaned, isNot(contains('SKILL.md')));
     expect(cleaned, isNot(contains('Use /skills')));
     expect(cleaned, isNot(contains('Search pet')));
     expect(cleaned, isNot(contains('Ran jq')));
+  });
+
+  test('speech summary keeps result text mixed with tool traces', () {
+    final cleaned = DeviceVoiceService.cleanSpeechSummaryForTest('''
+> ■ Glob('.hatch-pet-runs/taro/**/*.json') ■ Read(/Users/ironion/workspace/momo/output/hatch-pet/taro/pet_request.json) ■ TARO 是一只小型疲惫兔子开发者桌面宠物，灰奶油色调像素风格，9 行精灵图。
+''');
+
+    expect(cleaned, contains('TARO是一只小型疲惫兔子开发者桌面宠物'));
+    expect(cleaned, isNot(contains('Glob')));
+    expect(cleaned, isNot(contains('Read')));
+    expect(cleaned, isNot(contains('/Users')));
   });
 
   test('fast female style increases speech pace', () {

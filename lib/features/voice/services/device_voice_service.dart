@@ -94,26 +94,19 @@ class DeviceVoiceService implements VoiceService {
 
   @override
   Future<void> speakSummary(String summary) async {
-    final segments = buildSpeechSegmentsForTest(summary);
-    if (segments.isEmpty) {
-      return;
+    final cleaned = cleanSpeechSummaryForTest(summary);
+    if (cleaned.isEmpty) {
+      throw const VoiceUnavailableException('没有可朗读的结果内容');
     }
+    await _flutterTts.stop();
     await _flutterTts.awaitSpeakCompletion(true);
     await _flutterTts.setVolume(1.0);
-    for (final segment in segments) {
-      final profile = speechProfileForTest(segment.languageCode);
-      try {
-        await _flutterTts.setLanguage(segment.languageCode);
-      } catch (_) {
-        await _flutterTts.setLanguage('zh-CN');
-      }
-      await _selectPreferredVoice(segment.languageCode);
-      final styledProfile = profile.forStyle(_voiceStyle);
-      await _flutterTts.setSpeechRate(styledProfile.speechRate);
-      await _flutterTts.setPitch(styledProfile.pitch);
-      await _flutterTts.speak(segment.text);
-      await Future<void>.delayed(_pauseAfter(segment.text));
+    try {
+      await _flutterTts.setQueueMode(0);
+    } catch (_) {
+      // Queue control is Android-only; other platforms can ignore it.
     }
+    await _speakConnectedSummary(cleaned);
   }
 
   @override
@@ -157,11 +150,13 @@ class DeviceVoiceService implements VoiceService {
         .replaceAll('\r', '\n')
         .split('\n')
         .map((line) => line.trim())
+        .map(_extractReadableSpeechLine)
         .where((line) => line.isNotEmpty && !_isSpeechNoiseLine(line))
         .map(_cleanSpeechLine)
+        .map(_normalizeSpeechSpacing)
         .where((line) => line.isNotEmpty)
         .toList();
-    return _compactForSpeech(_joinSpeechLines(lines));
+    return _compactForSpeech(_normalizeSpeechSpacing(_joinSpeechLines(lines)));
   }
 
   @visibleForTesting
@@ -189,6 +184,67 @@ class DeviceVoiceService implements VoiceService {
         .replaceAll(RegExp(r'https?://\S+'), '')
         .replaceAll(RegExp(r'\s+'), ' ')
         .trim();
+  }
+
+  static String _normalizeSpeechSpacing(String text) {
+    var normalized = text.replaceAll(RegExp(r'\s+'), ' ').trim();
+    normalized = normalized.replaceAllMapped(
+      RegExp(r'\s+([，。！？；：、,.!?;:）】}])'),
+      (match) => match.group(1)!,
+    );
+    normalized = normalized.replaceAllMapped(
+      RegExp(r'([，。！？；：、])\s+'),
+      (match) => match.group(1)!,
+    );
+    normalized = normalized.replaceAllMapped(
+      RegExp(r'([（【{])\s+'),
+      (match) => match.group(1)!,
+    );
+    normalized = normalized.replaceAllMapped(
+      RegExp(r'([\u4e00-\u9fff])\s+([\u4e00-\u9fff])'),
+      (match) => '${match.group(1)!}${match.group(2)!}',
+    );
+    normalized = normalized.replaceAllMapped(
+      RegExp(r'([\u4e00-\u9fff])\s+([A-Za-z0-9#])'),
+      (match) => '${match.group(1)!}${match.group(2)!}',
+    );
+    normalized = normalized.replaceAllMapped(
+      RegExp(r'([A-Za-z0-9])\s+([\u4e00-\u9fff])'),
+      (match) => '${match.group(1)!}${match.group(2)!}',
+    );
+    return normalized;
+  }
+
+  static String _extractReadableSpeechLine(String line) {
+    var text = line
+        .replaceFirst(RegExp(r'^[>▸▪■\s•*-]+'), '')
+        .replaceAll(RegExp(r'[▸▪■]+'), ' ')
+        .trim();
+    if (!RegExp(r'[\u4e00-\u9fff]').hasMatch(text)) {
+      return text;
+    }
+    text = text
+        .replaceAll(
+          RegExp(
+            r'\b(?:Glob|Grep|Read)\([^)]*\)',
+            caseSensitive: false,
+          ),
+          ' ',
+        )
+        .replaceAll(
+          RegExp(
+            r'\b(?:Search|List|Ran|Opened|Edited|Checked)\b[^。！？\n]*',
+            caseSensitive: false,
+          ),
+          ' ',
+        )
+        .replaceAll(RegExp(r'\bThinking\b', caseSensitive: false), ' ')
+        .replaceAll(RegExp(r'https?://\S+'), ' ')
+        .replaceAll(RegExp(r'/Users/\S+'), ' ')
+        .replaceAll(RegExp(r'/workspace/\S+'), ' ')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+    return text;
   }
 
   static String _removeFencedCode(String text) {
@@ -385,14 +441,12 @@ class DeviceVoiceService implements VoiceService {
     }
     final compacted =
         buffer.isEmpty ? trimmed.substring(0, 90) : buffer.toString();
-    return '$compacted。结果较长，已保存在详情页。';
+    return compacted;
   }
 
-  static Duration _pauseAfter(String text) {
-    if (RegExp(r'[。！？.!?]$').hasMatch(text.trim())) {
-      return const Duration(milliseconds: 180);
-    }
-    return const Duration(milliseconds: 70);
+  static Duration _speakTimeout(String text) {
+    final seconds = (text.length / 6).ceil().clamp(3, 18);
+    return Duration(seconds: seconds);
   }
 
   static String _joinSpeechLines(List<String> lines) {
@@ -432,6 +486,24 @@ class DeviceVoiceService implements VoiceService {
     }
 
     throw const VoiceUnavailableException('当前设备不支持语音，请手动输入');
+  }
+
+  Future<void> _speakConnectedSummary(String cleaned) async {
+    await _flutterTts.stop();
+    await _flutterTts.awaitSpeakCompletion(true);
+    await _flutterTts.setVolume(1.0);
+    await _flutterTts.setLanguage('zh-CN');
+    await _selectPreferredVoice('zh-CN');
+    final profile =
+        speechProfileForTest('zh-CN').forStyle(SpeechVoiceStyle.fastFemale);
+    await _flutterTts.setSpeechRate(profile.speechRate);
+    await _flutterTts.setPitch(profile.pitch);
+    final result = await _flutterTts
+        .speak(cleaned, focus: true)
+        .timeout(_speakTimeout(cleaned));
+    if (result == 0 || result == false) {
+      throw const VoiceUnavailableException('系统语音引擎未开始朗读');
+    }
   }
 
   Future<void> _selectPreferredVoice(String languageCode) async {

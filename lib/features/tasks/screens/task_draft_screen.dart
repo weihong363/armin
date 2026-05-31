@@ -17,6 +17,7 @@ import '../models/task_constraint.dart';
 import '../models/task_draft.dart';
 import '../models/task_session.dart';
 import '../models/voice_input.dart';
+import '../services/agent_instruction_discovery.dart';
 import '../services/constraint_extractor.dart';
 import '../services/prompt_template_builder.dart';
 import '../services/secret_redactor.dart';
@@ -70,10 +71,9 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
   bool _isDiscoveringAgentInstructions = false;
   String? _selectedHostId;
   String? _selectedProjectPathId;
-  String _agentInstructionMessage =
-      'No AGENTS.md detected. Armin will use lightweight built-in prompt governance.';
+  String _agentInstructionMessage = '未检测到 AGENTS.md。Armin 将使用内置轻量上下文治理规则。';
   String _agentInstructionWarning = '';
-  String? _agentInstructionProjectPathId;
+  String? _agentInstructionDetectionKey;
 
   @override
   void initState() {
@@ -170,7 +170,7 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
             onChanged: (value) {
               setState(() {
                 _selectedHostId = value;
-                _agentInstructionProjectPathId = null;
+                _agentInstructionDetectionKey = null;
               });
             },
           ),
@@ -202,7 +202,7 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
                   onChanged: (value) {
                     setState(() {
                       _selectedProjectPathId = value;
-                      _agentInstructionProjectPathId = null;
+                      _agentInstructionDetectionKey = null;
                     });
                     _refreshPreview();
                   },
@@ -623,10 +623,12 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
     final taskId = 'task-${now.microsecondsSinceEpoch}';
     final prompt = _buildPrompt();
     final tmuxSessionName = _taskTmuxSessionName(host.tmuxSessionName, taskId);
-    final taskHost = host.copyWith(
-      projectPath: projectPath,
-      tmuxSessionName: tmuxSessionName,
-    );
+    final taskHost = host
+        .copyWith(
+          projectPath: projectPath,
+          tmuxSessionName: tmuxSessionName,
+        )
+        .toSafePersistedCopy();
     final secretRecords = _secrets
         .map(
             (secret) => secret.toRedactedRecord(taskId: taskId, createdAt: now))
@@ -736,23 +738,38 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
     ProjectPathConfig? project,
     HostConfig? host,
   ) {
-    if (project == null ||
-        host == null ||
-        project.id == _agentInstructionProjectPathId ||
-        _isDiscoveringAgentInstructions) {
+    if (project == null || host == null || _isDiscoveringAgentInstructions) {
       return;
     }
-    Future.microtask(() => _refreshAgentInstructionDiscovery(project, host));
+    final normalizedProjectPath = normalizeRemoteProjectPath(project.path);
+    final detectionKey = AgentInstructionDiscoveryKey(
+      hostId: host.id,
+      projectPathId: project.id,
+      normalizedProjectPath: normalizedProjectPath,
+    ).value;
+    if (detectionKey == _agentInstructionDetectionKey) {
+      return;
+    }
+    Future.microtask(
+      () => _refreshAgentInstructionDiscovery(
+        project,
+        host,
+        detectionKey,
+        normalizedProjectPath,
+      ),
+    );
   }
 
   Future<void> _refreshAgentInstructionDiscovery(
     ProjectPathConfig project,
     HostConfig host,
+    String detectionKey,
+    String normalizedProjectPath,
   ) async {
     final state = AppStateScope.of(context);
     setState(() {
       _isDiscoveringAgentInstructions = true;
-      _agentInstructionProjectPathId = project.id;
+      _agentInstructionDetectionKey = detectionKey;
       _agentInstructionWarning = '';
     });
 
@@ -762,10 +779,8 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
       }
       setState(() {
         _isDiscoveringAgentInstructions = false;
-        _agentInstructionMessage =
-            'No AGENTS.md detected. Armin will use lightweight built-in prompt governance.';
-        _agentInstructionWarning =
-            'AGENTS.md detection will run after Host password is configured.';
+        _agentInstructionMessage = '未检测到 AGENTS.md。Armin 将使用内置轻量上下文治理规则。';
+        _agentInstructionWarning = '主机密码未配置，暂时无法检测 AGENTS.md。';
       });
       return;
     }
@@ -777,7 +792,7 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
           port: host.port,
           username: host.username,
           password: host.password,
-          projectPath: normalizeRemoteProjectPath(project.path),
+          projectPath: normalizedProjectPath,
           pathPrepend: host.pathPrepend,
           shellWrapper: host.shellWrapper,
         ),
@@ -796,10 +811,8 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
       }
       setState(() {
         _isDiscoveringAgentInstructions = false;
-        _agentInstructionMessage =
-            'No AGENTS.md detected. Armin will use lightweight built-in prompt governance.';
-        _agentInstructionWarning =
-            'AGENTS.md detection failed. Built-in prompt governance is still enabled.';
+        _agentInstructionMessage = '未检测到 AGENTS.md。Armin 将使用内置轻量上下文治理规则。';
+        _agentInstructionWarning = 'AGENTS.md 检测失败。内置轻量上下文治理规则仍会启用。';
       });
     }
   }

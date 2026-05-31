@@ -1,8 +1,8 @@
 # Armin
 
-Armin 是一个移动优先、语音优先的 shell，用于将编码工作委托给在您的计算机上运行的基于终端的 AI 编码代理。
+Armin 是面向本地与中国内地友好 AI Agent 的语言优先工作委派 Shell。
 
-它不是 Codex Mobile 的替代品，也不是一个完整的终端应用。Armin 专注于交互层：捕获意图，让用户编辑和确认，通过 SSH/tmux 驱动远端 Agent，观察原生输出，并保留完整的本地审计跟踪。
+它不是手机端 Codex 客户端、移动端 Agent Session Client、远程控制 Codex 的 App，也不是手机 SSH Terminal。Armin 专注于把用户的自然语言转成可追踪的工作语义，并把执行交给本地或中国内地友好的 AI Agent，例如 Codex CLI、Qoder、Aider、OpenCode、Ollama/Qwen、DeepSeek、Gemini CLI 或自定义本地 Agent。
 
 > **Armin 的目标不是统一 AI 工具，而是统一用户的工作语义：让用户用自己的语言描述、约束、推进、恢复、停止和确认工作，再由不同 Agent 去执行。**
 
@@ -59,9 +59,11 @@ flutter create --platforms=android .
 
 ## 文档
 
+- [产品定位](docs/PRODUCT-POSITIONING.md)
 - [规范](docs/SPEC.md)
 - [架构](docs/ARCHITECTURE.md)
 - [提示模板](docs/PROMPT_TEMPLATE.md)
+- [语义输入输出完整性](docs/SEMANTIC-IO-INTEGRITY.md)
 - [路线图](docs/ROADMAP.md)
 
 ## 路线图

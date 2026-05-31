@@ -188,6 +188,10 @@ class HostConfig {
     );
   }
 
+  HostConfig toSafePersistedCopy() {
+    return copyWith(password: '');
+  }
+
   Map<String, Object?> toJson() {
     return {
       'id': id,

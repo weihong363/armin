@@ -168,7 +168,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(
-      find.textContaining('AGENTS.md detection failed'),
+      find.textContaining('AGENTS.md 检测失败'),
       findsOneWidget,
     );
 
@@ -191,7 +191,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(
-      find.textContaining('AGENTS.md detected. Agent may follow'),
+      find.textContaining('检测到 AGENTS.md'),
       findsOneWidget,
     );
   });

@@ -85,6 +85,95 @@ pin-up 风格，含 9 个动画状态（idle/running/waving/jumping/failed/waiti
     expect(summary.displaySummary, contains('15361872 精灵图集'));
   });
 
+  test('rule provider summarizes long turn output by core result not prefix',
+      () async {
+    final longOutput = OutputSummaryRequest(
+      cleanedOutput: '''
+我先看一下仓库里宠物资源的目录和命名方式，然后直接把现有 pet 名称列出来。
+Explored
+Search (^|/)Pets|pets|Pet in .
+继续从项目结构和资源引用里找实际资源目录。
+${List.generate(20, (index) => '过程记录 $index：检查了一个低价值路径，没有形成最终结果。').join('\n')}
+结论：实际存在的 PET 包括 momo、luna、nori、Summer。
+Summer：一位迷人的美国沙滩女孩 Codex 宠物，棕发波浪、暖棕肤色、海军蓝比基尼、自信活力的 pin-up 风格，含 9 个动画状态（idle/running/waving/jumping/failed/waiting/review 等），1536×1872 精灵图集，192×208 像素格。
+''',
+      status: TaskStatus.turnIdle,
+      taskTitle: '帮我输出所有 momo 的 PET',
+    );
+
+    final summary =
+        await const RuleBasedOutputSummaryProvider().summarize(longOutput);
+
+    expect(summary.displaySummary, contains('实际存在的 PET 包括'));
+    expect(summary.displaySummary, contains('Summer：一位迷人的美国沙滩女孩'));
+    expect(summary.displaySummary, contains('9 个动画状态'));
+    expect(summary.displaySummary, contains('192×208 像素格'));
+    expect(summary.displaySummary, isNot(startsWith('我先看一下仓库')));
+    expect(summary.displaySummary, isNot(contains('过程记录 0')));
+  });
+
+  test('rule provider joins wrapped natural-language result lines', () async {
+    const wrapped = OutputSummaryRequest(
+      cleanedOutput: '''
+Summer：一位迷人的美国沙滩女孩 Codex 宠物，棕发波浪、暖棕
+肤、海军蓝比基尼、像素风格、厚轮廓线、赛璐璐平涂，9 行精灵图
+（idle/running/waving/jumping/failed/waiting/review 等），192×208 像素格。
+''',
+      status: TaskStatus.turnIdle,
+    );
+
+    final summary =
+        await const RuleBasedOutputSummaryProvider().summarize(wrapped);
+
+    expect(summary.displaySummary, startsWith('Summer：一位迷人的美国沙滩女孩'));
+    expect(summary.displaySummary, contains('192×208 像素格'));
+    expect(summary.displaySummary, isNot(startsWith('肤、海军蓝')));
+  });
+
+  test('rule provider extracts pet description from raw tool context',
+      () async {
+    const toolTrace = OutputSummaryRequest(
+      cleanedOutput: '''
+> Glob('.hatch-pet-runs/taro/**/*.json') ■ Glob('.hatch-pet-runs/taro/**/*.md')
+Glob('output/hatch-pet/taro/**/*.json') ■ Read(/Users/ironion/workspace/momo/output/hatch-pet/taro/pet_request.json) ■ TARO 是 一 只 小型疲惫兔子开发者桌面宠物，灰奶油色调像素风格（厚轮廓线、赛璐璐平涂），9 行精灵图（idle/running-right/running-left/waving/jumping/failed/waiting/running/review），192×208 帧尺寸。
+Shift+Tab to Auto-accept Edits
+''',
+      status: TaskStatus.turnIdle,
+    );
+
+    final summary =
+        await const RuleBasedOutputSummaryProvider().summarize(toolTrace);
+
+    expect(summary.displaySummary, startsWith('Taro是一只小型疲惫兔子'));
+    expect(summary.displaySummary, contains('192×208 帧尺寸'));
+    expect(summary.displaySummary, isNot(contains('Glob(')));
+    expect(summary.displaySummary, isNot(contains('Read(')));
+    expect(summary.displaySummary, isNot(contains('Shift+Tab')));
+  });
+
+  test('rule provider strips constraints and thinking traces dynamically',
+      () async {
+    const noisy = OutputSummaryRequest(
+      cleanedOutput: '''
+User constraints 最小改动 不要提交Git 高风险操作先确认
+Thinking
+Grep('SUMMER' within ./)
+Thinking Grep('summer' within ./) Thinking
+Summer 是一个 Codex桌面宠物（pixel-art风格），角色设定为一位活力四射的美国海滩女孩吉祥物，拥有9种动画状态（idle、running、waving、jumping等），采用192×208像素网格、#00FF00 chroma-key背景。
+''',
+      status: TaskStatus.turnIdle,
+    );
+
+    final summary =
+        await const RuleBasedOutputSummaryProvider().summarize(noisy);
+
+    expect(summary.displaySummary, startsWith('Summer 是一个 Codex桌面宠物'));
+    expect(summary.displaySummary, contains('192×208像素网格'));
+    expect(summary.displaySummary, isNot(contains('User constraints')));
+    expect(summary.displaySummary, isNot(contains('Thinking')));
+    expect(summary.displaySummary, isNot(contains('Grep(')));
+  });
+
   test('rule provider excludes terminal chrome from visible result', () async {
     const terminalSnapshot = OutputSummaryRequest(
       cleanedOutput: '''

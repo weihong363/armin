@@ -344,10 +344,40 @@ void main() {
     expect(agent.lastFollowUp, isNull);
   });
 
-  testWidgets('manual read result speaks cleaned task summary', (tester) async {
+  testWidgets('manual read result speaks current turn card output',
+      (tester) async {
+    final now = DateTime(2026, 5, 18);
     final task = _task().copyWith(
       status: TaskStatus.turnIdle,
-      summary: 'hello world',
+      turns: [
+        NativeOutputTurn(
+          id: 'turn-task-1-1',
+          taskId: 'task-1',
+          turnIndex: 1,
+          userInput: '输出 Taro',
+          rawOutput: '',
+          cleanedOutput: '输出 Taro\nTaro 是一只小型宠物。',
+          startedAt: now,
+          lastOutputAt: now,
+          status: NativeOutputTurnStatus.turnIdle,
+        ),
+        NativeOutputTurn(
+          id: 'turn-task-1-2',
+          taskId: 'task-1',
+          turnIndex: 2,
+          userInput: '输出 Summer',
+          rawOutput: '',
+          cleanedOutput: '''
+输出 Taro
+Taro 是一只小型宠物。
+输出 Summer
+Summer 是一个海滩风格宠物。
+''',
+          startedAt: now,
+          lastOutputAt: now,
+          status: NativeOutputTurnStatus.turnIdle,
+        ),
+      ],
     );
     final voice = _RecognizingVoiceService('');
     final state = ArminAppState(
@@ -368,13 +398,14 @@ void main() {
     await tester.tap(find.text('结果'));
     await tester.pumpAndSettle();
 
-    final speakButton = find.byIcon(Icons.volume_up_outlined).last;
+    final speakButton = find.byTooltip('朗读这段输出').first;
     await tester.ensureVisible(speakButton);
     await tester.pumpAndSettle();
     await tester.tap(speakButton);
     await tester.pumpAndSettle();
 
-    expect(voice.spokenSummaries.single, contains('hello world'));
+    expect(voice.spokenSummaries.single, contains('Summer'));
+    expect(voice.spokenSummaries.single, isNot(contains('Taro')));
   });
 
   testWidgets('timeline filters terminal chrome from stored summary',
@@ -468,7 +499,7 @@ Summer：一位迷人的美国沙滩女孩 Codex 宠物。
           turnIndex: 1,
           userInput: '列出所有宠物',
           rawOutput: '',
-          cleanedOutput: '列出所有宠物',
+          cleanedOutput: '列出所有宠物\n实际宠物：momo、Summer。',
           startedAt: now,
           lastOutputAt: now,
           status: NativeOutputTurnStatus.turnIdle,
@@ -479,7 +510,12 @@ Summer：一位迷人的美国沙滩女孩 Codex 宠物。
           turnIndex: 2,
           userInput: '继续输出 Summer',
           rawOutput: '',
-          cleanedOutput: '列出所有宠物\n继续输出 Summer\nSummer：海滩风格 Codex 宠物。',
+          cleanedOutput: '''
+列出所有宠物
+实际宠物：momo、Summer。
+继续输出 Summer
+Summer：海滩风格 Codex 宠物。
+''',
           startedAt: now,
           lastOutputAt: now,
           status: NativeOutputTurnStatus.turnIdle,
@@ -492,6 +528,7 @@ Summer：一位迷人的美国沙滩女孩 Codex 宠物。
           rawOutput: '',
           cleanedOutput: '''
 列出所有宠物
+实际宠物：momo、Summer。
 继续输出 Summer
 Summer：海滩风格 Codex 宠物。
 补充尺寸
@@ -519,13 +556,107 @@ Summer：海滩风格 Codex 宠物。
     await tester.tap(find.text('结果'));
     await tester.pumpAndSettle();
 
-    expect(find.text('Turn 1'), findsNothing);
+    expect(find.text('Turn 1'), findsOneWidget);
     expect(find.text('Turn 2'), findsOneWidget);
     expect(find.text('Turn 3'), findsOneWidget);
+    expect(
+      tester.getTopLeft(find.text('Turn 3')).dy,
+      lessThan(tester.getTopLeft(find.text('Turn 2')).dy),
+    );
+    expect(
+      tester.getTopLeft(find.text('Turn 2')).dy,
+      lessThan(tester.getTopLeft(find.text('Turn 1')).dy),
+    );
+    expect(find.textContaining('实际宠物：momo、Summer'), findsOneWidget);
     expect(find.textContaining('Summer：海滩风格 Codex 宠物'), findsOneWidget);
     expect(find.textContaining('精灵图集尺寸为 1536 x 1872'), findsOneWidget);
     expect(find.text('继续输出 Summer'), findsNothing);
     expect(find.text('补充尺寸'), findsNothing);
+  });
+
+  testWidgets('timeline lists latest turns first and expands scoped output',
+      (tester) async {
+    tester.view.physicalSize = const Size(430, 1200);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final now = DateTime(2026, 5, 18);
+    final task = _task().copyWith(
+      status: TaskStatus.turnIdle,
+      turns: [
+        NativeOutputTurn(
+          id: 'turn-task-1-1',
+          taskId: 'task-1',
+          turnIndex: 1,
+          userInput: '输出 Taro',
+          rawOutput: '''
+输出 Taro
+Thinking
+Taro 是一只小型疲惫兔子开发者桌面宠物。
+''',
+          cleanedOutput: 'Taro 是一只小型疲惫兔子开发者桌面宠物。',
+          startedAt: now,
+          lastOutputAt: now,
+          status: NativeOutputTurnStatus.turnIdle,
+        ),
+        NativeOutputTurn(
+          id: 'turn-task-1-2',
+          taskId: 'task-1',
+          turnIndex: 2,
+          userInput: '继续输出 Summer',
+          rawOutput: '''
+输出 Taro
+Thinking
+Taro 是一只小型疲惫兔子开发者桌面宠物。
+继续输出 Summer
+Thinking
+Summer 是一个桌面宠物。
+''',
+          cleanedOutput: '''
+输出 Taro
+Taro 是一只小型疲惫兔子开发者桌面宠物。
+继续输出 Summer
+Summer 是一个桌面宠物。
+''',
+          startedAt: now,
+          lastOutputAt: now,
+          status: NativeOutputTurnStatus.turnIdle,
+        ),
+      ],
+    );
+    final state = ArminAppState(
+      store: _TaskStore(task),
+      agentSessionService: const _NoopAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await tester.pumpWidget(
+      AppStateScope(
+        state: state,
+        child: const MaterialApp(home: TaskDetailScreen(taskId: 'task-1')),
+      ),
+    );
+
+    await tester.scrollUntilVisible(
+      find.text('Turn 2：追加指令'),
+      300,
+      scrollable: find.byType(Scrollable).last,
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      tester.getTopLeft(find.text('Turn 2：追加指令')).dy,
+      lessThan(tester.getTopLeft(find.text('Turn 1：初始任务')).dy),
+    );
+    expect(find.text('展开完整输出'), findsNWidgets(2));
+    expect(find.textContaining('Summer 是一个桌面宠物'), findsNothing);
+
+    await tester.tap(find.text('展开完整输出').first);
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('Summer 是一个桌面宠物'), findsOneWidget);
+    expect(find.textContaining('Taro 是一只小型疲惫兔子'), findsNothing);
   });
 
   testWidgets('failed task header does not label the finish time completed',

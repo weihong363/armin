@@ -198,9 +198,38 @@ class TaskSession {
   }
 
   Map<String, Object?> toJson() {
+    final safeHost = host.toSafePersistedCopy();
+    final password = host.password.trim();
+    String safeText(String value) => _redactRuntimePassword(value, password);
+    Map<String, Object?> safePromptRecord(PromptRecord record) {
+      final json = record.toJson();
+      json['finalPrompt'] = safeText(record.finalPrompt);
+      return json;
+    }
+
+    Map<String, Object?> safeExecutionLog(ExecutionLog log) {
+      final json = log.toJson();
+      json['rawOutput'] = safeText(log.rawOutput);
+      return json;
+    }
+
+    Map<String, Object?> safeMetricEvent(MetricEvent event) {
+      final json = event.toJson();
+      json['payloadJson'] = safeText(event.payloadJson);
+      return json;
+    }
+
+    Map<String, Object?> safeTurn(NativeOutputTurn turn) {
+      final json = turn.toJson();
+      json['rawOutput'] = safeText(turn.rawOutput);
+      json['cleanedOutput'] = safeText(turn.cleanedOutput);
+      json['userInput'] = safeText(turn.userInput);
+      return json;
+    }
+
     return {
       'id': id,
-      'host': host.toJson(),
+      'host': safeHost.toJson(),
       'title': title,
       'status': status.name,
       'createdAt': createdAt.toIso8601String(),
@@ -214,25 +243,33 @@ class TaskSession {
       'userText': userText,
       'context': context,
       'constraints': constraints.map((constraint) => constraint.name).toList(),
-      'finalPrompt': finalPrompt,
+      'finalPrompt': safeText(finalPrompt),
       'secretRecords': secretRecords.map((record) => record.toJson()).toList(),
-      'rawLog': rawLog,
-      'shortSummary': shortSummary,
-      'summary': summary,
+      'rawLog': safeText(rawLog),
+      'shortSummary': safeText(shortSummary),
+      'summary': summary == null ? null : safeText(summary!),
       'result': result?.toJson(),
       'approval': approval?.toJson(),
       'terminalPrompt': terminalPrompt?.toJson(),
       'voiceInputs': voiceInputs.map((input) => input.toJson()).toList(),
       'draftRecord': draftRecord?.toJson(),
-      'promptRecord': promptRecord?.toJson(),
-      'executionLogs': executionLogs.map((log) => log.toJson()).toList(),
+      'promptRecord':
+          promptRecord == null ? null : safePromptRecord(promptRecord!),
+      'executionLogs': executionLogs.map(safeExecutionLog).toList(),
       'approvalRequests':
           approvalRequests.map((approval) => approval.toJson()).toList(),
-      'metricEvents': metricEvents.map((event) => event.toJson()).toList(),
+      'metricEvents': metricEvents.map(safeMetricEvent).toList(),
       'subtasks': subtasks.map((subtask) => subtask.toJson()).toList(),
-      'turns': turns.map((turn) => turn.toJson()).toList(),
+      'turns': turns.map(safeTurn).toList(),
     };
   }
+}
+
+String _redactRuntimePassword(String value, String password) {
+  if (password.isEmpty || value.isEmpty) {
+    return value;
+  }
+  return value.replaceAll(password, '[REDACTED_PASSWORD]');
 }
 
 DateTime _date(Object? value) {

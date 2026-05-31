@@ -9,7 +9,10 @@ import 'package:armin/core/storage/secure_password_store.dart';
 import 'package:armin/features/hosts/models/host_config.dart';
 import 'package:armin/features/agent/parsers/terminal_prompt.dart';
 import 'package:armin/features/projects/models/project_path_config.dart';
+import 'package:armin/features/tasks/models/execution_log.dart';
+import 'package:armin/features/tasks/models/metric_event.dart';
 import 'package:armin/features/tasks/models/native_output_turn.dart';
+import 'package:armin/features/tasks/models/prompt_record.dart';
 import 'package:armin/features/tasks/models/task_session.dart';
 
 import 'mock_secure_storage.dart';
@@ -182,6 +185,56 @@ void main() {
     final savedTask = (await reloaded.loadTasks()).single;
     expect(savedTask.terminalPrompt?.question, 'Allow execution of [ls]?');
     expect(savedTask.terminalPrompt?.options.single.key, '1');
+  });
+
+  test('TaskSession JSON never persists runtime password', () {
+    final now = DateTime(2026, 5, 31);
+    final task = _task(now).copyWith(
+      host: _task(now).host.copyWith(password: 'super-secret-password'),
+      finalPrompt: 'run with super-secret-password',
+      rawLog: 'raw log super-secret-password',
+      promptRecord: PromptRecord(
+        id: 'prompt-task-1',
+        taskId: 'task-1',
+        finalPrompt: 'prompt super-secret-password',
+        templateVersion: 'test',
+        createdAt: now,
+      ),
+      executionLogs: [
+        ExecutionLog(
+          id: 'log-task-1',
+          taskId: 'task-1',
+          rawOutput: 'output super-secret-password',
+          createdAt: now,
+        ),
+      ],
+      metricEvents: [
+        MetricEvent.create(
+          taskId: 'task-1',
+          eventType: 'test',
+          payloadJson: '{"password":"super-secret-password"}',
+          now: now,
+        ),
+      ],
+      turns: [
+        NativeOutputTurn(
+          id: 'turn-task-1-1',
+          taskId: 'task-1',
+          turnIndex: 1,
+          userInput: 'input super-secret-password',
+          rawOutput: 'raw super-secret-password',
+          cleanedOutput: 'cleaned super-secret-password',
+          startedAt: now,
+          lastOutputAt: now,
+          status: NativeOutputTurnStatus.turnIdle,
+        ),
+      ],
+    );
+
+    final encoded = jsonEncode(task.toJson());
+
+    expect(encoded, isNot(contains('super-secret-password')));
+    expect(encoded, contains('[REDACTED_PASSWORD]'));
   });
 
   test('JsonTaskHistoryStore reads old tasks without turns', () async {

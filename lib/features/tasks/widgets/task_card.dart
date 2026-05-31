@@ -7,6 +7,7 @@ import '../../../shared/theme/armin_theme.dart';
 import '../../../shared/widgets/status_badge.dart';
 import '../../agent/services/codex_output_cleaner.dart';
 import '../models/task_session.dart';
+import '../services/semantic_snippet_builder.dart';
 
 class TaskCard extends StatelessWidget {
   const TaskCard({
@@ -263,7 +264,10 @@ class _FeaturedTaskCardState extends State<_FeaturedTaskCard> {
 
 String _readableSummary(TaskSession task) {
   final summary = const CodexOutputCleaner().clean(task.shortSummary);
-  return summary.isEmpty ? task.userText : summary;
+  final text = summary.isEmpty ? task.userText : summary;
+  return const SemanticSnippetBuilder()
+      .build(text, contentType: SnippetContentType.agentSummary, maxChars: 140)
+      .visibleText;
 }
 
 class _DarkBadge extends StatelessWidget {

@@ -11,6 +11,8 @@ import '../../tasks/models/native_output_turn.dart';
 import '../../tasks/models/task_session.dart';
 import '../../tasks/models/voice_input.dart';
 import '../../tasks/services/output_summary_provider.dart';
+import '../../tasks/services/semantic_snippet_builder.dart';
+import '../../tasks/services/turn_output_slicer.dart';
 import '../../tasks/services/voice_task_command_processor.dart';
 import '../../tasks/screens/task_draft_screen.dart';
 
@@ -299,7 +301,13 @@ class _SummaryBannerState extends State<_SummaryBanner> {
   @override
   Widget build(BuildContext context) {
     final task = widget.task;
-    final readableSummary = const CodexOutputCleaner().clean(task.shortSummary);
+    final readableSummary = const SemanticSnippetBuilder()
+        .build(
+          const CodexOutputCleaner().clean(task.shortSummary),
+          contentType: SnippetContentType.agentSummary,
+          maxChars: 260,
+        )
+        .visibleText;
     return DecoratedBox(
       decoration: BoxDecoration(
         color: const Color(0xFFF1F8F5),
@@ -360,7 +368,13 @@ class _TimelinePanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final readableSummary = const CodexOutputCleaner().clean(task.shortSummary);
+    final readableSummary = const SemanticSnippetBuilder()
+        .build(
+          const CodexOutputCleaner().clean(task.shortSummary),
+          contentType: SnippetContentType.agentSummary,
+          maxChars: 220,
+        )
+        .visibleText;
     final items = [
       _TimelineItem(
         icon: Icons.mic_none_outlined,
@@ -424,17 +438,29 @@ class _TimelinePanel extends StatelessWidget {
 class _TurnSummaryList extends StatelessWidget {
   const _TurnSummaryList({required this.task});
 
+  static const _turnOutputSlicer = TurnOutputSlicer();
+
   final TaskSession task;
 
   @override
   Widget build(BuildContext context) {
+    final indexedTurns = [
+      for (var index = 0; index < task.turns.length; index++)
+        _IndexedTurn(index: index, turn: task.turns[index]),
+    ]..sort((a, b) => b.turn.turnIndex.compareTo(a.turn.turnIndex));
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        for (final turn in task.turns)
+        for (final indexedTurn in indexedTurns)
           Padding(
             padding: const EdgeInsets.only(bottom: 12),
-            child: _TurnSummaryRow(turn: turn),
+            child: _TurnSummaryRow(
+              turn: indexedTurn.turn,
+              fullOutput: _turnOutputSlicer.rawOutputForTurn(
+                task.turns,
+                indexedTurn.index,
+              ),
+            ),
           ),
       ],
     );
@@ -442,9 +468,10 @@ class _TurnSummaryList extends StatelessWidget {
 }
 
 class _TurnSummaryRow extends StatelessWidget {
-  const _TurnSummaryRow({required this.turn});
+  const _TurnSummaryRow({required this.turn, required this.fullOutput});
 
   final NativeOutputTurn turn;
+  final String fullOutput;
 
   @override
   Widget build(BuildContext context) {
@@ -477,9 +504,33 @@ class _TurnSummaryRow extends StatelessWidget {
           overflow: TextOverflow.ellipsis,
           style: Theme.of(context).textTheme.bodySmall,
         ),
+        if (fullOutput.isNotEmpty) ...[
+          const SizedBox(height: 6),
+          ExpansionTile(
+            tilePadding: EdgeInsets.zero,
+            childrenPadding: const EdgeInsets.only(top: 4),
+            title: const Text('展开完整输出'),
+            children: [
+              Align(
+                alignment: Alignment.centerLeft,
+                child: SelectableText(
+                  fullOutput,
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ),
+            ],
+          ),
+        ],
       ],
     );
   }
+}
+
+class _IndexedTurn {
+  const _IndexedTurn({required this.index, required this.turn});
+
+  final int index;
+  final NativeOutputTurn turn;
 }
 
 class _TimelineItem extends StatelessWidget {
@@ -533,6 +584,8 @@ class _ResultPanel extends StatefulWidget {
 }
 
 class _ResultPanelState extends State<_ResultPanel> {
+  static const _turnOutputSlicer = TurnOutputSlicer();
+
   Future<List<_TurnOutputSummary>>? _summariesFuture;
 
   @override
@@ -547,7 +600,8 @@ class _ResultPanelState extends State<_ResultPanel> {
     if (oldWidget.task.id != widget.task.id ||
         oldWidget.task.updatedAt != widget.task.updatedAt ||
         oldWidget.task.summary != widget.task.summary ||
-        oldWidget.task.result?.summary != widget.task.result?.summary) {
+        oldWidget.task.result?.summary != widget.task.result?.summary ||
+        _turnsSignature(oldWidget.task) != _turnsSignature(widget.task)) {
       _summariesFuture = _outputSummaries(widget.task);
     }
   }
@@ -612,11 +666,16 @@ class _ResultPanelState extends State<_ResultPanel> {
   Future<List<_TurnOutputSummary>> _outputSummaries(TaskSession task) async {
     final provider = AppStateScope.of(context).outputSummaryProvider;
     final summaries = <_TurnOutputSummary>[];
-    for (var index = 0; index < task.turns.length; index++) {
-      final turn = task.turns[index];
+    final indexedTurns = [
+      for (var index = 0; index < task.turns.length; index++)
+        _IndexedTurn(index: index, turn: task.turns[index]),
+    ]..sort((a, b) => b.turn.turnIndex.compareTo(a.turn.turnIndex));
+    for (final indexedTurn in indexedTurns) {
+      final index = indexedTurn.index;
+      final turn = indexedTurn.turn;
       final summary = await provider.summarize(
         OutputSummaryRequest(
-          cleanedOutput: _incrementalTurnOutput(task.turns, index),
+          cleanedOutput: _turnOutputSlicer.outputForTurn(task.turns, index),
           status: task.status,
           taskTitle: task.title,
           promptInputs: [turn.userInput],
@@ -651,16 +710,19 @@ class _ResultPanelState extends State<_ResultPanel> {
         : [_TurnOutputSummary(title: '输出结果', text: text)];
   }
 
-  String _incrementalTurnOutput(List<NativeOutputTurn> turns, int index) {
-    var output = turns[index].cleanedOutput.trim();
-    for (var previous = index - 1; previous >= 0; previous--) {
-      final earlier = turns[previous].cleanedOutput.trim();
-      if (earlier.isNotEmpty && output.contains(earlier)) {
-        output = output.replaceFirst(earlier, '').trim();
-        break;
-      }
-    }
-    return output;
+  String _turnsSignature(TaskSession task) {
+    return task.turns
+        .map(
+          (turn) => [
+            turn.turnIndex,
+            turn.status.name,
+            turn.userInput,
+            turn.rawOutput,
+            turn.cleanedOutput,
+            turn.lastOutputAt.microsecondsSinceEpoch,
+          ].join('|'),
+        )
+        .join('\n---\n');
   }
 
   String _legacyOutputSource(TaskSession task) {

@@ -60,14 +60,6 @@ class CodexOutputCleaner {
         lower.startsWith('press enter to continue') ||
         lower.startsWith('run npm install') ||
         lower.startsWith('see full release notes') ||
-        lower == 'explored' ||
-        lower.startsWith('search ') ||
-        lower.startsWith('list ') ||
-        lower.startsWith('ran ') ||
-        lower.startsWith('read ') ||
-        lower.startsWith('edited ') ||
-        lower.startsWith('opened ') ||
-        lower.startsWith('checked ') ||
         lower == 'thinking...' ||
         lower == 'thinking…' ||
         lower.contains('signed in browser login') ||
@@ -76,7 +68,6 @@ class CodexOutputCleaner {
         lower.contains('github.com/openai/codex/releases') ||
         lower.contains('chatgpt.com/codex?app-landing-page=true') ||
         lower.startsWith('skipped loading') ||
-        lower.startsWith('warning') ||
         lower.startsWith('/users/') ||
         lower.contains('invalid skill.md') ||
         lower.contains('invalid yaml') ||
@@ -84,8 +75,7 @@ class CodexOutputCleaner {
         lower.startsWith('are not allowed in this context') ||
         lower == 'find and fix a bug in @filename' ||
         lower == 'implement {feature}' ||
-        lower == 'explain this codebase' ||
-        RegExp(r'^\d+\.\s').hasMatch(lower);
+        lower == 'explain this codebase';
   }
 
   bool _isTerminalGraphicLine(String line) {

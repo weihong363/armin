@@ -25,6 +25,12 @@ void main() {
     expect(prompt, startsWith('Armin context governance:'));
     expect(prompt, contains('Only inspect files directly related'));
     expect(prompt, contains('Never scan the entire repository'));
+    expect(prompt, contains('## User task'));
+    expect(prompt, contains('## User constraints'));
+    expect(prompt, contains('最小改动'));
+    expect(prompt, contains('不要提交 Git'));
+    expect(prompt, contains('## Context chunk'));
+    expect(prompt, contains('## Secret placeholders'));
     expect(prompt, contains('错误日志'));
     expect(prompt, contains('修复登录失败'));
     expect(prompt, contains('GITHUB_TOKEN: [REDACTED]'));
@@ -37,5 +43,25 @@ void main() {
     expect(prompt, isNot(contains('普通开发操作默认允许')));
     expect(prompt, isNot(contains('不要自动 git commit')));
     expect(prompt, isNot(contains('安装/升级依赖')));
+  });
+
+  test('PromptTemplateBuilder does not let long context erase task semantics',
+      () {
+    final prompt = PromptTemplateBuilder().build(
+      taskDescription: '输出所有 momo 的 PET，并检查是否有 SUMMER',
+      context: List.generate(
+        200,
+        (index) => '背景噪音 $index：这是一段很长但优先级较低的上下文。',
+      ).join('\n'),
+      constraints: const {
+        TaskConstraint.analyzeOnly,
+        TaskConstraint.noGitCommit,
+      },
+      secrets: const [],
+    );
+
+    expect(prompt, contains('输出所有 momo 的 PET，并检查是否有 SUMMER'));
+    expect(prompt, contains('只分析不修改'));
+    expect(prompt, contains('不要提交 Git'));
   });
 }

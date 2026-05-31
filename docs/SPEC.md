@@ -99,7 +99,7 @@ Phase 2 必须跑通一个真实且可持续交互的循环：
 
 ### 提示构建
 
-发送到桌面 Agent 的提示使用 `armin-task-v1` 模板，并通过 `PromptGovernor` 注入短的上下文治理规则；参见 [PROMPT_TEMPLATE.md](PROMPT_TEMPLATE.md)。提示不要求 Agent 返回结构化 marker。
+发送到桌面 Agent 的提示使用 `armin-task-v1` 模板。`PromptTemplateBuilder` 先用本地规则 chunking 保留用户任务原话、约束、secret 占位符和高价值上下文，再通过 `PromptGovernor` 注入短的上下文治理规则；参见 [PROMPT_TEMPLATE.md](PROMPT_TEMPLATE.md)。提示不要求 Agent 返回结构化 marker。
 
 ### Shell 层
 

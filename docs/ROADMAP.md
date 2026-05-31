@@ -25,6 +25,7 @@
 - 暂停取消当前 observer，恢复重新监听同一任务 session
 - 追加面板中的基础语义语音动作：继续、停止、完成、恢复与约束提取
 - 运行中语音追加与语音控制输入写入脱敏历史，保留语义审计链路
+- Prompt Context Chunking：将任务原话、约束、上下文和 secret 占位符分块，避免长上下文导致核心语义丢失
 - 端侧摘要实验开关、runner 接口、能力检测、模型输入脱敏、摘要脱敏和规则 fallback
 - `RuntimePolicy` 统一安静检测、最大运行时长和 capture 窗口；终态先保存 final capture 再清理 session
 - cleanup 失败会写入任务提示，终态任务可手动重试清理远端 session
@@ -47,6 +48,7 @@
 - Host 使用 password 认证并通过安全存储加载；普通历史不保存密码明文。
 - 每个任务使用独立 tmux session；`turnIdle` 保留 session，用户终止或确认终态后才 final capture 并 cleanup。
 - 文本/语音追加、停止、完成、恢复与重连动作均可从任务详情操作，语音输入进入脱敏审计。
+- Prompt 使用本地规则 chunking 保留用户任务原话和约束；不引入向量数据库、embedding 或自动仓库扫描。
 - 输出展示与 TTS 使用清洗/脱敏摘要；端侧小模型 runner、中英文语音品质调优不作为本次最低可验收门槛。
 
 ### 人工验收清单

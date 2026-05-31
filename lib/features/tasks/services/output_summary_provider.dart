@@ -188,6 +188,16 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
         lower == 'thinking' ||
         lower == 'thinking...' ||
         lower == 'thinking…' ||
+        lower.startsWith('```') ||
+        lower.startsWith('import ') ||
+        lower.startsWith('class ') ||
+        lower.startsWith('final ') ||
+        lower.startsWith('const ') ||
+        lower.startsWith('var ') ||
+        lower.startsWith('return ') ||
+        lower.startsWith('await ') ||
+        lower.startsWith('flutter ') ||
+        lower.startsWith('dart ') ||
         lower.startsWith('search ') ||
         lower.startsWith('list ') ||
         lower.startsWith('ran ') ||
@@ -326,6 +336,16 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
     return lower == '无' ||
         lower == 'none' ||
         lower == 'not_run' ||
+        lower.startsWith('```') ||
+        lower.startsWith('import ') ||
+        lower.startsWith('class ') ||
+        lower.startsWith('final ') ||
+        lower.startsWith('const ') ||
+        lower.startsWith('var ') ||
+        lower.startsWith('return ') ||
+        lower.startsWith('await ') ||
+        lower.startsWith('flutter ') ||
+        lower.startsWith('dart ') ||
         lower.startsWith('任务：') ||
         lower.startsWith('任务:') ||
         lower.startsWith('补充上下文') ||

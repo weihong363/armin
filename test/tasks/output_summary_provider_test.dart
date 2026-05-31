@@ -24,7 +24,7 @@ Ran jq -r '.pet_id' output/hatch-pet/*/pet_request.json
     );
 
     expect(summary.displaySummary, '实际的 pets 有 momo、luna、nori。');
-    expect(summary.speechSummary, contains('实际的 pets 有 momo、luna、nori'));
+    expect(summary.speechSummary, contains('实际的pets有momo、luna、nori'));
     expect(summary.importantLines, contains('实际的 pets 有 momo、luna、nori。'));
     expect(summary.displaySummary, isNot(contains('Search pet')));
     expect(summary.displaySummary, isNot(contains('Ran jq')));
@@ -359,7 +359,7 @@ You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro).
     );
 
     expect(summary.speechSummary, contains('额度已用完，请稍后重试'));
-    expect(summary.speechSummary, contains('已找到 SUMMER'));
+    expect(summary.speechSummary, contains('已找到SUMMER'));
     expect(summary.speechSummary, isNot(contains('SKILL.md')));
     expect(summary.speechSummary, isNot(contains('/Users/ironion')));
     expect(summary.speechSummary, isNot(contains('Use /skills')));

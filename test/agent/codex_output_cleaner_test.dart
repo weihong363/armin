@@ -125,4 +125,20 @@ pin-up 风格，含 9 个动画状态（idle/running/failed/review 等）。
     expect(cleaned, contains('Summer：一位迷人的美国沙滩女孩'));
     expect(cleaned, contains('pin-up 风格'));
   });
+
+  test('drops qoder input chrome after the actual result', () {
+    const raw = '''
+Turn 6
+hello Type your message or @path/to/file Auto Model .ctx █ 10% · ~/workspace/momo
+Shift+Tab to Auto-accept Edits
+AGENTS.md file · 12 skills
+''';
+
+    final cleaned = const CodexOutputCleaner().clean(raw);
+
+    expect(cleaned, 'hello');
+    expect(cleaned, isNot(contains('Type your message or @path/to/file')));
+    expect(cleaned, isNot(contains('Auto Model')));
+    expect(cleaned, isNot(contains('Shift+Tab')));
+  });
 }

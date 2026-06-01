@@ -41,7 +41,7 @@ class TaskCard extends StatelessWidget {
                 children: [
                   Expanded(
                     child: Text(
-                      task.title,
+                      task.displayTitle,
                       style: Theme.of(context).textTheme.titleMedium,
                     ),
                   ),
@@ -162,7 +162,7 @@ class _FeaturedTaskCardState extends State<_FeaturedTaskCard> {
               ),
               const SizedBox(height: 16),
               Text(
-                task.title,
+                task.displayTitle,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(

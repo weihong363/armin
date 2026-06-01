@@ -164,6 +164,12 @@ class TaskResultParser {
   bool _isNoiseLine(String line) {
     final lower = line.toLowerCase();
     return line.startsWith('>') ||
+        lower.startsWith('turn ') ||
+        lower.startsWith('## user task') ||
+        lower.startsWith('## user constraints') ||
+        lower.startsWith('## context chunk') ||
+        lower.startsWith('## secret placeholders') ||
+        _isGovernanceEcho(lower) ||
         line.startsWith('┌') ||
         line.startsWith('└') ||
         line.startsWith('┐') ||
@@ -202,5 +208,26 @@ class TaskResultParser {
         lower.contains('context left') ||
         lower.contains('working') ||
         lower == 'implement {feature}';
+  }
+
+  bool _isGovernanceEcho(String lower) {
+    return lower == 'armin context governance:' ||
+        lower == 'only inspect files directly related to the task.' ||
+        lower == 'never scan the entire repository.' ||
+        lower == 'avoid reading docs/ and readme unless necessary.' ||
+        lower == 'keep edits minimal and focused.' ||
+        lower == 'do not analyze unrelated architecture.' ||
+        lower == 'run only targeted tests.' ||
+        lower == 'keep command output short.' ||
+        lower == '- only inspect files directly related to the task.' ||
+        lower == '- never scan the entire repository.' ||
+        lower == '- avoid reading docs/ and readme unless necessary.' ||
+        lower == '- keep edits minimal and focused.' ||
+        lower == '- do not analyze unrelated architecture.' ||
+        lower == '- run only targeted tests.' ||
+        lower == '- keep command output short.' ||
+        (lower.contains('最小改动') &&
+            lower.contains('不要提交') &&
+            lower.contains('高风险操作先确认'));
   }
 }

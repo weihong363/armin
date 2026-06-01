@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../../app_state_scope.dart';
 import '../../tasks/services/output_summary_provider.dart';
 import '../services/device_voice_service.dart';
+import '../services/voice_service.dart';
 import '../services/task_speech_policy.dart';
 
 class VoiceSettingsScreen extends StatelessWidget {
@@ -111,7 +112,18 @@ class VoiceSettingsScreen extends StatelessWidget {
   ) async {
     final state = AppStateScope.of(context);
     state.updateSpeechSettings(settings);
-    await state.voiceService.speakSummary(_previewText(settings.voiceStyle));
+    await state.voiceService.stopSpeaking();
+    await Future<void>.delayed(const Duration(milliseconds: 80));
+    try {
+      await state.voiceService.speakSummary(_previewText(settings.voiceStyle));
+    } on VoiceUnavailableException catch (error) {
+      if (!context.mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('语音预览失败：$error')),
+      );
+    }
   }
 
   String _previewText(SpeechVoiceStyle style) {

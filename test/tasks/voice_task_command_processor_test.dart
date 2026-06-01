@@ -16,6 +16,13 @@ void main() {
     expect(complete.instruction, isEmpty);
   });
 
+  test('maps read result phrases to local speech action', () {
+    final result = processor.interpret('读一下结果', TaskStatus.turnIdle);
+
+    expect(result.instruction, isEmpty);
+    expect(result.label, '朗读当前结果');
+  });
+
   test('maps continue according to current task state', () {
     final paused = processor.interpret('继续执行', TaskStatus.paused);
     final detached = processor.interpret('恢复任务', TaskStatus.observerDetached);
@@ -35,5 +42,29 @@ void main() {
     expect(result.constraints, contains(TaskConstraint.minimalChange));
     expect(result.constraints, contains(TaskConstraint.noGitCommit));
     expect(result.isSemanticMatch, isTrue);
+  });
+
+  test('maps terminal prompt responses to option selection actions', () {
+    final allow = processor.interpret('允许一次', TaskStatus.needAttention);
+    final reject = processor.interpret('拒绝', TaskStatus.needAttention);
+
+    expect(allow.action, VoiceTaskAction.selectTerminalOption);
+    expect(allow.terminalOptionKey, '1');
+    expect(allow.label, '允许一次');
+    expect(reject.action, VoiceTaskAction.selectTerminalOption);
+    expect(reject.terminalOptionKey, '4');
+    expect(reject.label, '拒绝');
+  });
+
+  test('maps approval prompts to approve and reject actions', () {
+    final approve = processor.interpret('批准', TaskStatus.needApproval);
+    final reject = processor.interpret('拒绝', TaskStatus.needApproval);
+
+    expect(approve.action, VoiceTaskAction.resolveApprovalRequest);
+    expect(approve.approvalApproved, isTrue);
+    expect(approve.label, '批准当前请求');
+    expect(reject.action, VoiceTaskAction.resolveApprovalRequest);
+    expect(reject.approvalApproved, isFalse);
+    expect(reject.label, '拒绝当前请求');
   });
 }

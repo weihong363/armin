@@ -94,7 +94,7 @@ class DeviceVoiceService implements VoiceService {
 
   @override
   Future<void> speakSummary(String summary) async {
-    final cleaned = cleanSpeechSummaryForTest(summary);
+    final cleaned = cleanSpeechTextForTest(summary);
     if (cleaned.isEmpty) {
       throw const VoiceUnavailableException('没有可朗读的结果内容');
     }
@@ -126,7 +126,7 @@ class DeviceVoiceService implements VoiceService {
   static List<SpeechSummarySegment> buildSpeechSegmentsForTest(
     String summary,
   ) {
-    final text = cleanSpeechSummaryForTest(summary);
+    final text = cleanSpeechTextForTest(summary);
     if (text.isEmpty) {
       return const [];
     }
@@ -144,6 +144,15 @@ class DeviceVoiceService implements VoiceService {
   }
 
   static String cleanSpeechSummary(String summary) {
+    return _compactForSpeech(_normalizeSpeechSpacing(cleanSpeechText(summary)));
+  }
+
+  @visibleForTesting
+  static String cleanSpeechTextForTest(String summary) {
+    return cleanSpeechText(summary);
+  }
+
+  static String cleanSpeechText(String summary) {
     final withoutBlocks = _removeFencedCode(summary)
         .replaceAllMapped(RegExp(r'`([^`]+)`'), (match) => match.group(1)!);
     final lines = withoutBlocks
@@ -153,17 +162,26 @@ class DeviceVoiceService implements VoiceService {
         .map(_extractReadableSpeechLine)
         .where((line) => line.isNotEmpty && !_isSpeechNoiseLine(line))
         .map(_cleanSpeechLine)
+        .map(_applyPronunciationHints)
         .map(_normalizeSpeechSpacing)
         .where((line) => line.isNotEmpty)
         .toList();
-    return _compactForSpeech(_normalizeSpeechSpacing(_joinSpeechLines(lines)));
+    return _normalizeSpeechSpacing(_joinSpeechLines(lines));
   }
 
   @visibleForTesting
   static SpeechVoiceProfile speechProfileForTest(String languageCode) {
     return languageCode == 'en-US'
-        ? const SpeechVoiceProfile(speechRate: 0.67, pitch: 1.05)
+        ? const SpeechVoiceProfile(speechRate: 0.60, pitch: 1.00)
         : const SpeechVoiceProfile(speechRate: 0.72, pitch: 1.07);
+  }
+
+  @visibleForTesting
+  static SpeechVoiceProfile speechProfileForLanguageForTest(
+    String languageCode, [
+    SpeechVoiceStyle style = SpeechVoiceStyle.clearFemale,
+  ]) {
+    return _speechProfileForLanguage(languageCode, style);
   }
 
   @visibleForTesting
@@ -184,6 +202,14 @@ class DeviceVoiceService implements VoiceService {
         .replaceAll(RegExp(r'https?://\S+'), '')
         .replaceAll(RegExp(r'\s+'), ' ')
         .trim();
+  }
+
+  static String _applyPronunciationHints(String text) {
+    return text
+        .replaceAllMapped(
+          RegExp(r'(?<![A-Za-z0-9])一行(?![A-Za-z0-9])'),
+          (match) => '${match.group(0)}（háng）',
+        );
   }
 
   static String _normalizeSpeechSpacing(String text) {
@@ -220,9 +246,6 @@ class DeviceVoiceService implements VoiceService {
         .replaceFirst(RegExp(r'^[>▸▪■\s•*-]+'), '')
         .replaceAll(RegExp(r'[▸▪■]+'), ' ')
         .trim();
-    if (!RegExp(r'[\u4e00-\u9fff]').hasMatch(text)) {
-      return text;
-    }
     text = text
         .replaceAll(
           RegExp(
@@ -238,12 +261,29 @@ class DeviceVoiceService implements VoiceService {
           ),
           ' ',
         )
+        .replaceAll(
+          RegExp(r'^completion:\s*tls handshake eof\b.*', caseSensitive: false),
+          ' ',
+        )
+        .replaceAll(
+          RegExp(r'\bType your message or @path/to/file\b.*', caseSensitive: false),
+          ' ',
+        )
+        .replaceAll(RegExp(r'\bAuto Model\b.*', caseSensitive: false), ' ')
+        .replaceAll(
+          RegExp(r'\bShift\+Tab to Auto-accept Edits\b.*', caseSensitive: false),
+          ' ',
+        )
+        .replaceAll(RegExp(r'\bAGENTS\.md file\b.*', caseSensitive: false), ' ')
         .replaceAll(RegExp(r'\bThinking\b', caseSensitive: false), ' ')
         .replaceAll(RegExp(r'https?://\S+'), ' ')
         .replaceAll(RegExp(r'/Users/\S+'), ' ')
         .replaceAll(RegExp(r'/workspace/\S+'), ' ')
         .replaceAll(RegExp(r'\s+'), ' ')
         .trim();
+    if (!RegExp(r'[\u4e00-\u9fff]').hasMatch(text)) {
+      return text;
+    }
     return text;
   }
 
@@ -276,6 +316,12 @@ class DeviceVoiceService implements VoiceService {
         lower.startsWith('│') ||
         lower.contains('openai codex') ||
         lower.contains('qoder cli') ||
+        lower.contains('completion: tls handshake eof') ||
+        lower.contains('type your message or @path/to/file') ||
+        lower.contains('auto model') ||
+        lower.contains('shift+tab to auto-accept edits') ||
+        lower.contains('agents.md file') ||
+        lower.startsWith('turn ') ||
         lower.startsWith('tip:') ||
         lower.startsWith('model:') ||
         lower.startsWith('directory:') ||
@@ -492,18 +538,44 @@ class DeviceVoiceService implements VoiceService {
     await _flutterTts.stop();
     await _flutterTts.awaitSpeakCompletion(true);
     await _flutterTts.setVolume(1.0);
-    await _flutterTts.setLanguage('zh-CN');
-    await _selectPreferredVoice('zh-CN');
-    final profile =
-        speechProfileForTest('zh-CN').forStyle(SpeechVoiceStyle.fastFemale);
+    final segments = buildSpeechSegmentsForTest(cleaned);
+    if (segments.isEmpty) {
+      throw const VoiceUnavailableException('没有可朗读的结果内容');
+    }
+
+    for (final segment in segments) {
+      await _configureSpeechLanguage(segment.languageCode);
+      final result = await _flutterTts
+          .speak(segment.text, focus: true)
+          .timeout(_speakTimeout(segment.text));
+      if (result == 0 || result == false) {
+        throw const VoiceUnavailableException('系统语音引擎未开始朗读');
+      }
+    }
+  }
+
+  Future<void> _configureSpeechLanguage(String languageCode) async {
+    await _flutterTts.setLanguage(languageCode);
+    await _selectPreferredVoice(languageCode);
+    final profile = _speechProfileForLanguage(languageCode, _voiceStyle);
     await _flutterTts.setSpeechRate(profile.speechRate);
     await _flutterTts.setPitch(profile.pitch);
-    final result = await _flutterTts
-        .speak(cleaned, focus: true)
-        .timeout(_speakTimeout(cleaned));
-    if (result == 0 || result == false) {
-      throw const VoiceUnavailableException('系统语音引擎未开始朗读');
-    }
+  }
+
+  static SpeechVoiceProfile _speechProfileForLanguage(
+    String languageCode,
+    SpeechVoiceStyle style,
+  ) {
+    final profile = speechProfileForTest(languageCode);
+    final styled = profile.forStyle(style);
+    return switch (languageCode.toLowerCase().replaceAll('_', '-')) {
+      'en-us' => SpeechVoiceProfile(
+          speechRate:
+              ((styled.speechRate - 0.02).clamp(0.42, 0.95)).toDouble(),
+          pitch: ((styled.pitch - 0.01).clamp(0.8, 1.3)).toDouble(),
+        ),
+      _ => styled,
+    };
   }
 
   Future<void> _selectPreferredVoice(String languageCode) async {
@@ -581,6 +653,19 @@ class DeviceVoiceService implements VoiceService {
     'enhanced',
     'neural',
     'clear',
+    'english',
+    'us english',
+    'uk english',
+    'samantha',
+    'joanna',
+    'victoria',
+    'ava',
+    'karen',
+    'allison',
+    'serena',
+    'zira',
+    'google',
+    'microsoft',
   ];
 }
 

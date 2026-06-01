@@ -31,6 +31,16 @@ class CodexOutputCleaner {
         .replaceFirst(RegExp(r'^[›]\s*'), '')
         .replaceFirst(RegExp(r'^[✨⚠]\s*'), '')
         .replaceFirst(RegExp(r'^[•*-]\s+'), '')
+        .replaceAll(
+          RegExp(r'\bType your message or @path/to/file\b.*', caseSensitive: false),
+          '',
+        )
+        .replaceAll(RegExp(r'\bAuto Model\b.*', caseSensitive: false), '')
+        .replaceAll(
+          RegExp(r'\bShift\+Tab to Auto-accept Edits\b.*', caseSensitive: false),
+          '',
+        )
+        .replaceAll(RegExp(r'\bAGENTS\.md file\b.*', caseSensitive: false), '')
         .trim();
   }
 
@@ -54,6 +64,13 @@ class CodexOutputCleaner {
         lower.startsWith('tip:') ||
         lower.startsWith('use /skills ') ||
         lower.startsWith('armin context governance:') ||
+        lower.startsWith('## user task') ||
+        lower.startsWith('## user constraints') ||
+        lower.startsWith('## context chunk') ||
+        lower.startsWith('## secret placeholders') ||
+        lower.startsWith('turn ') ||
+        lower.startsWith('结果为：turn ') ||
+        lower.startsWith('result: turn ') ||
         _isGovernanceRule(lower) ||
         lower.startsWith('update available!') ||
         lower.startsWith('release notes:') ||
@@ -63,6 +80,10 @@ class CodexOutputCleaner {
         lower == 'thinking...' ||
         lower == 'thinking…' ||
         lower.contains('signed in browser login') ||
+        lower.contains('type your message or @path/to/file') ||
+        lower.contains('auto model') ||
+        lower.contains('shift+tab to auto-accept edits') ||
+        lower.contains('agents.md file') ||
         lower.contains(' to view transcript') ||
         lower.contains('npm install -g @openai/codex') ||
         lower.contains('github.com/openai/codex/releases') ||
@@ -93,7 +114,14 @@ class CodexOutputCleaner {
         lower == 'keep edits minimal and focused.' ||
         lower == 'do not analyze unrelated architecture.' ||
         lower == 'run only targeted tests.' ||
-        lower == 'keep command output short.';
+        lower == 'keep command output short.' ||
+        lower == '- only inspect files directly related to the task.' ||
+        lower == '- never scan the entire repository.' ||
+        lower == '- avoid reading docs/ and readme unless necessary.' ||
+        lower == '- keep edits minimal and focused.' ||
+        lower == '- do not analyze unrelated architecture.' ||
+        lower == '- run only targeted tests.' ||
+        lower == '- keep command output short.';
   }
 
   List<String> _squashEmptyLines(List<String> lines) {

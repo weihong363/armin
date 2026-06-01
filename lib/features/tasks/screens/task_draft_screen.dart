@@ -155,6 +155,7 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
           DropdownButtonFormField<String>(
             key: const ValueKey('host-selector'),
             initialValue: selectedHost?.id,
+            isExpanded: true,
             decoration: const InputDecoration(
               labelText: '执行主机',
             ),
@@ -164,6 +165,8 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
                   value: host.id,
                   child: Text(
                     '${host.name} · ${host.username}@${host.address}:${host.port}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                   ),
                 ),
             ],
@@ -188,6 +191,7 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
                 child: DropdownButtonFormField<String>(
                   key: const ValueKey('project-path-selector'),
                   initialValue: selectedProjectPath?.id,
+                  isExpanded: true,
                   decoration: const InputDecoration(
                     labelText: '项目目录',
                   ),
@@ -195,8 +199,11 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
                     for (final projectPath in state.projectPaths)
                       DropdownMenuItem(
                         value: projectPath.id,
-                        child:
-                            Text('${projectPath.name} · ${projectPath.path}'),
+                        child: Text(
+                          '${projectPath.name} · ${projectPath.path}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
                       ),
                   ],
                   onChanged: (value) {

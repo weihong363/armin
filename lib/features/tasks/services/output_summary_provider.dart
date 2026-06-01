@@ -130,13 +130,65 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
         .replaceAll(RegExp(r"Glob\('[^']*'\)"), ' ')
         .replaceAll(RegExp(r"Grep\('[^']*'[^)]*\)", caseSensitive: false), ' ')
         .replaceAll(RegExp(r'Read\([^)]*\)'), ' ')
+        .replaceAll(
+          RegExp(r'^completion:\s*tls handshake eof\b.*', caseSensitive: false),
+          '',
+        )
+        .replaceAll(
+          RegExp(r'\bType your message or @path/to/file\b.*',
+              caseSensitive: false),
+          '',
+        )
+        .replaceAll(RegExp(r'\bAuto Model\b.*', caseSensitive: false), '')
+        .replaceAll(
+          RegExp(r'\bShift\+Tab to Auto-accept Edits\b.*',
+              caseSensitive: false),
+          '',
+        )
+        .replaceAll(RegExp(r'\bAGENTS\.md file\b.*', caseSensitive: false), '')
         .replaceAll(RegExp(r'\bThinking\b[.…]*', caseSensitive: false), ' ')
         .replaceAll(RegExp(r'[▪■●•]+'), ' ')
         .replaceAll(RegExp(r'\s+'), ' ')
         .trim();
     value = _dropToolTracePrefix(value);
+    value = _stripPromptNoisePrefix(value);
     return _normalizePetDescription(value);
   }
+
+  String _stripPromptNoisePrefix(String line) {
+    var value = line.trimLeft();
+    var previous = '';
+    while (value.isNotEmpty && value != previous) {
+      previous = value;
+      for (final pattern in _promptNoisePrefixPatterns) {
+        final match = pattern.firstMatch(value);
+        if (match != null) {
+          value = value.substring(match.end).trimLeft();
+          break;
+        }
+      }
+    }
+    return value.trim();
+  }
+
+  static final List<RegExp> _promptNoisePrefixPatterns = [
+    RegExp(
+      r'^(?:最小改动|不要提交\s*git|不要提交git|不要提交\s+Git|高风险操作先确认)[\s:：,，。．.\-]*',
+      caseSensitive: false,
+    ),
+    RegExp(
+      r'^(?:user constraints|## user constraints|## user task|## context chunk|## secret placeholders)[\s:：,，。．.\-]*',
+      caseSensitive: false,
+    ),
+    RegExp(
+      r'^(?:do not analyze unrelated architecture\.?|run only targeted tests\.?|keep command output short\.?)[\s:：,，。．.\-]*',
+      caseSensitive: false,
+    ),
+    RegExp(
+      r'^(?:turn \d+|result: turn \d+|结果为：turn \d+)[\s:：,，。．.\-]*',
+      caseSensitive: false,
+    ),
+  ];
 
   String _dropToolTracePrefix(String line) {
     final natural = RegExp(
@@ -353,6 +405,30 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
         lower.startsWith('风险信息') ||
         lower.startsWith('user constraints') ||
         lower.startsWith('## user constraints') ||
+        lower.startsWith('## user task') ||
+        lower.startsWith('## context chunk') ||
+        lower.startsWith('## secret placeholders') ||
+        lower.startsWith('completion: tls handshake eof') ||
+        lower.startsWith('tool:') ||
+        lower.startsWith('command:') ||
+        lower.startsWith('run ') ||
+        lower.startsWith('bash(') ||
+        lower.startsWith('python -m ') ||
+        lower.startsWith('cd ') ||
+        lower.startsWith('allow this command to run') ||
+        lower.startsWith('allow execution of') ||
+        lower.startsWith('would you like to run') ||
+        RegExp(r'^\d+[.)]\s+(?:allow once|always allow|reject and type something|no)\b')
+            .hasMatch(lower) ||
+        RegExp(r'^\d+[.)]\s+(?:允许|始终允许|拒绝|不允许|否)\b').hasMatch(lower) ||
+        line.startsWith('测试目标') ||
+        line.startsWith('执行 ') ||
+        lower.startsWith('turn ') ||
+        lower.startsWith('结果为：turn ') ||
+        lower.startsWith('result: turn ') ||
+        (lower.contains('最小改动') &&
+            lower.contains('不要提交') &&
+            lower.contains('高风险操作先确认')) ||
         lower == 'explored' ||
         lower == 'thinking' ||
         lower == 'thinking...' ||
@@ -368,9 +444,27 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
         lower.startsWith('opened ') ||
         lower.startsWith('checked ') ||
         lower.startsWith('shift+tab ') ||
+        lower.startsWith('let me ') ||
+        lower.startsWith('i will ') ||
+        lower.startsWith("i'll ") ||
+        lower.startsWith('i am going to ') ||
+        lower.startsWith('no direct ') ||
+        lower.startsWith('q:') ||
+        lower.startsWith('question:') ||
         line.startsWith('过程记录') ||
         line.startsWith('继续从') ||
-        line.startsWith('我先看一下');
+        line.startsWith('我先看一下') ||
+        line.startsWith('我先检查') ||
+        line.startsWith('我会先') ||
+        line.startsWith('我将先') ||
+        line.startsWith('让我先') ||
+        line.startsWith('让我检查') ||
+        line.startsWith('项目中没有找到') ||
+        line.startsWith('没有找到专门的') ||
+        line.startsWith('接下来') ||
+        line.startsWith('下面我') ||
+        line.startsWith('先看看') ||
+        line.startsWith('先检查');
   }
 
   bool _looksLikeResultLine(String line) {

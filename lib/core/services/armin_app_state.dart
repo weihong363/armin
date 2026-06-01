@@ -16,6 +16,7 @@ import '../../features/tasks/models/task_session.dart';
 import '../../features/tasks/models/voice_input.dart';
 import '../../features/tasks/services/output_summary_provider.dart';
 import '../../features/tasks/services/secret_redactor.dart';
+import '../../features/tasks/services/turn_output_slicer.dart';
 import '../../features/voice/services/device_voice_service.dart';
 import '../../features/voice/services/task_speech_policy.dart';
 import '../../features/voice/services/voice_service.dart';
@@ -24,6 +25,8 @@ import '../storage/json_task_history_store.dart';
 import '../storage/task_history_store.dart';
 
 class ArminAppState extends ChangeNotifier {
+  static const _turnOutputSlicer = TurnOutputSlicer();
+
   ArminAppState({
     required TaskHistoryStore store,
     required this.agentSessionService,
@@ -117,6 +120,19 @@ class ArminAppState extends ChangeNotifier {
     await _store.saveTask(task);
     tasks = await _store.loadTasks();
     notifyListeners();
+  }
+
+  Future<void> updateTaskTitle(TaskSession task, String title) async {
+    final trimmed = title.trim();
+    if (trimmed.isEmpty || trimmed == task.title.trim()) {
+      return;
+    }
+    await saveTask(
+      task.copyWith(
+        title: trimmed,
+        updatedAt: DateTime.now(),
+      ),
+    );
   }
 
   void updateSpeechSettings(TaskSpeechSettings settings) {
@@ -237,9 +253,8 @@ class ArminAppState extends ChangeNotifier {
   }
 
   Future<void> selectTerminalOption(
-    TaskSession task,
-    TerminalPromptOption option,
-  ) async {
+      TaskSession task, TerminalPromptOption option,
+      {String customResponse = ''}) async {
     final latest = _latestTask(task.id) ?? task;
     final prompt = latest.terminalPrompt;
     if (prompt == null ||
@@ -250,6 +265,12 @@ class ArminAppState extends ChangeNotifier {
       await _controlRequest(latest),
       option.key,
     );
+    final trimmedResponse = customResponse.trim();
+    if (trimmedResponse.isNotEmpty) {
+      await agentSessionService.sendFollowUp(
+        await _controlRequest(latest, instruction: trimmedResponse),
+      );
+    }
     await _saveControlledTask(
       latest.copyWith(clearTerminalPrompt: true),
       status: TaskStatus.running,
@@ -275,8 +296,9 @@ class ArminAppState extends ChangeNotifier {
       logMessage: 'Observer reconnected by user.',
       eventType: 'observer_reconnected',
     );
-    startTaskExecution(_latestTask(task.id) ?? latest,
-        _attachRequest(_latestTask(task.id) ?? latest));
+    final synced = await _syncRemoteSnapshot(_latestTask(task.id) ?? latest);
+    final attached = _latestTask(task.id) ?? synced;
+    startTaskExecution(attached, _attachRequest(attached));
   }
 
   Future<void> pauseTask(TaskSession task) async {
@@ -343,6 +365,38 @@ class ArminAppState extends ChangeNotifier {
     } catch (_) {
       return '';
     }
+  }
+
+  Future<TaskSession> _syncRemoteSnapshot(TaskSession task) async {
+    if (task.turns.isEmpty) {
+      return task;
+    }
+    final snapshot = await _captureLogBestEffort(await _controlRequest(task));
+    final captured = snapshot.trim();
+    if (captured.isEmpty) {
+      return task;
+    }
+    final synced = _taskWithSyncedTurnSnapshot(task, captured);
+    if (_turnsSignature(task) == _turnsSignature(synced)) {
+      return task;
+    }
+    await saveTask(synced);
+    return synced;
+  }
+
+  String _turnsSignature(TaskSession task) {
+    return task.turns
+        .map(
+          (turn) => [
+            turn.turnIndex,
+            turn.status.name,
+            turn.userInput,
+            turn.rawOutput,
+            turn.cleanedOutput,
+            turn.lastOutputAt.microsecondsSinceEpoch,
+          ].join('|'),
+        )
+        .join('\n---\n');
   }
 
   Future<TaskSession> _captureFinalLog(
@@ -993,6 +1047,60 @@ Apply this decision to the pending approval request.
       status: status ?? current.status,
     );
     return task.copyWith(turns: updatedTurns);
+  }
+
+  TaskSession _taskWithSyncedTurnSnapshot(
+    TaskSession task,
+    String capturedPane,
+  ) {
+    final turns = task.turns.isEmpty
+        ? _taskWithInitialTurn(
+            task,
+            userInput: task.userText.isEmpty ? task.title : task.userText,
+            now: task.startedAt ?? task.createdAt,
+          ).turns
+        : task.turns;
+    final snapshotTurns = [...turns];
+    final current = snapshotTurns.last;
+    final observedAt = DateTime.now();
+    snapshotTurns[snapshotTurns.length - 1] = current.copyWith(
+      rawOutput: capturedPane,
+      cleanedOutput: capturedPane,
+      lastOutputAt: observedAt,
+    );
+    final scopedRaw = _turnOutputSlicer.rawOutputForTurn(
+      snapshotTurns,
+      snapshotTurns.length - 1,
+    );
+    final scopedClean = _turnOutputSlicer.outputForTurn(
+      snapshotTurns,
+      snapshotTurns.length - 1,
+    );
+    if (scopedRaw.trim().isEmpty && scopedClean.trim().isEmpty) {
+      return task;
+    }
+    snapshotTurns[snapshotTurns.length - 1] = current.copyWith(
+      rawOutput: scopedRaw.isEmpty ? current.rawOutput : scopedRaw,
+      cleanedOutput: scopedClean.isEmpty ? current.cleanedOutput : scopedClean,
+      lastOutputAt: observedAt,
+    );
+    final summary = scopedClean.trim();
+    return task.copyWith(
+      turns: snapshotTurns,
+      updatedAt: observedAt,
+      summary: summary.isEmpty ? task.summary : summary,
+      shortSummary: summary.isEmpty ? task.shortSummary : summary,
+      result: summary.isEmpty
+          ? task.result
+          : TaskResult(
+              status: 'turn_idle',
+              summary: summary,
+              changedFiles: const [],
+              validation: const [],
+              risks: const [],
+              nextActions: const [],
+            ),
+    );
   }
 
   TaskSession _taskWithCurrentTurnDecision(

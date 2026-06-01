@@ -1,3 +1,5 @@
+import 'dart:ui';
+
 import 'dart:async';
 
 import 'package:armin/app_state_scope.dart';
@@ -210,6 +212,27 @@ void main() {
 
     expect(agent.lastRequest?.projectPath, '~/workspace/momo');
     expect(store.savedTasks.last.host.projectPath, '~/workspace/momo');
+  });
+
+  testWidgets('project selector fits narrow screens without overflow',
+      (tester) async {
+    final store = _TaskStore(
+      hosts: [_host(password: 'secret-password')],
+      projectPaths: [
+        _projectPath(
+          name: 'momo',
+          path: '~/workspace/momo-with-a-very-long-project-directory-name',
+        ),
+      ],
+    );
+    final agent = _CaptureAgentSessionService();
+
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.binding.setSurfaceSize(const Size(360, 640));
+
+    await _pumpScreen(tester, store: store, agent: agent);
+
+    expect(tester.takeException(), isNull);
   });
 
   testWidgets('send opens task detail before agent finishes', (tester) async {

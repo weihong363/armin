@@ -80,6 +80,11 @@ class TaskSession {
   final List<Subtask> subtasks;
   final List<NativeOutputTurn> turns;
 
+  String get displayTitle {
+    final trimmed = title.trim();
+    return trimmed.isEmpty ? '未命名任务' : trimmed;
+  }
+
   factory TaskSession.fromJson(Map<String, Object?> json) {
     final hostJson = json['host'];
     if (hostJson is! Map<String, Object?>) {

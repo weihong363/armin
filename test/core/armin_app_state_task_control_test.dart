@@ -268,6 +268,41 @@ void main() {
     expect(agent.lastExecuteRequest?.attachOnly, isTrue);
   });
 
+  test('selectTerminalOption sends custom response for manual prompts',
+      () async {
+    const option = TerminalPromptOption(
+      key: '3',
+      label: 'Reject and type something',
+    );
+    final task = _task(status: TaskStatus.needAttention).copyWith(
+      terminalPrompt: const TerminalPrompt(
+        question: 'Allow this command to run?',
+        options: [option, TerminalPromptOption(key: '4', label: 'No')],
+      ),
+    );
+    final store = _TaskStore(task);
+    final agent = _ControlAgent();
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: agent,
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await state.selectTerminalOption(
+      task,
+      option,
+      customResponse: '请不要运行测试',
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    expect(agent.selectedTerminalOption, '3');
+    expect(agent.lastFollowUp, '请不要运行测试');
+    expect(agent.events,
+        containsAllInOrder(['selectTerminalOption', 'sendFollowUp']));
+    expect(store.task!.terminalPrompt, isNull);
+  });
+
   test('disconnectTask detaches observer without cleanup or failing task',
       () async {
     final task = _task(status: TaskStatus.running);
@@ -296,9 +331,40 @@ void main() {
 
   test('reconnectTask uses attach-only request and returns to running',
       () async {
-    final task = _task(status: TaskStatus.observerDetached);
+    final task = _task(status: TaskStatus.observerDetached).copyWith(
+      turns: [
+        NativeOutputTurn(
+          id: 'turn-task-1-1',
+          taskId: 'task-1',
+          turnIndex: 1,
+          userInput: '输出 hello',
+          rawOutput: 'hello',
+          cleanedOutput: 'hello',
+          startedAt: DateTime(2026, 5, 18),
+          lastOutputAt: DateTime(2026, 5, 18),
+          status: NativeOutputTurnStatus.turnIdle,
+        ),
+        NativeOutputTurn(
+          id: 'turn-task-1-2',
+          taskId: 'task-1',
+          turnIndex: 2,
+          userInput: '继续输出 world',
+          rawOutput: '',
+          cleanedOutput: '',
+          startedAt: DateTime(2026, 5, 18, 0, 0, 1),
+          lastOutputAt: DateTime(2026, 5, 18, 0, 0, 1),
+          status: NativeOutputTurnStatus.running,
+        ),
+      ],
+    );
     final store = _TaskStore(task);
-    final agent = _ControlAgent();
+    final agent = _ControlAgent()
+      ..capturedLog = '''
+输出 hello
+hello
+继续输出 world
+world
+''';
     final state = ArminAppState(
       store: store,
       agentSessionService: agent,
@@ -313,6 +379,9 @@ void main() {
     expect(agent.lastExecuteRequest?.attachOnly, isTrue);
     expect(
         agent.lastExecuteRequest?.tmuxSessionName, task.host.tmuxSessionName);
+    expect(store.task!.turns.last.cleanedOutput, contains('world'));
+    expect(store.task!.result?.summary, contains('world'));
+    expect(agent.events, contains('captureLog'));
   });
 
   test('sendFollowUp sends clean prompt and relistens current tmux session',

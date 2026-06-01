@@ -15,6 +15,7 @@ class TerminalPromptParser {
     }
     return TerminalPrompt(
       question: lines[questionIndex].trim(),
+      command: _readCommand(lines, questionIndex),
       options: options,
     );
   }
@@ -29,7 +30,9 @@ class TerminalPromptParser {
   bool _isQuestion(String line) {
     final lower = line.toLowerCase();
     return lower.contains('allow execution of') ||
+        lower.contains('allow this command to run') ||
         lower.contains('allow command execution') ||
+        lower.contains('approve this command') ||
         lower.contains('would you like to run');
   }
 
@@ -52,5 +55,26 @@ class TerminalPromptParser {
       );
     }
     return options;
+  }
+
+  String _readCommand(List<String> lines, int questionIndex) {
+    for (var index = questionIndex - 1; index >= 0; index--) {
+      final match = RegExp(r'^\s*Command:\s*(.*)$', caseSensitive: false)
+          .firstMatch(lines[index]);
+      if (match == null) {
+        continue;
+      }
+      final parts = <String>[
+        match.group(1)!.trim(),
+        for (final line
+            in lines.skip(index + 1).take(questionIndex - index - 1))
+          line.trim(),
+      ].where((line) => line.isNotEmpty).toList(growable: false);
+      return parts.join(' ').replaceAll(RegExp(r'\s+'), ' ').trim();
+    }
+    final bracketed =
+        RegExp(r'allow execution of \[(.+?)\]', caseSensitive: false)
+            .firstMatch(lines[questionIndex]);
+    return bracketed?.group(1)?.trim() ?? '';
   }
 }

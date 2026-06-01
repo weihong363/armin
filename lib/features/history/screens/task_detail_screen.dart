@@ -1,15 +1,21 @@
-import 'dart:convert';
 import 'dart:async';
+import 'dart:convert';
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import '../../../app_state_scope.dart';
 import '../../../core/models/task_status.dart';
 import '../../../shared/theme/armin_theme.dart';
 import '../../../shared/widgets/status_badge.dart';
+import '../../agent/parsers/approval_request.dart';
+import '../../agent/parsers/terminal_prompt.dart';
 import '../../agent/services/codex_output_cleaner.dart';
+import '../../voice/services/device_voice_service.dart';
+import '../../voice/services/voice_service.dart';
 import '../../tasks/models/native_output_turn.dart';
 import '../../tasks/models/task_session.dart';
 import '../../tasks/models/voice_input.dart';
+import '../../projects/models/project_path_config.dart';
 import '../../tasks/services/output_summary_provider.dart';
 import '../../tasks/services/semantic_snippet_builder.dart';
 import '../../tasks/services/turn_output_slicer.dart';
@@ -23,10 +29,54 @@ enum _TaskDetailAction {
   delete,
 }
 
-class TaskDetailScreen extends StatelessWidget {
+class TaskDetailScreen extends StatefulWidget {
   const TaskDetailScreen({required this.taskId, super.key});
 
   final String taskId;
+
+  @override
+  State<TaskDetailScreen> createState() => _TaskDetailScreenState();
+}
+
+class _TaskDetailScreenState extends State<TaskDetailScreen>
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
+  static const _resultTabIndex = 1;
+
+  late final TabController _tabController =
+      TabController(length: 4, vsync: this);
+  int _latestTurnRevealToken = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _tabController.dispose();
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _revealLatestResult();
+    }
+  }
+
+  void _revealLatestResult() {
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _latestTurnRevealToken++;
+    });
+    if (_tabController.index != _resultTabIndex) {
+      _tabController.animateTo(_resultTabIndex);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -39,86 +89,101 @@ class TaskDetailScreen extends StatelessWidget {
       );
     }
 
-    return DefaultTabController(
-      length: 5,
-      child: Scaffold(
-        appBar: AppBar(
-          title: const Text('任务详情'),
-          actions: [
-            PopupMenuButton<_TaskDetailAction>(
-              onSelected: (action) async {
-                switch (action) {
-                  case _TaskDetailAction.rerun:
-                    _rerunTask(context, task);
-                  case _TaskDetailAction.forceStop:
-                    await _forceStopTask(context, task);
-                  case _TaskDetailAction.cleanupSession:
-                    await _cleanupSession(context, task);
-                  case _TaskDetailAction.delete:
-                    _confirmDelete(context, task);
-                }
-              },
-              itemBuilder: (context) => [
-                PopupMenuItem(
-                  value: _TaskDetailAction.rerun,
-                  enabled: _canRerun(task),
-                  child: const Text('重新执行'),
-                ),
-                PopupMenuItem(
-                  value: _TaskDetailAction.forceStop,
-                  enabled: _canForceStop(task),
-                  child: const Text('强制停止'),
-                ),
-                PopupMenuItem(
-                  value: _TaskDetailAction.cleanupSession,
-                  enabled: _canCleanupSession(task),
-                  child: const Text('清理远端会话'),
-                ),
-                PopupMenuItem(
-                  value: _TaskDetailAction.delete,
-                  enabled: _canDelete(task),
-                  child: const Text('删除任务'),
-                ),
-              ],
-            ),
-          ],
-        ),
-        body: Column(
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
-              child: _SummaryBanner(task: task),
-            ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
-              child: _RuntimeControlPanel(task: task),
-            ),
-            const SizedBox(height: 8),
-            const TabBar(
-              isScrollable: true,
-              tabAlignment: TabAlignment.start,
-              labelColor: ArminTheme.ink,
-              indicatorColor: ArminTheme.primary,
-              tabs: [
-                Tab(text: '时间线'),
-                Tab(text: '结果'),
-                Tab(text: 'Prompt'),
-                Tab(text: '日志'),
-                Tab(text: '指标'),
-              ],
-            ),
-            Expanded(
-              child: TabBarView(
-                children: [
-                  _TimelinePanel(task: task),
-                  _ResultPanel(task: task),
-                  _PromptPanel(task: task),
-                  _LogPanel(task: task),
-                  _MetricsPanel(task: task),
-                ],
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('任务详情'),
+        actions: [
+          PopupMenuButton<_TaskDetailAction>(
+            onSelected: (action) async {
+              switch (action) {
+                case _TaskDetailAction.rerun:
+                  _rerunTask(context, task);
+                case _TaskDetailAction.forceStop:
+                  await _forceStopTask(context, task);
+                case _TaskDetailAction.cleanupSession:
+                  await _cleanupSession(context, task);
+                case _TaskDetailAction.delete:
+                  _confirmDelete(context, task);
+              }
+            },
+            itemBuilder: (context) => [
+              PopupMenuItem(
+                value: _TaskDetailAction.rerun,
+                enabled: _canRerun(task),
+                child: const Text('重新执行'),
               ),
+              PopupMenuItem(
+                value: _TaskDetailAction.forceStop,
+                enabled: _canForceStop(task),
+                child: const Text('强制停止'),
+              ),
+              PopupMenuItem(
+                value: _TaskDetailAction.cleanupSession,
+                enabled: _canCleanupSession(task),
+                child: const Text('清理远端会话'),
+              ),
+              PopupMenuItem(
+                value: _TaskDetailAction.delete,
+                enabled: _canDelete(task),
+                child: const Text('删除任务'),
+              ),
+            ],
+          ),
+        ],
+      ),
+      body: AnimatedPadding(
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOutCubic,
+        padding: EdgeInsets.only(
+          bottom: MediaQuery.viewInsetsOf(context).bottom,
+        ),
+        child: SafeArea(
+          top: false,
+          child: NestedScrollView(
+            headerSliverBuilder: (context, innerBoxIsScrolled) => [
+              SliverPadding(
+                padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
+                sliver: SliverToBoxAdapter(child: _SummaryBanner(task: task)),
+              ),
+              SliverPadding(
+                padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
+                sliver: SliverToBoxAdapter(
+                  child: _RuntimeControlPanel(task: task),
+                ),
+              ),
+              const SliverToBoxAdapter(child: SizedBox(height: 8)),
+              SliverPersistentHeader(
+                pinned: true,
+                delegate: _TabBarHeaderDelegate(
+                  TabBar(
+                    controller: _tabController,
+                    isScrollable: true,
+                    tabAlignment: TabAlignment.start,
+                    labelColor: ArminTheme.ink,
+                    indicatorColor: ArminTheme.primary,
+                    tabs: const [
+                      Tab(text: '时间线'),
+                      Tab(text: '结果'),
+                      Tab(text: '日志'),
+                      Tab(text: '指标'),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+            body: TabBarView(
+              controller: _tabController,
+              children: [
+                _TimelinePanel(task: task),
+                _ResultPanel(
+                  task: task,
+                  revealLatestTurnToken: _latestTurnRevealToken,
+                ),
+                _LogPanel(task: task),
+                _MetricsPanel(task: task),
+              ],
             ),
-          ],
+          ),
         ),
       ),
     );
@@ -126,7 +191,7 @@ class TaskDetailScreen extends StatelessWidget {
 
   TaskSession? _findTask(List<TaskSession> tasks) {
     for (final task in tasks) {
-      if (task.id == taskId) {
+      if (task.id == widget.taskId) {
         return task;
       }
     }
@@ -185,7 +250,7 @@ class TaskDetailScreen extends StatelessWidget {
       builder: (context) {
         return AlertDialog(
           title: const Text('删除任务?'),
-          content: Text(task.title),
+          content: Text(task.displayTitle),
           actions: [
             TextButton(
               onPressed: () => Navigator.of(context).pop(false),
@@ -263,17 +328,29 @@ class _SummaryBanner extends StatefulWidget {
 }
 
 class _SummaryBannerState extends State<_SummaryBanner> {
+  final _titleController = TextEditingController();
+  final _titleFocusNode = FocusNode();
   Timer? _timer;
+  bool _savingTitle = false;
+  bool _editingTitle = false;
 
   @override
   void initState() {
     super.initState();
+    _titleController.text = widget.task.title;
     _syncTimer();
   }
 
   @override
   void didUpdateWidget(covariant _SummaryBanner oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.task.id != widget.task.id ||
+        oldWidget.task.title != widget.task.title) {
+      _titleController.text = widget.task.title;
+      if (!_editingTitle) {
+        _titleFocusNode.unfocus();
+      }
+    }
     if (oldWidget.task.status != widget.task.status ||
         oldWidget.task.completedAt != widget.task.completedAt) {
       _syncTimer();
@@ -283,6 +360,8 @@ class _SummaryBannerState extends State<_SummaryBanner> {
   @override
   void dispose() {
     _timer?.cancel();
+    _titleFocusNode.dispose();
+    _titleController.dispose();
     super.dispose();
   }
 
@@ -300,14 +379,9 @@ class _SummaryBannerState extends State<_SummaryBanner> {
 
   @override
   Widget build(BuildContext context) {
+    final state = AppStateScope.of(context);
     final task = widget.task;
-    final readableSummary = const SemanticSnippetBuilder()
-        .build(
-          const CodexOutputCleaner().clean(task.shortSummary),
-          contentType: SnippetContentType.agentSummary,
-          maxChars: 260,
-        )
-        .visibleText;
+    final projectLabel = _projectLabel(task, state.projectPaths);
     return DecoratedBox(
       decoration: BoxDecoration(
         color: const Color(0xFFF1F8F5),
@@ -330,18 +404,82 @@ class _SummaryBannerState extends State<_SummaryBanner> {
               ],
             ),
             const SizedBox(height: 16),
-            Text(task.title, style: Theme.of(context).textTheme.titleLarge),
-            const SizedBox(height: 10),
-            Text(
-              readableSummary.isEmpty ? task.userText : readableSummary,
-              style: Theme.of(context).textTheme.bodyMedium,
-              maxLines: 4,
-              overflow: TextOverflow.ellipsis,
+            AnimatedSwitcher(
+              duration: const Duration(milliseconds: 180),
+              child: _editingTitle
+                  ? TextField(
+                      key: const Key('task-title-field'),
+                      controller: _titleController,
+                      focusNode: _titleFocusNode,
+                      enabled: !_savingTitle,
+                      autofocus: true,
+                      textInputAction: TextInputAction.done,
+                      style: Theme.of(context).textTheme.titleLarge,
+                      decoration: InputDecoration(
+                        labelText: '标题',
+                        hintText: task.displayTitle,
+                        isDense: true,
+                        border: const UnderlineInputBorder(),
+                        suffixIcon: IconButton(
+                          tooltip: '保存标题',
+                          icon: _savingTitle
+                              ? const SizedBox(
+                                  width: 18,
+                                  height: 18,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Icon(Icons.save_outlined),
+                          onPressed: _savingTitle
+                              ? null
+                              : () => _saveTitle(context, task),
+                        ),
+                      ),
+                      onSubmitted: (_) => _saveTitle(context, task),
+                    )
+                  : Row(
+                      key: const ValueKey('task-title-display'),
+                      children: [
+                        Expanded(
+                          child: Text(
+                            task.displayTitle,
+                            style: Theme.of(context).textTheme.titleLarge,
+                          ),
+                        ),
+                        IconButton(
+                          tooltip: '编辑标题',
+                          icon: const Icon(Icons.edit_outlined),
+                          onPressed: _savingTitle
+                              ? null
+                              : () {
+                                  setState(() => _editingTitle = true);
+                                  _titleController.text = task.title;
+                                  _titleController.selection =
+                                      TextSelection.collapsed(
+                                    offset: _titleController.text.length,
+                                  );
+                                  Future.microtask(() {
+                                    if (mounted) {
+                                      _titleFocusNode.requestFocus();
+                                    }
+                                  });
+                                },
+                        ),
+                      ],
+                    ),
             ),
-            const SizedBox(height: 14),
-            Text(
-              '总耗时 ${_durationLabel(task)}',
-              style: Theme.of(context).textTheme.bodySmall,
+            const SizedBox(height: 10),
+            _TaskMetaLine(
+              icon: Icons.folder_outlined,
+              label: '项目名',
+              value: projectLabel,
+            ),
+            const SizedBox(height: 6),
+            _TaskMetaLine(
+              icon: Icons.terminal_outlined,
+              label: 'CLI',
+              value: _cliLabel(task.host.agentCommand),
             ),
           ],
         ),
@@ -359,6 +497,101 @@ class _SummaryBannerState extends State<_SummaryBanner> {
             task.status == TaskStatus.needAttention ||
             task.status == TaskStatus.observerDetached);
   }
+
+  Future<void> _saveTitle(BuildContext context, TaskSession task) async {
+    final trimmed = _titleController.text.trim();
+    if (trimmed.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('标题不能为空。')),
+      );
+      _titleController.text = task.title;
+      return;
+    }
+    if (trimmed == task.title.trim()) {
+      if (mounted) {
+        setState(() => _editingTitle = false);
+      }
+      return;
+    }
+    setState(() => _savingTitle = true);
+    try {
+      await AppStateScope.read(context).updateTaskTitle(task, trimmed);
+      if (!context.mounted) {
+        return;
+      }
+      FocusScope.of(context).unfocus();
+      if (mounted) {
+        setState(() => _editingTitle = false);
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('标题已更新。')),
+      );
+    } catch (error) {
+      if (!context.mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('标题更新失败：$error')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _savingTitle = false);
+      }
+    }
+  }
+}
+
+class _TaskMetaLine extends StatelessWidget {
+  const _TaskMetaLine({
+    required this.icon,
+    required this.label,
+    required this.value,
+  });
+
+  final IconData icon;
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(icon, size: 18, color: ArminTheme.ink),
+        const SizedBox(width: 8),
+        Text(
+          '$label：',
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+        Expanded(
+          child: Text(
+            value,
+            style: Theme.of(context).textTheme.bodySmall,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+String _projectLabel(TaskSession task, List<ProjectPathConfig> projectPaths) {
+  final projectPath = normalizeRemoteProjectPath(task.host.projectPath);
+  if (projectPath.isEmpty) {
+    return '未设置';
+  }
+  for (final project in projectPaths) {
+    if (normalizeRemoteProjectPath(project.path) == projectPath) {
+      return project.name.trim().isEmpty ? projectPath : project.name.trim();
+    }
+  }
+  return projectPath;
+}
+
+String _cliLabel(String agentCommand) {
+  final trimmed = agentCommand.trim();
+  return trimmed.isEmpty ? '未设置' : trimmed;
 }
 
 class _TimelinePanel extends StatelessWidget {
@@ -575,9 +808,13 @@ class _TimelineItem extends StatelessWidget {
 }
 
 class _ResultPanel extends StatefulWidget {
-  const _ResultPanel({required this.task});
+  const _ResultPanel({
+    required this.task,
+    required this.revealLatestTurnToken,
+  });
 
   final TaskSession task;
+  final int revealLatestTurnToken;
 
   @override
   State<_ResultPanel> createState() => _ResultPanelState();
@@ -586,12 +823,15 @@ class _ResultPanel extends StatefulWidget {
 class _ResultPanelState extends State<_ResultPanel> {
   static const _turnOutputSlicer = TurnOutputSlicer();
 
+  final ScrollController _scrollController = ScrollController();
   Future<List<_TurnOutputSummary>>? _summariesFuture;
+  int _handledRevealToken = 0;
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
     _summariesFuture ??= _outputSummaries(widget.task);
+    _maybeRevealLatestTurn();
   }
 
   @override
@@ -604,12 +844,23 @@ class _ResultPanelState extends State<_ResultPanel> {
         _turnsSignature(oldWidget.task) != _turnsSignature(widget.task)) {
       _summariesFuture = _outputSummaries(widget.task);
     }
+    if (oldWidget.revealLatestTurnToken != widget.revealLatestTurnToken) {
+      _maybeRevealLatestTurn();
+    }
+  }
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     final result = widget.task.result;
     return ListView(
+      key: const PageStorageKey<String>('task-detail-result-list'),
+      controller: _scrollController,
       physics: const AlwaysScrollableScrollPhysics(),
       padding: const EdgeInsets.fromLTRB(20, 20, 20, 96),
       children: [
@@ -628,6 +879,7 @@ class _ResultPanelState extends State<_ResultPanel> {
                     _OutputSegmentCard(
                       title: output.title,
                       text: output.text,
+                      speechText: output.speechText,
                     ),
                 ],
               );
@@ -636,27 +888,11 @@ class _ResultPanelState extends State<_ResultPanel> {
         ),
         _InfoCard(
           title: '执行详情',
-          child: ExpansionTile(
-            tilePadding: EdgeInsets.zero,
-            title: const Text('展开非输出内容'),
-            children: [
-              _DetailList(
-                title: '变更文件',
-                values: result?.changedFiles ?? const [],
-              ),
-              _DetailList(
-                title: '验证结果',
-                values: result?.validation ?? const [],
-              ),
-              _DetailList(
-                title: '潜在风险',
-                values: result?.risks ?? const [],
-              ),
-              _DetailList(
-                title: '下一步',
-                values: result?.nextActions ?? const [],
-              ),
-            ],
+          child: _ResultDetailsSection(
+            changedFiles: result?.changedFiles ?? const [],
+            validation: result?.validation ?? const [],
+            risks: result?.risks ?? const [],
+            nextActions: result?.nextActions ?? const [],
           ),
         ),
       ],
@@ -673,6 +909,9 @@ class _ResultPanelState extends State<_ResultPanel> {
     for (final indexedTurn in indexedTurns) {
       final index = indexedTurn.index;
       final turn = indexedTurn.turn;
+      if (!_isResultTurn(turn.status)) {
+        continue;
+      }
       final summary = await provider.summarize(
         OutputSummaryRequest(
           cleanedOutput: _turnOutputSlicer.outputForTurn(task.turns, index),
@@ -685,7 +924,11 @@ class _ResultPanelState extends State<_ResultPanel> {
       final text = summary.displaySummary.trim();
       if (text.isNotEmpty) {
         summaries.add(
-          _TurnOutputSummary(title: 'Turn ${turn.turnIndex}', text: text),
+          _TurnOutputSummary(
+            title: 'Turn ${turn.turnIndex}',
+            text: text,
+            speechText: DeviceVoiceService.cleanSpeechSummary(text),
+          ),
         );
       }
     }
@@ -707,7 +950,48 @@ class _ResultPanelState extends State<_ResultPanel> {
     final text = legacy.displaySummary.trim();
     return text.isEmpty
         ? const []
-        : [_TurnOutputSummary(title: '输出结果', text: text)];
+        : [
+            _TurnOutputSummary(
+              title: '输出结果',
+              text: text,
+              speechText: DeviceVoiceService.cleanSpeechSummary(text),
+            ),
+          ];
+  }
+
+  bool _isResultTurn(NativeOutputTurnStatus status) {
+    return switch (status) {
+      NativeOutputTurnStatus.needAttention => false,
+      NativeOutputTurnStatus.running ||
+      NativeOutputTurnStatus.turnIdle ||
+      NativeOutputTurnStatus.runtimeLost ||
+      NativeOutputTurnStatus.failed ||
+      NativeOutputTurnStatus.completedByUser ||
+      NativeOutputTurnStatus.failedByUser ||
+      NativeOutputTurnStatus.stopped =>
+        true,
+    };
+  }
+
+  void _maybeRevealLatestTurn() {
+    if (widget.revealLatestTurnToken == _handledRevealToken) {
+      return;
+    }
+    _handledRevealToken = widget.revealLatestTurnToken;
+    _scheduleScrollToTop();
+  }
+
+  void _scheduleScrollToTop() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+      if (_scrollController.hasClients) {
+        _scrollController.jumpTo(_scrollController.position.minScrollExtent);
+        return;
+      }
+      _scheduleScrollToTop();
+    });
   }
 
   String _turnsSignature(TaskSession task) {
@@ -740,18 +1024,89 @@ class _ResultPanelState extends State<_ResultPanel> {
   }
 }
 
+class _ResultDetailsSection extends StatefulWidget {
+  const _ResultDetailsSection({
+    required this.changedFiles,
+    required this.validation,
+    required this.risks,
+    required this.nextActions,
+  });
+
+  final List<String> changedFiles;
+  final List<String> validation;
+  final List<String> risks;
+  final List<String> nextActions;
+
+  @override
+  State<_ResultDetailsSection> createState() => _ResultDetailsSectionState();
+}
+
+class _ResultDetailsSectionState extends State<_ResultDetailsSection> {
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        TextButton.icon(
+          onPressed: () => setState(() => _expanded = !_expanded),
+          icon: Icon(_expanded ? Icons.expand_less : Icons.expand_more),
+          label: Text(_expanded ? '收起非输出内容' : '展开非输出内容'),
+        ),
+        AnimatedCrossFade(
+          duration: const Duration(milliseconds: 180),
+          firstChild: const SizedBox.shrink(),
+          secondChild: Column(
+            children: [
+              _DetailList(
+                title: '变更文件',
+                values: widget.changedFiles,
+              ),
+              _DetailList(
+                title: '验证结果',
+                values: widget.validation,
+              ),
+              _DetailList(
+                title: '潜在风险',
+                values: widget.risks,
+              ),
+              _DetailList(
+                title: '下一步',
+                values: widget.nextActions,
+              ),
+            ],
+          ),
+          crossFadeState:
+              _expanded ? CrossFadeState.showSecond : CrossFadeState.showFirst,
+        ),
+      ],
+    );
+  }
+}
+
 class _TurnOutputSummary {
-  const _TurnOutputSummary({required this.title, required this.text});
+  const _TurnOutputSummary({
+    required this.title,
+    required this.text,
+    this.speechText = '',
+  });
 
   final String title;
   final String text;
+  final String speechText;
 }
 
 class _OutputSegmentCard extends StatelessWidget {
-  const _OutputSegmentCard({required this.title, required this.text});
+  const _OutputSegmentCard({
+    required this.title,
+    required this.text,
+    required this.speechText,
+  });
 
   final String title;
   final String text;
+  final String speechText;
 
   @override
   Widget build(BuildContext context) {
@@ -777,7 +1132,10 @@ class _OutputSegmentCard extends StatelessWidget {
                 child: IconButton.filledTonal(
                   tooltip: '朗读这段输出',
                   icon: const Icon(Icons.volume_up_outlined),
-                  onPressed: () => _speakSegment(context, text),
+                  onPressed: () => _speakSegment(
+                    context,
+                    speechText.isNotEmpty ? speechText : text,
+                  ),
                 ),
               ),
             ],
@@ -826,48 +1184,6 @@ class _DetailList extends StatelessWidget {
   }
 }
 
-class _PromptPanel extends StatelessWidget {
-  const _PromptPanel({required this.task});
-
-  final TaskSession task;
-
-  @override
-  Widget build(BuildContext context) {
-    return ListView(
-      padding: const EdgeInsets.all(20),
-      children: [
-        _InfoCard(
-          title: '任务草稿',
-          child: SelectableText(_fallback(task.cleanedDraft, '无')),
-        ),
-        _InfoCard(
-          title: '用户确认文本',
-          child: SelectableText(_fallback(task.userText, '无')),
-        ),
-        _InfoCard(
-          title: '发送 Prompt',
-          child: SelectableText(_fallback(task.finalPrompt, '无')),
-        ),
-        _InfoCard(
-          title: 'Secret Redacted Records',
-          child: task.secretRecords.isEmpty
-              ? const Text('无')
-              : Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    for (final secret in task.secretRecords)
-                      Text(
-                        '${secret.name}: ${secret.redactedValue} · '
-                        '${secret.usage} · ${secret.scope}',
-                      ),
-                  ],
-                ),
-        ),
-      ],
-    );
-  }
-}
-
 class _RuntimeControlPanel extends StatefulWidget {
   const _RuntimeControlPanel({required this.task});
 
@@ -879,6 +1195,7 @@ class _RuntimeControlPanel extends StatefulWidget {
 
 class _RuntimeControlPanelState extends State<_RuntimeControlPanel> {
   static const _voiceCommandProcessor = VoiceTaskCommandProcessor();
+  static const _turnOutputSlicer = TurnOutputSlicer();
 
   @override
   Widget build(BuildContext context) {
@@ -887,32 +1204,49 @@ class _RuntimeControlPanelState extends State<_RuntimeControlPanel> {
     return _InfoCard(
       title: '运行控制',
       trailing: _MiniBadge(
+        key: const Key('runtime-control-state-badge'),
         label: controlState.label,
         color: controlState.color,
+        animate: task.status == TaskStatus.running,
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          if (task.terminalPrompt != null) ...[
-            Text(
-              task.terminalPrompt!.question,
-              style: Theme.of(context).textTheme.bodyMedium,
+          if (_pendingApproval(task) != null) ...[
+            _ApprovalPromptCard(
+              approval: _pendingApproval(task)!,
+              onApprove: () => _runControlAction(
+                context,
+                () => AppStateScope.read(context)
+                    .resolveApproval(task, approved: true),
+              ),
+              onReject: () => _runControlAction(
+                context,
+                () => AppStateScope.read(context)
+                    .resolveApproval(task, approved: false),
+              ),
+              onVoice: () => _showFollowUpSheet(
+                context,
+                title: '审批处理',
+                hintText: '说“批准”或“拒绝”',
+                approval: _pendingApproval(task),
+              ),
             ),
-            const SizedBox(height: 10),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                for (final option in task.terminalPrompt!.options)
-                  FilledButton.tonal(
-                    onPressed: () => _runControlAction(
-                      context,
-                      () => AppStateScope.read(context)
-                          .selectTerminalOption(task, option),
-                    ),
-                    child: Text('${option.key}. ${option.label}'),
-                  ),
-              ],
+            const SizedBox(height: 12),
+          ],
+          if (task.terminalPrompt != null) ...[
+            _TerminalPromptCard(
+              prompt: task.terminalPrompt!,
+              onSelect: (option) => _selectTerminalPromptOption(
+                context,
+                task,
+                option,
+              ),
+              onVoice: () => _showFollowUpSheet(
+                context,
+                title: '选择终端选项',
+                hintText: '说“允许一次”“始终允许”或“拒绝”',
+              ),
             ),
             const SizedBox(height: 16),
           ],
@@ -1027,7 +1361,69 @@ class _RuntimeControlPanelState extends State<_RuntimeControlPanel> {
     }
   }
 
-  void _showFollowUpSheet(BuildContext context) {
+  Future<void> _selectTerminalPromptOption(
+    BuildContext context,
+    TaskSession task,
+    TerminalPromptOption option,
+  ) async {
+    final needsText = _optionNeedsManualInput(option);
+    final customResponse =
+        needsText ? await _askTerminalPromptResponse(context, option) : null;
+    if (!context.mounted || (needsText && customResponse == null)) {
+      return;
+    }
+    await _runControlAction(
+      context,
+      () => AppStateScope.read(context).selectTerminalOption(
+        task,
+        option,
+        customResponse: customResponse ?? '',
+      ),
+    );
+  }
+
+  bool _optionNeedsManualInput(TerminalPromptOption option) {
+    final label = option.label.toLowerCase();
+    return label.contains('type something') ||
+        label.contains('input') ||
+        label.contains('message') ||
+        label.contains('输入') ||
+        label.contains('填写') ||
+        label.contains('补充');
+  }
+
+  Future<String?> _askTerminalPromptResponse(
+    BuildContext context,
+    TerminalPromptOption option,
+  ) async {
+    return showDialog<String>(
+      context: context,
+      builder: (_) => _TerminalPromptResponseDialog(option: option),
+    );
+  }
+
+  ApprovalRequest? _pendingApproval(TaskSession task) {
+    for (final approval in task.approvalRequests) {
+      if (_isPendingApproval(approval.status)) {
+        return approval;
+      }
+    }
+    if (task.approval != null && _isPendingApproval(task.approval!.status)) {
+      return task.approval;
+    }
+    return null;
+  }
+
+  bool _isPendingApproval(String status) {
+    return status.trim().toLowerCase() == 'pending';
+  }
+
+  void _showFollowUpSheet(
+    BuildContext context, {
+    String title = '追加指令',
+    String hintText = '继续补充你的要求...',
+    ApprovalRequest? approval,
+  }) {
     final state = AppStateScope.read(context);
     var listening = false;
     var busy = false;
@@ -1134,18 +1530,20 @@ class _RuntimeControlPanelState extends State<_RuntimeControlPanel> {
                         mainAxisSize: MainAxisSize.min,
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text('追加指令',
+                          Text(title,
                               style:
                                   Theme.of(sheetContext).textTheme.titleLarge),
+                          if (approval != null) ...[
+                            const SizedBox(height: 8),
+                            _ApprovalSheetDetails(approval: approval),
+                          ],
                           const SizedBox(height: 12),
                           TextField(
                             controller: controller,
                             keyboardType: TextInputType.multiline,
                             minLines: 3,
                             maxLines: 5,
-                            decoration: const InputDecoration(
-                              hintText: '继续补充你的要求...',
-                            ),
+                            decoration: InputDecoration(hintText: hintText),
                             onChanged: (_) {
                               if (voiceCommand != null) {
                                 setSheetState(() => voiceCommand = null);
@@ -1270,7 +1668,319 @@ class _RuntimeControlPanelState extends State<_RuntimeControlPanel> {
           widget.task,
           rawVoiceText: command.sourceText,
         ),
+      VoiceTaskAction.selectTerminalOption => state.selectTerminalOption(
+          widget.task,
+          TerminalPromptOption(
+            key: command.terminalOptionKey ?? '',
+            label: command.label,
+          ),
+        ),
+      VoiceTaskAction.readResult => _speakLatestResult(context),
+      VoiceTaskAction.resolveApprovalRequest => state.resolveApproval(
+          widget.task,
+          approved: command.approvalApproved ?? false),
     };
+  }
+
+  Future<void> _speakLatestResult(BuildContext context) async {
+    final state = AppStateScope.read(context);
+    final text = await _latestResultSpeechText(context, widget.task);
+    if (text.isEmpty) {
+      throw const VoiceUnavailableException('没有可朗读的结果内容');
+    }
+    await state.voiceService.speakSummary(text);
+  }
+
+  Future<String> _latestResultSpeechText(
+    BuildContext context,
+    TaskSession task,
+  ) async {
+    final provider = AppStateScope.of(context).outputSummaryProvider;
+    if (task.turns.isNotEmpty) {
+      final latestIndex = task.turns.length - 1;
+      final latestTurn = task.turns.last;
+      final summary = await provider.summarize(
+        OutputSummaryRequest(
+          cleanedOutput:
+              _turnOutputSlicer.outputForTurn(task.turns, latestIndex),
+          status: task.status,
+          taskTitle: task.title,
+          promptInputs: [latestTurn.userInput],
+          agentCommand: task.host.agentCommand,
+        ),
+      );
+      final latestText = summary.displaySummary.trim();
+      if (latestText.isNotEmpty) {
+        return DeviceVoiceService.cleanSpeechSummary(latestText);
+      }
+    }
+
+    final legacySummary = await provider.summarize(
+      OutputSummaryRequest(
+        cleanedOutput: _legacyOutputSource(task),
+        status: task.status,
+        taskTitle: task.title,
+        promptInputs: [
+          task.userText,
+          ...task.turns.map((turn) => turn.userInput)
+        ],
+        agentCommand: task.host.agentCommand,
+      ),
+    );
+    final legacyText = legacySummary.displaySummary.trim();
+    return legacyText.isEmpty
+        ? ''
+        : DeviceVoiceService.cleanSpeechSummary(legacyText);
+  }
+
+  String _legacyOutputSource(TaskSession task) {
+    final candidates = [
+      task.result?.summary ?? '',
+      task.summary ?? '',
+      task.shortSummary,
+    ];
+    for (final candidate in candidates) {
+      if (const CodexOutputCleaner().clean(candidate).trim().isNotEmpty) {
+        return candidate;
+      }
+    }
+    return '';
+  }
+}
+
+class _ApprovalPromptCard extends StatelessWidget {
+  const _ApprovalPromptCard({
+    required this.approval,
+    required this.onApprove,
+    required this.onReject,
+    required this.onVoice,
+  });
+
+  final ApprovalRequest approval;
+  final VoidCallback onApprove;
+  final VoidCallback onReject;
+  final VoidCallback onVoice;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.orange.shade50,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.orange.shade200),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.warning_amber_rounded, color: Colors.orange.shade700),
+              const SizedBox(width: 8),
+              Text(
+                '任务确认',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Text(
+            approval.reason,
+            style: Theme.of(context).textTheme.bodyMedium,
+          ),
+          const SizedBox(height: 8),
+          Text(
+            approval.command,
+            style: Theme.of(context)
+                .textTheme
+                .bodySmall
+                ?.copyWith(color: Colors.grey.shade700),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            '风险：${approval.risk}',
+            style: Theme.of(context)
+                .textTheme
+                .bodySmall
+                ?.copyWith(color: Colors.grey.shade700),
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              FilledButton.icon(
+                onPressed: onApprove,
+                icon: const Icon(Icons.check_outlined),
+                label: const Text('允许'),
+              ),
+              OutlinedButton.icon(
+                onPressed: onReject,
+                icon: const Icon(Icons.close_outlined),
+                label: const Text('拒绝'),
+              ),
+              TextButton.icon(
+                onPressed: onVoice,
+                icon: const Icon(Icons.mic_none_outlined),
+                label: const Text('语音处理'),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _TerminalPromptCard extends StatelessWidget {
+  const _TerminalPromptCard({
+    required this.prompt,
+    required this.onSelect,
+    required this.onVoice,
+  });
+
+  final TerminalPrompt prompt;
+  final ValueChanged<TerminalPromptOption> onSelect;
+  final VoidCallback onVoice;
+
+  @override
+  Widget build(BuildContext context) {
+    final command = prompt.command.trim();
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.amber.shade50,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: Colors.amber.shade200),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.pause_circle_outline, color: Colors.amber.shade800),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  prompt.question,
+                  style: Theme.of(context).textTheme.titleSmall,
+                ),
+              ),
+              IconButton.filledTonal(
+                tooltip: '语音选择',
+                icon: const Icon(Icons.mic_none_outlined, size: 18),
+                onPressed: onVoice,
+                visualDensity: VisualDensity.compact,
+              ),
+            ],
+          ),
+          if (command.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            SelectableText(
+              command,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Colors.grey.shade800,
+                    fontFamily: 'monospace',
+                  ),
+            ),
+          ],
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: [
+              for (final option in prompt.options)
+                ActionChip(
+                  visualDensity: VisualDensity.compact,
+                  labelPadding: const EdgeInsets.symmetric(horizontal: 4),
+                  avatar: Text(option.key),
+                  label: Text(option.label),
+                  onPressed: () => onSelect(option),
+                ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _TerminalPromptResponseDialog extends StatefulWidget {
+  const _TerminalPromptResponseDialog({required this.option});
+
+  final TerminalPromptOption option;
+
+  @override
+  State<_TerminalPromptResponseDialog> createState() =>
+      _TerminalPromptResponseDialogState();
+}
+
+class _TerminalPromptResponseDialogState
+    extends State<_TerminalPromptResponseDialog> {
+  final _controller = TextEditingController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final option = widget.option;
+    return AlertDialog(
+      title: Text('${option.key}. ${option.label}'),
+      content: TextField(
+        controller: _controller,
+        autofocus: true,
+        minLines: 3,
+        maxLines: 5,
+        decoration: const InputDecoration(
+          hintText: '输入要发送给远端 CLI 的内容',
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          onPressed: () {
+            final text = _controller.text.trim();
+            if (text.isEmpty) {
+              return;
+            }
+            Navigator.of(context).pop(text);
+          },
+          child: const Text('发送'),
+        ),
+      ],
+    );
+  }
+}
+
+class _ApprovalSheetDetails extends StatelessWidget {
+  const _ApprovalSheetDetails({required this.approval});
+
+  final ApprovalRequest approval;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.orange.shade50,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.orange.shade100),
+      ),
+      child: Text(
+        '${approval.reason}\n${approval.command}\n风险：${approval.risk}',
+        style: Theme.of(context).textTheme.bodySmall,
+      ),
+    );
   }
 }
 
@@ -1750,6 +2460,36 @@ class _InfoCard extends StatelessWidget {
   }
 }
 
+class _TabBarHeaderDelegate extends SliverPersistentHeaderDelegate {
+  const _TabBarHeaderDelegate(this.tabBar);
+
+  final TabBar tabBar;
+
+  @override
+  double get minExtent => tabBar.preferredSize.height;
+
+  @override
+  double get maxExtent => tabBar.preferredSize.height;
+
+  @override
+  Widget build(
+    BuildContext context,
+    double shrinkOffset,
+    bool overlapsContent,
+  ) {
+    return Container(
+      color: Theme.of(context).scaffoldBackgroundColor,
+      alignment: Alignment.centerLeft,
+      child: tabBar,
+    );
+  }
+
+  @override
+  bool shouldRebuild(covariant _TabBarHeaderDelegate oldDelegate) {
+    return oldDelegate.tabBar != tabBar;
+  }
+}
+
 class _BulletList extends StatelessWidget {
   const _BulletList({required this.values});
 
@@ -1773,22 +2513,181 @@ class _BulletList extends StatelessWidget {
   }
 }
 
-class _MiniBadge extends StatelessWidget {
-  const _MiniBadge({required this.label, required this.color});
+class _MiniBadge extends StatefulWidget {
+  const _MiniBadge({
+    required this.label,
+    required this.color,
+    this.animate = false,
+    super.key,
+  });
 
   final String label;
   final Color color;
+  final bool animate;
+
+  @override
+  State<_MiniBadge> createState() => _MiniBadgeState();
+}
+
+class _MiniBadgeState extends State<_MiniBadge> with TickerProviderStateMixin {
+  AnimationController? _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _syncAnimation();
+  }
+
+  @override
+  void didUpdateWidget(covariant _MiniBadge oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.animate != widget.animate ||
+        oldWidget.color != widget.color) {
+      _syncAnimation();
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller?.dispose();
+    super.dispose();
+  }
+
+  void _syncAnimation() {
+    if (widget.animate && !_isTestEnvironment) {
+      _controller ??= AnimationController(
+        vsync: this,
+        duration: const Duration(milliseconds: 1600),
+      )..repeat();
+    } else {
+      _controller?.dispose();
+      _controller = null;
+    }
+  }
+
+  bool get _isTestEnvironment {
+    final bindingName = WidgetsBinding.instance.runtimeType.toString();
+    return bindingName.contains('Test') || bindingName.contains('Automated');
+  }
 
   @override
   Widget build(BuildContext context) {
-    return DecoratedBox(
+    final pill = DecoratedBox(
       decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.12),
+        color: widget.color.withValues(alpha: 0.12),
         borderRadius: BorderRadius.circular(999),
       ),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-        child: Text(label, style: TextStyle(color: color, fontSize: 12)),
+        child: Text(
+          widget.label,
+          style: TextStyle(color: widget.color, fontSize: 12),
+        ),
+      ),
+    );
+    if (_controller == null) {
+      return pill;
+    }
+    return Stack(
+      clipBehavior: Clip.none,
+      alignment: Alignment.center,
+      children: [
+        pill,
+        IgnorePointer(
+          child: AnimatedBuilder(
+            animation: _controller!,
+            builder: (context, _) {
+              final progress = _controller!.value;
+              final angle = progress * math.pi * 2;
+              final points = _cometTrail(angle);
+              return Stack(
+                clipBehavior: Clip.none,
+                alignment: Alignment.center,
+                children: [
+                  for (var i = 0; i < points.length; i++)
+                    _CometDot(
+                      color: widget.color.withValues(
+                        alpha: math.max(0.08, 0.92 - i * 0.2),
+                      ),
+                      offset: points[i].offset,
+                      size: points[i].size,
+                      shadowBlur: points[i].shadowBlur,
+                    ),
+                ],
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
+  List<_CometPoint> _cometTrail(double angle) {
+    const samples = 5;
+    final points = <_CometPoint>[];
+    for (var i = 0; i < samples; i++) {
+      final t = i / (samples - 1);
+      final trailAngle = angle - t * 0.62;
+      final radiusX = 24 + t * 2.5;
+      final radiusY = 12 + t * 1.5;
+      points.add(
+        _CometPoint(
+          offset: Offset(
+            math.cos(trailAngle) * radiusX,
+            math.sin(trailAngle) * radiusY,
+          ),
+          size: math.max(2.5, 7.5 - t * 3.5),
+          shadowBlur: math.max(2, 10 - t * 5),
+        ),
+      );
+    }
+    return points;
+  }
+}
+
+class _CometPoint {
+  const _CometPoint({
+    required this.offset,
+    required this.size,
+    required this.shadowBlur,
+  });
+
+  final Offset offset;
+  final double size;
+  final double shadowBlur;
+}
+
+class _CometDot extends StatelessWidget {
+  const _CometDot({
+    required this.color,
+    required this.offset,
+    required this.size,
+    required this.shadowBlur,
+  });
+
+  final Color color;
+  final Offset offset;
+  final double size;
+  final double shadowBlur;
+
+  @override
+  Widget build(BuildContext context) {
+    return Transform.translate(
+      offset: offset,
+      child: Container(
+        width: size,
+        height: size,
+        decoration: BoxDecoration(
+          color: color,
+          shape: BoxShape.circle,
+          boxShadow: [
+            BoxShadow(
+              color: color.withValues(alpha: 0.5),
+              blurRadius: shadowBlur,
+              spreadRadius: 1,
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -2038,18 +2937,6 @@ Color _turnStatusColor(NativeOutputTurnStatus status) {
     NativeOutputTurnStatus.failedByUser => Colors.red,
     NativeOutputTurnStatus.stopped => Colors.red,
   };
-}
-
-String _durationLabel(TaskSession task) {
-  final startedAt = task.startedAt ?? task.createdAt;
-  final endedAt = task.completedAt ?? DateTime.now();
-  final duration = endedAt.difference(startedAt);
-  final minutes = duration.inMinutes;
-  final seconds = duration.inSeconds.remainder(60).toString().padLeft(2, '0');
-  if (minutes <= 0) {
-    return '${duration.inSeconds}s';
-  }
-  return '${minutes}m ${seconds}s';
 }
 
 String _shortDuration(Duration duration) {

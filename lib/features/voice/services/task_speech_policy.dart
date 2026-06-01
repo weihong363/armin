@@ -1,11 +1,13 @@
 import '../../../core/models/task_status.dart';
 import '../../tasks/models/task_session.dart';
 import '../../tasks/services/output_summary_provider.dart';
+import '../../tasks/services/turn_output_slicer.dart';
 import 'device_voice_service.dart';
 
 enum TaskSpeechKind {
   result,
   attention,
+  approval,
 }
 
 class TaskSpeechSettings {
@@ -13,6 +15,7 @@ class TaskSpeechSettings {
     this.enabled = true,
     this.speakResults = true,
     this.speakAttention = true,
+    this.speakApprovalRequests = true,
     this.voiceStyle = SpeechVoiceStyle.clearFemale,
     this.preferLocalSummaryModel = false,
   });
@@ -20,6 +23,7 @@ class TaskSpeechSettings {
   final bool enabled;
   final bool speakResults;
   final bool speakAttention;
+  final bool speakApprovalRequests;
   final SpeechVoiceStyle voiceStyle;
   final bool preferLocalSummaryModel;
 
@@ -27,6 +31,7 @@ class TaskSpeechSettings {
     bool? enabled,
     bool? speakResults,
     bool? speakAttention,
+    bool? speakApprovalRequests,
     SpeechVoiceStyle? voiceStyle,
     bool? preferLocalSummaryModel,
   }) {
@@ -34,6 +39,8 @@ class TaskSpeechSettings {
       enabled: enabled ?? this.enabled,
       speakResults: speakResults ?? this.speakResults,
       speakAttention: speakAttention ?? this.speakAttention,
+      speakApprovalRequests:
+          speakApprovalRequests ?? this.speakApprovalRequests,
       voiceStyle: voiceStyle ?? this.voiceStyle,
       preferLocalSummaryModel:
           preferLocalSummaryModel ?? this.preferLocalSummaryModel,
@@ -47,24 +54,30 @@ class TaskSpeechDecision {
     required this.text,
     required this.hash,
     required this.kind,
+    this.turnId,
+    this.turnIndex,
   });
 
   const TaskSpeechDecision.skip()
       : shouldSpeak = false,
         text = '',
         hash = '',
-        kind = null;
+        kind = null,
+        turnId = null,
+        turnIndex = null;
 
   final bool shouldSpeak;
   final String text;
   final String hash;
   final TaskSpeechKind? kind;
+  final String? turnId;
+  final int? turnIndex;
 }
 
 class TaskSpeechPolicy {
-  const TaskSpeechPolicy({this.maxSentences = 4});
+  const TaskSpeechPolicy();
 
-  final int maxSentences;
+  static const TurnOutputSlicer _turnOutputSlicer = TurnOutputSlicer();
 
   Future<TaskSpeechDecision> decide({
     required TaskSession previous,
@@ -93,6 +106,8 @@ class TaskSpeechPolicy {
       hash:
           '${current.status.name}:${_latestTurnIndex(current)}:${_normalize(speechText)}',
       kind: kind,
+      turnId: current.turns.isEmpty ? null : current.turns.last.id,
+      turnIndex: current.turns.isEmpty ? null : _latestTurnIndex(current),
     );
   }
 
@@ -108,6 +123,14 @@ class TaskSpeechPolicy {
     TaskSession task, {
     required OutputSummaryProvider outputSummaryProvider,
   }) async {
+    final latestTurnText = await _latestTurnSpeechText(
+      task,
+      outputSummaryProvider: outputSummaryProvider,
+    );
+    if (latestTurnText.isNotEmpty) {
+      return _decorate(task.status, latestTurnText).trim();
+    }
+
     final source = _summarySource(task);
     final summary = await outputSummaryProvider.summarize(
       OutputSummaryRequest(
@@ -121,11 +144,40 @@ class TaskSpeechPolicy {
         agentCommand: task.host.agentCommand,
       ),
     );
-    final cleaned = DeviceVoiceService.cleanSpeechSummary(
-      summary.speechSummary,
+    final cleaned = _speechTextFromDisplaySummary(summary);
+    return _decorate(task.status, cleaned).trim();
+  }
+
+  Future<String> _latestTurnSpeechText(
+    TaskSession task, {
+    required OutputSummaryProvider outputSummaryProvider,
+  }) async {
+    if (task.turns.isEmpty) {
+      return '';
+    }
+    final current = task.turns.last;
+    final source = _turnOutputSlicer.outputForTurn(task.turns, task.turns.length - 1);
+    if (source.trim().isEmpty) {
+      return '';
+    }
+    final summary = await outputSummaryProvider.summarize(
+      OutputSummaryRequest(
+        cleanedOutput: source,
+        status: task.status,
+        taskTitle: task.title,
+        promptInputs: [current.userInput],
+        agentCommand: task.host.agentCommand,
+      ),
     );
-    final concise = _limitSentences(cleaned);
-    return _decorate(task.status, concise).trim();
+    return _speechTextFromDisplaySummary(summary);
+  }
+
+  String _speechTextFromDisplaySummary(OutputSummary summary) {
+    final display = summary.displaySummary.trim();
+    if (display.isNotEmpty) {
+      return DeviceVoiceService.cleanSpeechSummary(display);
+    }
+    return DeviceVoiceService.cleanSpeechSummary(summary.speechSummary);
   }
 
   String _summarySource(TaskSession task) {
@@ -168,16 +220,6 @@ class TaskSpeechPolicy {
     return detail.isEmpty ? '$statusText。' : '$statusText。$detail';
   }
 
-  String _limitSentences(String text) {
-    final parts = text
-        .split(RegExp(r'(?<=[。！？.!?])\s*'))
-        .map((part) => part.trim())
-        .where((part) => part.isNotEmpty)
-        .take(maxSentences)
-        .toList(growable: false);
-    return parts.join('');
-  }
-
   TaskSpeechKind? _kindFor(TaskStatus status) {
     return switch (status) {
       TaskStatus.completed ||
@@ -188,9 +230,9 @@ class TaskSpeechPolicy {
         TaskSpeechKind.result,
       TaskStatus.turnIdle ||
       TaskStatus.needAttention ||
-      TaskStatus.observerDetached ||
-      TaskStatus.needApproval =>
+      TaskStatus.observerDetached =>
         TaskSpeechKind.attention,
+      TaskStatus.needApproval => TaskSpeechKind.approval,
       _ => null,
     };
   }
@@ -199,6 +241,7 @@ class TaskSpeechPolicy {
     return switch (kind) {
       TaskSpeechKind.result => settings.speakResults,
       TaskSpeechKind.attention => settings.speakAttention,
+      TaskSpeechKind.approval => settings.speakApprovalRequests,
     };
   }
 

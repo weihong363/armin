@@ -78,14 +78,30 @@ Ran jq -r '.pet_id' output/hatch-pet/*/pet_request.json
     expect(cleaned, 'TARO是一只小型疲惫兔子开发者桌面宠物，192 × 208像素格。');
   });
 
+  test('speech summary adds a pronunciation hint for 一行', () {
+    final cleaned = DeviceVoiceService.cleanSpeechTextForTest('输出一行代码');
+
+    expect(cleaned, contains('一行（háng）'));
+  });
+
   test('speech profile is slightly faster and steady', () {
     final zhProfile = DeviceVoiceService.speechProfileForTest('zh-CN');
     final enProfile = DeviceVoiceService.speechProfileForTest('en-US');
 
     expect(zhProfile.speechRate, inInclusiveRange(0.70, 0.74));
     expect(zhProfile.pitch, inInclusiveRange(1.03, 1.08));
-    expect(enProfile.speechRate, greaterThan(0.65));
-    expect(enProfile.pitch, greaterThan(1.0));
+    expect(enProfile.speechRate, inInclusiveRange(0.58, 0.62));
+    expect(enProfile.pitch, inInclusiveRange(0.98, 1.02));
+  });
+
+  test('english segment profile reads a little slower for accuracy', () {
+    final zhProfile =
+        DeviceVoiceService.speechProfileForLanguageForTest('zh-CN');
+    final enProfile =
+        DeviceVoiceService.speechProfileForLanguageForTest('en-US');
+
+    expect(enProfile.speechRate, lessThan(zhProfile.speechRate));
+    expect(enProfile.pitch, lessThanOrEqualTo(zhProfile.pitch));
   });
 
   test('speech summary compacts long noisy output into readable summary', () {
@@ -134,6 +150,31 @@ hello world
     expect(cleaned, isNot(contains('Ran jq')));
   });
 
+  test('speech summary strips qoder input chrome after the result', () {
+    final cleaned = DeviceVoiceService.cleanSpeechSummaryForTest('''
+Turn 6
+hello Type your message or @path/to/file Auto Model .ctx █ 10% · ~/workspace/momo
+Shift+Tab to Auto-accept Edits
+AGENTS.md file · 12 skills
+''');
+
+    expect(cleaned, 'hello');
+    expect(cleaned, isNot(contains('Type your message or @path/to/file')));
+    expect(cleaned, isNot(contains('Auto Model')));
+  });
+
+  test('speech text keeps all readable lines without compacting', () {
+    final cleaned = DeviceVoiceService.cleanSpeechTextForTest('''
+completion: tls handshake eof
+runbook-copilot 是面向工程团队的 RAG 事故排障助手，用于根据告警、服务名、日志和症状检索知识库并生成带引用的排障建议。
+可以继续查看引用和日志。
+''');
+
+    expect(cleaned, isNot(contains('tls handshake eof')));
+    expect(cleaned, contains('runbook-copilot'));
+    expect(cleaned, contains('可以继续查看引用和日志'));
+  });
+
   test('speech summary keeps result text mixed with tool traces', () {
     final cleaned = DeviceVoiceService.cleanSpeechSummaryForTest('''
 > ■ Glob('.hatch-pet-runs/taro/**/*.json') ■ Read(/Users/ironion/workspace/momo/output/hatch-pet/taro/pet_request.json) ■ TARO 是一只小型疲惫兔子开发者桌面宠物，灰奶油色调像素风格，9 行精灵图。
@@ -163,5 +204,17 @@ hello world
     );
 
     expect(voice?['name'], 'XiaoXiao Neural');
+  });
+
+  test('preferred voice favors English clear voices', () {
+    final voice = DeviceVoiceService.preferredVoiceForTest(
+      const [
+        {'name': 'Default Voice', 'locale': 'en-US', 'gender': 'male'},
+        {'name': 'Samantha Enhanced', 'locale': 'en_US', 'gender': 'female'},
+      ],
+      'en-US',
+    );
+
+    expect(voice?['name'], 'Samantha Enhanced');
   });
 }

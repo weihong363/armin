@@ -1,3 +1,4 @@
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:armin/app.dart';
@@ -24,4 +25,36 @@ void main() {
     expect(find.text('最近任务'), findsOneWidget);
     expect(find.text('新任务'), findsOneWidget);
   });
+
+  testWidgets('Armin reloads state when app resumes', (tester) async {
+    final state = _CountingAppState();
+
+    await tester.pumpWidget(ArminApp(state: state));
+    await tester.pumpAndSettle();
+
+    expect(state.loadCount, 1);
+
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pump();
+    await tester.pumpAndSettle();
+
+    expect(state.loadCount, 2);
+  });
+}
+
+class _CountingAppState extends ArminAppState {
+  _CountingAppState()
+      : super(
+          store: InMemoryTaskHistoryStore(),
+          agentSessionService: MockAgentSessionService(),
+          voiceService: MockVoiceService(),
+        );
+
+  int loadCount = 0;
+
+  @override
+  Future<void> load() async {
+    loadCount += 1;
+    await super.load();
+  }
 }

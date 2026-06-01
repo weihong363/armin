@@ -90,13 +90,124 @@ flutter test
     expect(decision.text, isNot(contains('输出 hello world')));
   });
 
+  test('turn idle speech uses the full current turn output', () async {
+    final previous = _task(status: TaskStatus.running);
+    final current = previous.copyWith(
+      status: TaskStatus.turnIdle,
+      turns: [
+        _turnWithInput(1, '输出 runbook-copilot'),
+        _turnWithInput(2, '继续').copyWith(
+          cleanedOutput: '''
+completion: tls handshake eof
+runbook-copilot 是面向工程团队的 RAG 事故排障助手，用于根据告警、服务名、日志和症状检索知识库并生成带引用的排障建议。
+可以继续查看引用和日志。
+''',
+          rawOutput: '''
+completion: tls handshake eof
+runbook-copilot 是面向工程团队的 RAG 事故排障助手，用于根据告警、服务名、日志和症状检索知识库并生成带引用的排障建议。
+可以继续查看引用和日志。
+''',
+        ),
+      ],
+    );
+    final provider = _CapturingSummaryProvider(
+      const OutputSummary(
+        displaySummary: 'runbook-copilot 是面向工程团队的 RAG 事故排障助手。可以继续查看引用和日志。',
+        speechSummary: 'runbook-copilot 是面向工程团队的 RAG 事故排障助手。可以继续查看引用和日志。',
+      ),
+    );
+
+    final decision = await policy.decide(
+      previous: previous,
+      current: current,
+      settings: settings,
+      outputSummaryProvider: provider,
+    );
+
+    expect(decision.shouldSpeak, isTrue);
+    expect(provider.lastRequest?.cleanedOutput, contains('查看引用和日志'));
+    expect(provider.lastRequest?.promptInputs, ['继续']);
+    expect(decision.text, contains('可以继续查看引用和日志'));
+  });
+
+  test('auto speech uses the latest turn card output source', () async {
+    final previous = _task(status: TaskStatus.running);
+    final current = previous.copyWith(
+      status: TaskStatus.turnIdle,
+      summary: '旧的整任务摘要，不应直接播报',
+      turns: [
+        _turnWithInput(1, '输出 hello'),
+        _turnWithInput(2, '继续').copyWith(
+          cleanedOutput: 'hello world',
+          rawOutput: 'hello world',
+        ),
+      ],
+    );
+    final provider = _CapturingSummaryProvider(
+      const OutputSummary(
+        displaySummary: 'hello world',
+        speechSummary: 'hello world',
+      ),
+    );
+
+    final decision = await policy.decide(
+      previous: previous,
+      current: current,
+      settings: settings,
+      outputSummaryProvider: provider,
+    );
+
+    expect(provider.lastRequest?.cleanedOutput, 'world');
+    expect(provider.lastRequest?.promptInputs, ['继续']);
+    expect(decision.shouldSpeak, isTrue);
+    expect(decision.text, isNot(contains('旧的整任务摘要')));
+    expect(decision.turnId, 'turn-task-1-2');
+    expect(decision.turnIndex, 2);
+  });
+
+  test('auto speech prefers display summary over provider speech summary',
+      () async {
+    final previous = _task(status: TaskStatus.running);
+    final current = previous.copyWith(
+      status: TaskStatus.turnIdle,
+      turns: [
+        _turnWithInput(1, '输出 hello'),
+        _turnWithInput(2, '继续').copyWith(
+          cleanedOutput: 'hello world',
+          rawOutput: 'hello world',
+        ),
+      ],
+    );
+    final provider = _CapturingSummaryProvider(
+      const OutputSummary(
+        displaySummary: '页面展示文本 hello world',
+        speechSummary: '旧语音文本 should not win',
+      ),
+    );
+
+    final decision = await policy.decide(
+      previous: previous,
+      current: current,
+      settings: settings,
+      outputSummaryProvider: provider,
+    );
+
+    expect(decision.text, contains('页面展示文本'));
+    expect(decision.text, isNot(contains('旧语音文本')));
+  });
+
   test('turn idle with prompt echo only speaks state rather than input',
       () async {
     final previous = _task(status: TaskStatus.running);
     final current = previous.copyWith(
       status: TaskStatus.turnIdle,
       summary: '输出 hello world',
-      turns: [_turnWithInput(1, '输出 hello world')],
+      turns: [
+        _turnWithInput(1, '输出 hello world').copyWith(
+          rawOutput: '',
+          cleanedOutput: '',
+        ),
+      ],
     );
 
     final decision = await policy.decide(
@@ -129,10 +240,32 @@ flutter test
     );
 
     expect(decision.shouldSpeak, isTrue);
-    expect(decision.kind, TaskSpeechKind.attention);
+    expect(decision.kind, TaskSpeechKind.approval);
     expect(decision.text, contains('需要你确认一个操作'));
     expect(decision.text, contains('删除临时构建产物'));
     expect(decision.text, isNot(contains('rm -rf')));
+    expect(decision.turnId, isNull);
+    expect(decision.turnIndex, isNull);
+  });
+
+  test('need approval speech can be disabled separately', () async {
+    final previous = _task(status: TaskStatus.running);
+    final current = previous.copyWith(
+      status: TaskStatus.needApproval,
+      approval: const ApprovalRequest(
+        reason: '请确认删除临时文件。',
+        command: 'rm -rf build',
+        risk: 'medium',
+      ),
+    );
+
+    final decision = await policy.decide(
+      previous: previous,
+      current: current,
+      settings: const TaskSpeechSettings(speakApprovalRequests: false),
+    );
+
+    expect(decision.shouldSpeak, isFalse);
   });
 
   test('settings can disable result and attention speech separately', () async {

@@ -64,6 +64,90 @@ hello
     expect(summary.speechSummary, isEmpty);
   });
 
+  test('rule provider drops turn headers and prompt governance echoes',
+      () async {
+    const noisyTurn = OutputSummaryRequest(
+      cleanedOutput: '''
+Do not analyze unrelated architecture.
+- Run only targeted tests.
+- Keep command output short.
+
+Turn 1
+最小改动不要提交Git高风险操作先确认
+
+hello world
+''',
+      status: TaskStatus.turnIdle,
+      taskTitle: '输出hello world在一行里面输出',
+      promptInputs: ['输出hello world在一行里面输出'],
+    );
+
+    final summary =
+        await const RuleBasedOutputSummaryProvider().summarize(noisyTurn);
+
+    expect(summary.displaySummary, 'hello world');
+    expect(summary.speechSummary, 'hello world');
+    expect(summary.displaySummary, isNot(contains('Turn 1')));
+    expect(summary.displaySummary, isNot(contains('最小改动')));
+  });
+
+  test('rule provider strips governance prefix but keeps the actual result',
+      () async {
+    const noisyPrefix = OutputSummaryRequest(
+      cleanedOutput: '最小改动不要提交 Git 高风险操作先确认 HELLO WORLD',
+      status: TaskStatus.turnIdle,
+      taskTitle: '输出hello world在一行里面输出',
+    );
+
+    final summary =
+        await const RuleBasedOutputSummaryProvider().summarize(noisyPrefix);
+
+    expect(summary.displaySummary, 'HELLO WORLD');
+    expect(summary.speechSummary, 'HELLO WORLD');
+    expect(summary.displaySummary, isNot(contains('最小改动')));
+    expect(summary.displaySummary, isNot(contains('不要提交')));
+    expect(summary.displaySummary, isNot(contains('高风险操作先确认')));
+  });
+
+  test('rule provider removes qoder input chrome after the result', () async {
+    const qoderChrome = OutputSummaryRequest(
+      cleanedOutput: '''
+Turn 6
+hello Type your message or @path/to/file Auto Model .ctx █ 10% · ~/workspace/momo
+Shift+Tab to Auto-accept Edits
+AGENTS.md file · 12 skills
+''',
+      status: TaskStatus.turnIdle,
+      taskTitle: '输出hello',
+    );
+
+    final summary =
+        await const RuleBasedOutputSummaryProvider().summarize(qoderChrome);
+
+    expect(summary.displaySummary, 'hello');
+    expect(summary.speechSummary, 'hello');
+    expect(summary.displaySummary,
+        isNot(contains('Type your message or @path/to/file')));
+    expect(summary.displaySummary, isNot(contains('Auto Model')));
+  });
+
+  test('rule provider strips completion handshake eof noise', () async {
+    const handshakeNoise = OutputSummaryRequest(
+      cleanedOutput: '''
+completion: tls handshake eof
+runbook-copilot 是面向工程团队的 RAG 事故排障助手，用于根据告警、服务名、日志和症状检索知识库并生成带引用的排障建议。
+''',
+      status: TaskStatus.turnIdle,
+      taskTitle: '检查输出',
+    );
+
+    final summary =
+        await const RuleBasedOutputSummaryProvider().summarize(handshakeNoise);
+
+    expect(summary.displaySummary, isNot(contains('tls handshake eof')));
+    expect(summary.displaySummary, contains('runbook-copilot'));
+  });
+
   test(
       'rule provider preserves description when animation names contain failed',
       () async {
@@ -172,6 +256,58 @@ Summer 是一个 Codex桌面宠物（pixel-art风格），角色设定为一位�
     expect(summary.displaySummary, isNot(contains('User constraints')));
     expect(summary.displaySummary, isNot(contains('Thinking')));
     expect(summary.displaySummary, isNot(contains('Grep(')));
+  });
+
+  test('rule provider removes meta narration prefixes before results',
+      () async {
+    const metaNarration = OutputSummaryRequest(
+      cleanedOutput: '''
+Let me find relevant test files for interruption testing.
+No direct interruption test files found.
+Q: 你想执行哪个中断测试？
+测试目标 -> 运行 test_hello_world
+执行 test_hello_world.py
+HELLO WORLD
+''',
+      status: TaskStatus.turnIdle,
+      taskTitle: '输出hello world',
+    );
+
+    final summary =
+        await const RuleBasedOutputSummaryProvider().summarize(metaNarration);
+
+    expect(summary.displaySummary, contains('HELLO WORLD'));
+    expect(summary.displaySummary, isNot(contains('Let me find relevant')));
+    expect(summary.displaySummary, isNot(contains('Q:')));
+    expect(summary.displaySummary, isNot(contains('No direct interruption')));
+  });
+
+  test('rule provider removes interactive approval transcript from results',
+      () async {
+    const interactive = OutputSummaryRequest(
+      cleanedOutput: '''
+Tool: Bash
+Run test_hello_world.py with verbose output
+Command: cd /Users/ironion/workspace/runbook-copilot &&
+python -m pytest tests/test_hello_world.py -v 2>&1 | head -30
+Allow this command to run? Redirection detected.
+1. Allow once
+2. Always allow this exact command for future sessions
+3. Reject and type something
+4. No
+HELLO WORLD
+''',
+      status: TaskStatus.turnIdle,
+      taskTitle: '输出 HELLO WORLD',
+    );
+
+    final summary =
+        await const RuleBasedOutputSummaryProvider().summarize(interactive);
+
+    expect(summary.displaySummary, 'HELLO WORLD');
+    expect(summary.displaySummary, isNot(contains('Allow this command')));
+    expect(summary.displaySummary, isNot(contains('Command:')));
+    expect(summary.displaySummary, isNot(contains('Allow once')));
   });
 
   test('rule provider excludes terminal chrome from visible result', () async {

@@ -1,10 +1,12 @@
+import 'agent_runtime_config.dart';
+
 class RuntimePolicy {
   const RuntimePolicy({
-    this.idleThreshold = const Duration(seconds: 20),
-    this.reconnectThreshold = const Duration(seconds: 60),
-    this.maxRuntime = const Duration(minutes: 20),
-    this.monitorCaptureLines = 80,
-    this.finalCaptureLines = 200,
+    this.idleThreshold = AgentRuntimeConfig.turnIdleThreshold,
+    this.reconnectThreshold = AgentRuntimeConfig.reconnectThreshold,
+    this.maxRuntime = AgentRuntimeConfig.maxRuntime,
+    this.monitorCaptureLines = AgentRuntimeConfig.monitorCaptureLines,
+    this.finalCaptureLines = AgentRuntimeConfig.finalCaptureLines,
   })  : assert(monitorCaptureLines > 0),
         assert(finalCaptureLines > 0);
 

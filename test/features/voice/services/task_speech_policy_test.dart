@@ -196,6 +196,38 @@ runbook-copilot 是面向工程团队的 RAG 事故排障助手，用于根据�
     expect(decision.text, isNot(contains('旧语音文本')));
   });
 
+  test('auto speech reads all displayed card text without compacting',
+      () async {
+    final previous = _task(status: TaskStatus.running);
+    final current = previous.copyWith(
+      status: TaskStatus.turnIdle,
+      turns: [
+        _turnWithInput(1, '生成长结果').copyWith(
+          cleanedOutput: 'long result',
+          rawOutput: 'long result',
+        ),
+      ],
+    );
+    final provider = _CapturingSummaryProvider(
+      const OutputSummary(
+        displaySummary:
+            '第一段说明当前任务已经完成并保留了关键背景。第二段说明验证步骤已经执行并且结果正常。第三段说明后续建议是观察真实设备上的语音播报完整性。',
+        speechSummary: '短摘要不应该被使用',
+      ),
+    );
+
+    final decision = await policy.decide(
+      previous: previous,
+      current: current,
+      settings: settings,
+      outputSummaryProvider: provider,
+    );
+
+    expect(decision.text, contains('第一段说明当前任务已经完成'));
+    expect(decision.text, contains('第三段说明后续建议是观察真实设备上的语音播报完整性'));
+    expect(decision.text, isNot(contains('短摘要不应该被使用')));
+  });
+
   test('turn idle with prompt echo only speaks state rather than input',
       () async {
     final previous = _task(status: TaskStatus.running);

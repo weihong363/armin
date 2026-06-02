@@ -564,6 +564,36 @@ world
     expect(voice.spokenSummaries.single, contains('本轮输出已暂停'));
   });
 
+  test('streamed output settles status logs and speech together', () async {
+    final task = _task(status: TaskStatus.running);
+    final store = _TaskStore(task);
+    final voice = _CapturingVoiceService();
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: _StreamingThenIdleAgent(),
+      voiceService: voice,
+    );
+    await state.load();
+
+    state.startTaskExecution(
+      task,
+      const AgentExecutionRequest(prompt: 'Task'),
+    );
+    await Future<void>.delayed(Duration.zero);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(store.task!.status, TaskStatus.turnIdle);
+    expect(store.task!.result?.summary, 'HELLO WORLD');
+    expect(store.task!.executionLogs.map((log) => log.rawOutput),
+        contains('HELLO WORLD'));
+    expect(
+      store.task!.metricEvents.map((event) => event.eventType),
+      containsAllInOrder(['log_update', 'turn_idle']),
+    );
+    expect(voice.spokenSummaries, hasLength(1));
+    expect(voice.spokenSummaries.single, contains('HELLO WORLD'));
+  });
+
   test('approval request is spoken when attention speech is enabled', () async {
     final task = _task(status: TaskStatus.running);
     final store = _TaskStore(task);
@@ -1061,6 +1091,22 @@ class _RepeatedTurnIdleAgent extends _ControlAgent {
       rawOutput: 'hello',
       cleanedOutput: 'hello',
       turnIdle: true,
+    );
+  }
+}
+
+class _StreamingThenIdleAgent extends _ControlAgent {
+  @override
+  Stream<AgentExecutionUpdate> execute(AgentExecutionRequest request) async* {
+    yield const AgentExecutionUpdate(
+      rawOutput: 'HELLO WORLD',
+      cleanedOutput: 'HELLO WORLD',
+    );
+    yield const AgentExecutionUpdate(
+      rawOutput: '',
+      cleanedOutput: 'HELLO WORLD',
+      turnIdle: true,
+      done: true,
     );
   }
 }

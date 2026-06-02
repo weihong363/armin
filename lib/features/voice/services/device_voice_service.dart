@@ -135,6 +135,7 @@ class DeviceVoiceService implements VoiceService {
         .map((part) => part.trim())
         .where((part) => part.isNotEmpty)
         .expand(_splitMixedLanguageSegment)
+        .expand(_splitLongSpeechSegment)
         .toList(growable: false);
   }
 
@@ -185,6 +186,11 @@ class DeviceVoiceService implements VoiceService {
   }
 
   @visibleForTesting
+  static Duration speakTimeoutForTest(String text) {
+    return _speakTimeout(text);
+  }
+
+  @visibleForTesting
   static Map<String, String>? preferredVoiceForTest(
     List<Map<String, String>> voices,
     String languageCode,
@@ -205,11 +211,10 @@ class DeviceVoiceService implements VoiceService {
   }
 
   static String _applyPronunciationHints(String text) {
-    return text
-        .replaceAllMapped(
-          RegExp(r'(?<![A-Za-z0-9])一行(?![A-Za-z0-9])'),
-          (match) => '${match.group(0)}（háng）',
-        );
+    return text.replaceAllMapped(
+      RegExp(r'(?<![A-Za-z0-9])一行(?![A-Za-z0-9])'),
+      (match) => '${match.group(0)}（háng）',
+    );
   }
 
   static String _normalizeSpeechSpacing(String text) {
@@ -266,12 +271,14 @@ class DeviceVoiceService implements VoiceService {
           ' ',
         )
         .replaceAll(
-          RegExp(r'\bType your message or @path/to/file\b.*', caseSensitive: false),
+          RegExp(r'\bType your message or @path/to/file\b.*',
+              caseSensitive: false),
           ' ',
         )
         .replaceAll(RegExp(r'\bAuto Model\b.*', caseSensitive: false), ' ')
         .replaceAll(
-          RegExp(r'\bShift\+Tab to Auto-accept Edits\b.*', caseSensitive: false),
+          RegExp(r'\bShift\+Tab to Auto-accept Edits\b.*',
+              caseSensitive: false),
           ' ',
         )
         .replaceAll(RegExp(r'\bAGENTS\.md file\b.*', caseSensitive: false), ' ')
@@ -453,6 +460,75 @@ class DeviceVoiceService implements VoiceService {
     return merged;
   }
 
+  static Iterable<SpeechSummarySegment> _splitLongSpeechSegment(
+    SpeechSummarySegment segment,
+  ) {
+    final maxLength = segment.languageCode == 'en-US' ? 180 : 90;
+    if (segment.text.length <= maxLength) {
+      return [segment];
+    }
+    return _splitReadableChunks(segment.text, maxLength)
+        .map(
+          (text) => SpeechSummarySegment(
+            text: text,
+            languageCode: segment.languageCode,
+          ),
+        )
+        .where((part) => part.text.isNotEmpty);
+  }
+
+  static List<String> _splitReadableChunks(String text, int maxLength) {
+    final chunks = <String>[];
+    final buffer = StringBuffer();
+    final parts = RegExp(r'[^。！？.!?；;，,]+[。！？.!?；;，,]?')
+        .allMatches(text)
+        .map((match) => match.group(0)!.trim())
+        .where((part) => part.isNotEmpty);
+    for (final part in parts) {
+      if (part.length > maxLength) {
+        _flushSpeechChunk(buffer, chunks);
+        chunks.addAll(_splitOversizedSpeechPart(part, maxLength));
+        continue;
+      }
+      final candidate = buffer.isEmpty ? part : '${buffer.toString()} $part';
+      if (candidate.length > maxLength) {
+        _flushSpeechChunk(buffer, chunks);
+        buffer.write(part);
+      } else {
+        buffer
+          ..clear()
+          ..write(candidate);
+      }
+    }
+    _flushSpeechChunk(buffer, chunks);
+    return chunks;
+  }
+
+  static List<String> _splitOversizedSpeechPart(String text, int maxLength) {
+    final chunks = <String>[];
+    var remaining = text.trim();
+    while (remaining.length > maxLength) {
+      var splitAt = remaining.lastIndexOf(' ', maxLength);
+      if (splitAt < maxLength ~/ 2) {
+        splitAt = maxLength;
+      }
+      chunks.add(remaining.substring(0, splitAt).trim());
+      remaining = remaining.substring(splitAt).trim();
+    }
+    if (remaining.isNotEmpty) {
+      chunks.add(remaining);
+    }
+    return chunks;
+  }
+
+  static void _flushSpeechChunk(StringBuffer buffer, List<String> chunks) {
+    final text = buffer.toString().trim();
+    if (text.isNotEmpty) {
+      chunks.add(text);
+    }
+    buffer.clear();
+  }
+
   static String _normalizeEnglishForSpeech(String text) {
     return text
         .replaceAll('_', ' ')
@@ -491,8 +567,10 @@ class DeviceVoiceService implements VoiceService {
   }
 
   static Duration _speakTimeout(String text) {
-    final seconds = (text.length / 6).ceil().clamp(3, 18);
-    return Duration(seconds: seconds);
+    final cjkCount = RegExp(r'[\u4e00-\u9fff]').allMatches(text).length;
+    final otherCount = text.length - cjkCount;
+    final seconds = (cjkCount / 2.5 + otherCount / 8).ceil() + 3;
+    return Duration(seconds: seconds.clamp(8, 90));
   }
 
   static String _joinSpeechLines(List<String> lines) {
@@ -570,8 +648,7 @@ class DeviceVoiceService implements VoiceService {
     final styled = profile.forStyle(style);
     return switch (languageCode.toLowerCase().replaceAll('_', '-')) {
       'en-us' => SpeechVoiceProfile(
-          speechRate:
-              ((styled.speechRate - 0.02).clamp(0.42, 0.95)).toDouble(),
+          speechRate: ((styled.speechRate - 0.02).clamp(0.42, 0.95)).toDouble(),
           pitch: ((styled.pitch - 0.01).clamp(0.8, 1.3)).toDouble(),
         ),
       _ => styled,

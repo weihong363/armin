@@ -117,7 +117,7 @@ void main() {
     expect(command, contains('send-keys -t'));
     expect(command, contains('Enter'));
     expect(command, contains('stable_count'));
-    expect(command, contains('stable_count" -ge 20'));
+    expect(command, contains('stable_count" -ge 4'));
     expect(command, contains('Allow execution of|Allow command execution'));
     expect(command, contains("'\"'\"'/usr/bin/tmux'\"'\"' capture-pane"));
     expect(command, contains('-S -80'));
@@ -266,9 +266,9 @@ void main() {
 
     expect(command, contains('has-session'));
     expect(command, contains('capture-pane'));
-    expect(command, contains('sleep 1'));
+    expect(command, contains('sleep 0.5'));
     expect(command, contains('stable_count'));
-    expect(command, contains('stable_count" -ge 20'));
+    expect(command, contains('stable_count" -ge 4'));
     expect(command, isNot(contains('initial_markers')));
     expect(command, isNot(contains('marker_count')));
     expect(command, contains('Armin could not capture tmux pane'));

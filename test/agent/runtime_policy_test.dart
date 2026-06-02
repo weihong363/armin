@@ -1,7 +1,22 @@
+import 'package:armin/features/agent/services/agent_runtime_config.dart';
 import 'package:armin/features/agent/services/runtime_policy.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('runtime policy defaults use shared runtime config', () {
+    const policy = RuntimePolicy();
+
+    expect(policy.idleThreshold, AgentRuntimeConfig.turnIdleThreshold);
+    expect(policy.reconnectThreshold, AgentRuntimeConfig.reconnectThreshold);
+    expect(policy.maxRuntime, AgentRuntimeConfig.maxRuntime);
+    expect(policy.monitorCaptureLines, AgentRuntimeConfig.monitorCaptureLines);
+    expect(policy.finalCaptureLines, AgentRuntimeConfig.finalCaptureLines);
+    expect(
+      policy.stablePollCount(AgentRuntimeConfig.pollInterval),
+      4,
+    );
+  });
+
   test('runtime policy converts durations to polling bounds', () {
     const policy = RuntimePolicy(
       idleThreshold: Duration(milliseconds: 2500),

@@ -1,7 +1,15 @@
+import 'package:armin/features/agent/services/agent_runtime_config.dart';
 import 'package:armin/features/agent/services/native_output_observer.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('default observer idle threshold uses shared runtime config', () {
+    final observer = NativeOutputObserver();
+
+    expect(observer.idleThreshold, AgentRuntimeConfig.turnIdleThreshold);
+    expect(observer.reconnectThreshold, AgentRuntimeConfig.reconnectThreshold);
+  });
+
   test('enters turn idle after semantic output is stable', () {
     final observer = NativeOutputObserver(
       idleThreshold: const Duration(seconds: 2),

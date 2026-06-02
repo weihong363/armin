@@ -156,7 +156,8 @@ class TaskSpeechPolicy {
       return '';
     }
     final current = task.turns.last;
-    final source = _turnOutputSlicer.outputForTurn(task.turns, task.turns.length - 1);
+    final source =
+        _turnOutputSlicer.outputForTurn(task.turns, task.turns.length - 1);
     if (source.trim().isEmpty) {
       return '';
     }
@@ -175,9 +176,11 @@ class TaskSpeechPolicy {
   String _speechTextFromDisplaySummary(OutputSummary summary) {
     final display = summary.displaySummary.trim();
     if (display.isNotEmpty) {
-      return DeviceVoiceService.cleanSpeechSummary(display);
+      // TODO: Replace full-text result speech with a dedicated summarizer
+      // only after card-copy quality is stable enough to avoid omissions.
+      return DeviceVoiceService.cleanSpeechText(display);
     }
-    return DeviceVoiceService.cleanSpeechSummary(summary.speechSummary);
+    return DeviceVoiceService.cleanSpeechText(summary.speechSummary);
   }
 
   String _summarySource(TaskSession task) {

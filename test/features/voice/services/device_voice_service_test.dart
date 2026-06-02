@@ -175,6 +175,28 @@ runbook-copilot 是面向工程团队的 RAG 事故排障助手，用于根据�
     expect(cleaned, contains('可以继续查看引用和日志'));
   });
 
+  test('long speech text is chunked before sending to TTS', () {
+    final longResult = List.filled(
+      4,
+      '本轮结果会展示完整卡片内容用于朗读，不能因为文本较长就提前结束或丢失后半段内容',
+    ).join();
+    final segments = DeviceVoiceService.buildSpeechSegmentsForTest(longResult);
+
+    expect(segments.length, greaterThan(1));
+    expect(segments.every((segment) => segment.text.length <= 90), isTrue);
+    expect(segments.map((segment) => segment.text).join(), contains('后半段内容'));
+  });
+
+  test('speech timeout scales for full result card text', () {
+    final longResult = List.filled(
+      4,
+      '本轮结果会展示完整卡片内容用于朗读，不能因为文本较长就提前结束或丢失后半段内容',
+    ).join();
+    final timeout = DeviceVoiceService.speakTimeoutForTest(longResult);
+
+    expect(timeout, greaterThan(const Duration(seconds: 18)));
+  });
+
   test('speech summary keeps result text mixed with tool traces', () {
     final cleaned = DeviceVoiceService.cleanSpeechSummaryForTest('''
 > ■ Glob('.hatch-pet-runs/taro/**/*.json') ■ Read(/Users/ironion/workspace/momo/output/hatch-pet/taro/pet_request.json) ■ TARO 是一只小型疲惫兔子开发者桌面宠物，灰奶油色调像素风格，9 行精灵图。

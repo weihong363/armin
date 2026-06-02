@@ -927,7 +927,7 @@ class _ResultPanelState extends State<_ResultPanel> {
           _TurnOutputSummary(
             title: 'Turn ${turn.turnIndex}',
             text: text,
-            speechText: DeviceVoiceService.cleanSpeechSummary(text),
+            speechText: DeviceVoiceService.cleanSpeechText(text),
           ),
         );
       }
@@ -954,7 +954,7 @@ class _ResultPanelState extends State<_ResultPanel> {
             _TurnOutputSummary(
               title: '输出结果',
               text: text,
-              speechText: DeviceVoiceService.cleanSpeechSummary(text),
+              speechText: DeviceVoiceService.cleanSpeechText(text),
             ),
           ];
   }
@@ -1711,7 +1711,9 @@ class _RuntimeControlPanelState extends State<_RuntimeControlPanel> {
       );
       final latestText = summary.displaySummary.trim();
       if (latestText.isNotEmpty) {
-        return DeviceVoiceService.cleanSpeechSummary(latestText);
+        // TODO: Replace full-text result speech with a dedicated summarizer
+        // only after card-copy quality is stable enough to avoid omissions.
+        return DeviceVoiceService.cleanSpeechText(latestText);
       }
     }
 
@@ -1730,7 +1732,7 @@ class _RuntimeControlPanelState extends State<_RuntimeControlPanel> {
     final legacyText = legacySummary.displaySummary.trim();
     return legacyText.isEmpty
         ? ''
-        : DeviceVoiceService.cleanSpeechSummary(legacyText);
+        : DeviceVoiceService.cleanSpeechText(legacyText);
   }
 
   String _legacyOutputSource(TaskSession task) {

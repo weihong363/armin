@@ -9,6 +9,7 @@ import '../../tasks/services/agent_instruction_discovery.dart';
 import '../parsers/approval_parser.dart';
 import '../parsers/terminal_prompt_parser.dart';
 import 'agent_session_service.dart';
+import 'agent_runtime_config.dart';
 import 'codex_output_cleaner.dart';
 import 'native_output_observer.dart';
 import 'runtime_policy.dart';
@@ -17,7 +18,7 @@ class SSHAgentSessionService implements AgentSessionService {
   SSHAgentSessionService({
     ApprovalParser? approvalParser,
     TerminalPromptParser terminalPromptParser = const TerminalPromptParser(),
-    Duration pollInterval = const Duration(seconds: 1),
+    Duration pollInterval = AgentRuntimeConfig.pollInterval,
     RuntimePolicy runtimePolicy = const RuntimePolicy(),
     CodexOutputCleaner cleaner = const CodexOutputCleaner(),
   })  : _approvalParser = approvalParser ?? ApprovalParser(),
@@ -127,7 +128,7 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
     try {
       final command = _buildExecutionScript(request);
       final session = await client.execute(command);
-      final output = StringBuffer();
+      final output = _ExecutionOutputState();
       final observer = NativeOutputObserver(
         cleaner: _cleaner,
         idleThreshold: _runtimePolicy.idleThreshold,
@@ -162,12 +163,13 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
           if (controller.isClosed) {
             return;
           }
-          final fullOutput = output.toString();
-          if (_isMissingTmuxSession(fullOutput)) {
+          final streamOutput = output.streamText;
+          final observedOutput = output.observedText;
+          if (_isMissingTmuxSession(streamOutput)) {
             controller.add(
               AgentExecutionUpdate(
                 rawOutput: '',
-                cleanedOutput: _cleaner.clean(fullOutput),
+                cleanedOutput: _cleaner.clean(streamOutput),
                 observerState: NativeOutputObserverState.runtimeLost,
                 runtimeLost: true,
                 done: true,
@@ -176,11 +178,11 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
             await controller.close();
             return;
           }
-          if (_isRuntimeLimitReached(fullOutput)) {
+          if (_isRuntimeLimitReached(streamOutput)) {
             controller.add(
               AgentExecutionUpdate(
                 rawOutput: '',
-                cleanedOutput: _cleaner.clean(fullOutput),
+                cleanedOutput: _cleaner.clean(streamOutput),
                 observerState: NativeOutputObserverState.runtimeLost,
                 runtimeLost: true,
                 done: true,
@@ -189,12 +191,12 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
             await controller.close();
             return;
           }
-          final approval = _approvalParser.parse(fullOutput);
+          final approval = _approvalParser.parse(observedOutput);
           if (approval != null) {
             controller.add(
               AgentExecutionUpdate(
                 rawOutput: '',
-                cleanedOutput: _cleaner.clean(fullOutput),
+                cleanedOutput: _cleaner.clean(observedOutput),
                 observerState: NativeOutputObserverState.needAttention,
                 needsAttention: true,
                 approval: approval,
@@ -202,8 +204,8 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
               ),
             );
           } else {
-            final snapshot = observer.observeSettled(fullOutput);
-            final terminalPrompt = _terminalPromptParser.parse(fullOutput);
+            final snapshot = observer.observeSettled(observedOutput);
+            final terminalPrompt = _terminalPromptParser.parse(observedOutput);
             controller.add(
               AgentExecutionUpdate(
                 rawOutput: '',
@@ -232,13 +234,15 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
 
   AgentExecutionUpdate _buildStreamingUpdate(
     String chunk,
-    StringBuffer output,
+    _ExecutionOutputState output,
     NativeOutputObserver observer,
   ) {
-    final snapshot = observer.observe(output.toString());
-    final terminalPrompt = _terminalPromptParser.parse(output.toString());
+    final rawOutput = output.rawOutputForLatestUpdate(fallback: chunk);
+    final observedOutput = output.observedText;
+    final snapshot = observer.observe(observedOutput);
+    final terminalPrompt = _terminalPromptParser.parse(observedOutput);
     return AgentExecutionUpdate(
-      rawOutput: chunk,
+      rawOutput: rawOutput,
       cleanedOutput: snapshot.cleanedOutput,
       observerState: snapshot.state,
       runtimeLost: snapshot.runtimeLost,
@@ -515,28 +519,55 @@ if [ "\$i" -ge 20 ]; then
   echo "Armin timed out waiting for ${profile.label} TUI to become ready."
   exit 1
 fi
+''';
+    final promptSubmit = request.attachOnly
+        ? ''
+        : '''
 printf %s $prompt | $tmux load-buffer -
 $tmux paste-buffer -t $session
 sleep 0.2
 $tmux send-keys -t $session Enter
-sleep 2
 ''';
     final script = '''
 set -eu
 $sessionSetup
+emit_armin_snapshot() {
+  printf "\\n__ARMIN_SNAPSHOT_BEGIN__\\n"
+  printf "%s\\n" "\$pane_output"
+  printf "__ARMIN_SNAPSHOT_END__\\n"
+}
+pipe_dir="\$(mktemp -d "\${TMPDIR:-/tmp}/armin-pipe.XXXXXX")"
+pipe_file="\$pipe_dir/pane.out"
+mkfifo "\$pipe_file"
+pane_id="\$($tmux display-message -p -t $session '#{pane_id}')"
+cleanup_armin_pipe() {
+  $tmux pipe-pane -t "\$pane_id" 2>/dev/null || true
+  rm -rf "\$pipe_dir"
+}
+trap cleanup_armin_pipe EXIT INT TERM
+cat "\$pipe_file" &
+pipe_cat_pid=\$!
+$tmux pipe-pane -t "\$pane_id" 2>/dev/null || true
+$tmux pipe-pane -t "\$pane_id" "cat > \\"\$pipe_file\\""
 initial_output="\$($tmux capture-pane -p -t $session -S $monitorStart 2>/dev/null || true)"
 initial_hash="\$(printf "%s" "\$initial_output" | shasum | awk "{print \\\$1}")"
 last_hash="\$initial_hash"
+last_emitted_hash="\$initial_hash"
+$promptSubmit
 stable_count=0
 changed_after_start=0
 i=0
 while [ "\$i" -lt $maxPolls ]; do
+  if ! kill -0 "\$pipe_cat_pid" 2>/dev/null; then
+    break
+  fi
   pane_output="\$($tmux capture-pane -p -t $session -S $monitorStart 2>/dev/null || true)"
   if [ -z "\$pane_output" ] && ! $tmux has-session -t $session 2>/dev/null; then
     echo "Armin could not capture tmux pane because session ${_shellQuote(request.tmuxSessionName)} is not running."
     break
   fi
   current_hash="\$(printf "%s" "\$pane_output" | shasum | awk "{print \\\$1}")"
+  snapshot_emitted=0
   if [ "\$current_hash" != "\$initial_hash" ]; then
     changed_after_start=1
   fi
@@ -546,30 +577,45 @@ while [ "\$i" -lt $maxPolls ]; do
     stable_count=0
     last_hash="\$current_hash"
   fi
+  if [ "\$current_hash" != "\$last_emitted_hash" ]; then
+    emit_armin_snapshot
+    last_emitted_hash="\$current_hash"
+    snapshot_emitted=1
+  fi
   agent_exited=0
   if printf "%s" "\$pane_output" | grep -q "Armin ${profile.label} exited with status"; then
     agent_exited=1
   fi
   if [ "\$agent_exited" -eq 1 ]; then
-    printf "%s\\n" "\$pane_output"
+    if [ "\$snapshot_emitted" -eq 0 ]; then
+      emit_armin_snapshot
+    fi
     break
   fi
-  if printf "%s" "\$pane_output" | grep -E -q "Allow execution of|Allow command execution|Would you like to run"; then
-    printf "%s\\n" "\$pane_output"
+  if printf "%s" "\$pane_output" | grep -E -q "Allow execution of|Allow command execution|Would you like to run|Asking User|Enter select|Type Something"; then
+    if [ "\$snapshot_emitted" -eq 0 ]; then
+      emit_armin_snapshot
+    fi
     break
   fi
   if [ "\$changed_after_start" -eq 1 ] && [ "\$stable_count" -ge $stablePolls ]; then
-    printf "%s\\n" "\$pane_output"
+    if [ "\$snapshot_emitted" -eq 0 ]; then
+      emit_armin_snapshot
+    fi
     break
   fi
   if [ "\$i" -eq ${maxPolls - 1} ]; then
-    printf "%s\\n" "\$pane_output"
+    if [ "\$snapshot_emitted" -eq 0 ]; then
+      emit_armin_snapshot
+    fi
     echo "Armin runtime limit reached while session ${_shellQuote(request.tmuxSessionName)} remains active."
     break
   fi
   i=\$((i + 1))
   sleep ${delayMs / 1000}
 done
+$tmux pipe-pane -t "\$pane_id" 2>/dev/null || true
+wait "\$pipe_cat_pid" 2>/dev/null || true
 ''';
     return _wrapRemoteCommand(
       script,
@@ -825,6 +871,57 @@ fi
 
   String _shellQuote(String value) {
     return "'${value.replaceAll("'", "'\"'\"'")}'";
+  }
+}
+
+class _ExecutionOutputState {
+  static const _snapshotBegin = '__ARMIN_SNAPSHOT_BEGIN__';
+  static const _snapshotEnd = '__ARMIN_SNAPSHOT_END__';
+
+  final StringBuffer _stream = StringBuffer();
+  String _latestSnapshot = '';
+  String _lastRawOutput = '';
+
+  void write(String text) {
+    _stream.write(text);
+    final snapshot = _extractLatestSnapshot(_stream.toString());
+    if (snapshot != null) {
+      _latestSnapshot = snapshot;
+    }
+  }
+
+  String get streamText => _stream.toString();
+
+  String get observedText {
+    return _latestSnapshot.trim().isEmpty ? streamText : _latestSnapshot;
+  }
+
+  String rawOutputForLatestUpdate({required String fallback}) {
+    if (_latestSnapshot.trim().isEmpty) {
+      return fallback;
+    }
+    if (_latestSnapshot == _lastRawOutput) {
+      return '';
+    }
+    final previous = _lastRawOutput;
+    _lastRawOutput = _latestSnapshot;
+    if (previous.isNotEmpty && _latestSnapshot.startsWith(previous)) {
+      return _latestSnapshot.substring(previous.length);
+    }
+    return _latestSnapshot;
+  }
+
+  String? _extractLatestSnapshot(String text) {
+    final end = text.lastIndexOf(_snapshotEnd);
+    if (end < 0) {
+      return null;
+    }
+    final begin = text.lastIndexOf(_snapshotBegin, end);
+    if (begin < 0) {
+      return null;
+    }
+    final start = begin + _snapshotBegin.length;
+    return text.substring(start, end).trim();
   }
 }
 

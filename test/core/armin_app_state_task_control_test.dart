@@ -149,6 +149,23 @@ void main() {
     expect(store.task!.shortSummary, '用户手动标记为失败');
   });
 
+  test('saveTask updates in-memory task without reloading all tasks', () async {
+    final task = _task(status: TaskStatus.running);
+    final store = _TaskStore(task);
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: _ControlAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+    final loadCountAfterInitialLoad = store.loadTasksCount;
+
+    await state.saveTask(task.copyWith(shortSummary: 'stream update'));
+
+    expect(store.loadTasksCount, loadCountAfterInitialLoad);
+    expect(state.tasks.single.shortSummary, 'stream update');
+  });
+
   test('deleteTask removes task from store', () async {
     final task = _task(status: TaskStatus.userCompleted);
     final store = _TaskStore(task);
@@ -885,6 +902,7 @@ class _TaskStore implements TaskHistoryStore {
   TaskSession? task;
   String? deletedTaskId;
   final List<HostConfig>? _hosts;
+  int loadTasksCount = 0;
 
   @override
   Future<List<HostConfig>> loadHosts() async {
@@ -892,7 +910,10 @@ class _TaskStore implements TaskHistoryStore {
   }
 
   @override
-  Future<List<TaskSession>> loadTasks() async => [if (task != null) task!];
+  Future<List<TaskSession>> loadTasks() async {
+    loadTasksCount++;
+    return [if (task != null) task!];
+  }
 
   @override
   Future<void> saveHost(HostConfig host) async {}

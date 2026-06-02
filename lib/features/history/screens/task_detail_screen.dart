@@ -90,6 +90,7 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
     }
 
     return Scaffold(
+      resizeToAvoidBottomInset: false,
       appBar: AppBar(
         title: const Text('任务详情'),
         actions: [
@@ -131,58 +132,51 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
           ),
         ],
       ),
-      body: AnimatedPadding(
-        duration: const Duration(milliseconds: 180),
-        curve: Curves.easeOutCubic,
-        padding: EdgeInsets.only(
-          bottom: MediaQuery.viewInsetsOf(context).bottom,
-        ),
-        child: SafeArea(
-          top: false,
-          child: NestedScrollView(
-            headerSliverBuilder: (context, innerBoxIsScrolled) => [
-              SliverPadding(
-                padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
-                sliver: SliverToBoxAdapter(child: _SummaryBanner(task: task)),
-              ),
-              SliverPadding(
-                padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
-                sliver: SliverToBoxAdapter(
-                  child: _RuntimeControlPanel(task: task),
-                ),
-              ),
-              const SliverToBoxAdapter(child: SizedBox(height: 8)),
-              SliverPersistentHeader(
-                pinned: true,
-                delegate: _TabBarHeaderDelegate(
-                  TabBar(
-                    controller: _tabController,
-                    isScrollable: true,
-                    tabAlignment: TabAlignment.start,
-                    labelColor: ArminTheme.ink,
-                    indicatorColor: ArminTheme.primary,
-                    tabs: const [
-                      Tab(text: '时间线'),
-                      Tab(text: '结果'),
-                      Tab(text: '日志'),
-                      Tab(text: '指标'),
-                    ],
-                  ),
-                ),
-              ),
-            ],
-            body: TabBarView(
-              controller: _tabController,
-              children: [
-                _TimelinePanel(task: task),
-                _ResultPanel(
-                  task: task,
-                  revealLatestTurnToken: _latestTurnRevealToken,
-                ),
-                _LogPanel(task: task),
-                _MetricsPanel(task: task),
-              ],
+      body: SafeArea(
+        top: false,
+        child: NestedScrollView(
+          headerSliverBuilder: (context, innerBoxIsScrolled) => [
+            SliverPadding(
+              padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
+              sliver: SliverToBoxAdapter(child: _SummaryBanner(task: task)),
             ),
+            SliverPadding(
+              padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
+              sliver: SliverToBoxAdapter(
+                child: _RuntimeControlPanel(task: task),
+              ),
+            ),
+            const SliverToBoxAdapter(child: SizedBox(height: 8)),
+            SliverPersistentHeader(
+              pinned: true,
+              delegate: _TabBarHeaderDelegate(
+                TabBar(
+                  controller: _tabController,
+                  isScrollable: true,
+                  tabAlignment: TabAlignment.start,
+                  labelColor: ArminTheme.ink,
+                  indicatorColor: ArminTheme.primary,
+                  tabs: const [
+                    Tab(text: '时间线'),
+                    Tab(text: '结果'),
+                    Tab(text: '日志'),
+                    Tab(text: '指标'),
+                  ],
+                ),
+              ),
+            ),
+          ],
+          body: TabBarView(
+            controller: _tabController,
+            children: [
+              _TimelinePanel(task: task),
+              _ResultPanel(
+                task: task,
+                revealLatestTurnToken: _latestTurnRevealToken,
+              ),
+              _LogPanel(task: task),
+              _MetricsPanel(task: task),
+            ],
           ),
         ),
       ),
@@ -671,8 +665,6 @@ class _TimelinePanel extends StatelessWidget {
 class _TurnSummaryList extends StatelessWidget {
   const _TurnSummaryList({required this.task});
 
-  static const _turnOutputSlicer = TurnOutputSlicer();
-
   final TaskSession task;
 
   @override
@@ -689,10 +681,8 @@ class _TurnSummaryList extends StatelessWidget {
             padding: const EdgeInsets.only(bottom: 12),
             child: _TurnSummaryRow(
               turn: indexedTurn.turn,
-              fullOutput: _turnOutputSlicer.rawOutputForTurn(
-                task.turns,
-                indexedTurn.index,
-              ),
+              turnIndex: indexedTurn.index,
+              turns: task.turns,
             ),
           ),
       ],
@@ -701,10 +691,15 @@ class _TurnSummaryList extends StatelessWidget {
 }
 
 class _TurnSummaryRow extends StatelessWidget {
-  const _TurnSummaryRow({required this.turn, required this.fullOutput});
+  const _TurnSummaryRow({
+    required this.turn,
+    required this.turnIndex,
+    required this.turns,
+  });
 
   final NativeOutputTurn turn;
-  final String fullOutput;
+  final int turnIndex;
+  final List<NativeOutputTurn> turns;
 
   @override
   Widget build(BuildContext context) {
@@ -737,24 +732,81 @@ class _TurnSummaryRow extends StatelessWidget {
           overflow: TextOverflow.ellipsis,
           style: Theme.of(context).textTheme.bodySmall,
         ),
-        if (fullOutput.isNotEmpty) ...[
+        if (turn.rawOutput.isNotEmpty || turn.cleanedOutput.isNotEmpty) ...[
           const SizedBox(height: 6),
-          ExpansionTile(
-            tilePadding: EdgeInsets.zero,
-            childrenPadding: const EdgeInsets.only(top: 4),
-            title: const Text('展开完整输出'),
-            children: [
-              Align(
-                alignment: Alignment.centerLeft,
-                child: SelectableText(
-                  fullOutput,
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
-              ),
-            ],
+          _LazyTurnOutputExpansion(
+            key: ValueKey(
+              '${turn.id}:${turn.lastOutputAt.microsecondsSinceEpoch}:'
+              '${turn.rawOutput.length}:${turn.cleanedOutput.length}',
+            ),
+            turns: turns,
+            turnIndex: turnIndex,
           ),
         ],
       ],
+    );
+  }
+}
+
+class _LazyTurnOutputExpansion extends StatefulWidget {
+  const _LazyTurnOutputExpansion({
+    required this.turns,
+    required this.turnIndex,
+    super.key,
+  });
+
+  final List<NativeOutputTurn> turns;
+  final int turnIndex;
+
+  @override
+  State<_LazyTurnOutputExpansion> createState() =>
+      _LazyTurnOutputExpansionState();
+}
+
+class _LazyTurnOutputExpansionState extends State<_LazyTurnOutputExpansion> {
+  static const _turnOutputSlicer = TurnOutputSlicer();
+
+  bool _expanded = false;
+  String? _fullOutput;
+
+  @override
+  void didUpdateWidget(covariant _LazyTurnOutputExpansion oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.turns != widget.turns ||
+        oldWidget.turnIndex != widget.turnIndex) {
+      _fullOutput = _expanded ? _buildFullOutput() : null;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ExpansionTile(
+      tilePadding: EdgeInsets.zero,
+      childrenPadding: const EdgeInsets.only(top: 4),
+      title: const Text('展开完整输出'),
+      onExpansionChanged: (expanded) {
+        setState(() {
+          _expanded = expanded;
+          _fullOutput = expanded ? _buildFullOutput() : null;
+        });
+      },
+      children: [
+        if (_expanded)
+          Align(
+            alignment: Alignment.centerLeft,
+            child: SelectableText(
+              _fallback(_fullOutput ?? '', '无'),
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ),
+      ],
+    );
+  }
+
+  String _buildFullOutput() {
+    return _turnOutputSlicer.rawOutputForTurn(
+      widget.turns,
+      widget.turnIndex,
     );
   }
 }
@@ -823,7 +875,7 @@ class _ResultPanel extends StatefulWidget {
 class _ResultPanelState extends State<_ResultPanel> {
   static const _turnOutputSlicer = TurnOutputSlicer();
 
-  final ScrollController _scrollController = ScrollController();
+  final GlobalKey _topAnchorKey = GlobalKey();
   Future<List<_TurnOutputSummary>>? _summariesFuture;
   int _handledRevealToken = 0;
 
@@ -850,20 +902,14 @@ class _ResultPanelState extends State<_ResultPanel> {
   }
 
   @override
-  void dispose() {
-    _scrollController.dispose();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
     final result = widget.task.result;
     return ListView(
       key: const PageStorageKey<String>('task-detail-result-list'),
-      controller: _scrollController,
       physics: const AlwaysScrollableScrollPhysics(),
       padding: const EdgeInsets.fromLTRB(20, 20, 20, 96),
       children: [
+        SizedBox(key: _topAnchorKey, height: 0),
         _InfoCard(
           title: '输出',
           child: FutureBuilder<List<_TurnOutputSummary>>(
@@ -986,11 +1032,14 @@ class _ResultPanelState extends State<_ResultPanel> {
       if (!mounted) {
         return;
       }
-      if (_scrollController.hasClients) {
-        _scrollController.jumpTo(_scrollController.position.minScrollExtent);
-        return;
+      final anchorContext = _topAnchorKey.currentContext;
+      if (anchorContext != null) {
+        Scrollable.ensureVisible(
+          anchorContext,
+          alignment: 0,
+          duration: Duration.zero,
+        );
       }
-      _scheduleScrollToTop();
     });
   }
 
@@ -2590,108 +2639,59 @@ class _MiniBadgeState extends State<_MiniBadge> with TickerProviderStateMixin {
     if (_controller == null) {
       return pill;
     }
-    return Stack(
-      clipBehavior: Clip.none,
-      alignment: Alignment.center,
-      children: [
-        pill,
-        IgnorePointer(
-          child: AnimatedBuilder(
-            animation: _controller!,
-            builder: (context, _) {
-              final progress = _controller!.value;
-              final angle = progress * math.pi * 2;
-              final points = _cometTrail(angle);
-              return Stack(
-                clipBehavior: Clip.none,
-                alignment: Alignment.center,
-                children: [
-                  for (var i = 0; i < points.length; i++)
-                    _CometDot(
-                      color: widget.color.withValues(
-                        alpha: math.max(0.08, 0.92 - i * 0.2),
-                      ),
-                      offset: points[i].offset,
-                      size: points[i].size,
-                      shadowBlur: points[i].shadowBlur,
-                    ),
-                ],
-              );
-            },
-          ),
+    return RepaintBoundary(
+      child: CustomPaint(
+        foregroundPainter: _CometBadgePainter(
+          color: widget.color,
+          animation: _controller!,
         ),
-      ],
-    );
-  }
-
-  List<_CometPoint> _cometTrail(double angle) {
-    const samples = 5;
-    final points = <_CometPoint>[];
-    for (var i = 0; i < samples; i++) {
-      final t = i / (samples - 1);
-      final trailAngle = angle - t * 0.62;
-      final radiusX = 24 + t * 2.5;
-      final radiusY = 12 + t * 1.5;
-      points.add(
-        _CometPoint(
-          offset: Offset(
-            math.cos(trailAngle) * radiusX,
-            math.sin(trailAngle) * radiusY,
-          ),
-          size: math.max(2.5, 7.5 - t * 3.5),
-          shadowBlur: math.max(2, 10 - t * 5),
-        ),
-      );
-    }
-    return points;
-  }
-}
-
-class _CometPoint {
-  const _CometPoint({
-    required this.offset,
-    required this.size,
-    required this.shadowBlur,
-  });
-
-  final Offset offset;
-  final double size;
-  final double shadowBlur;
-}
-
-class _CometDot extends StatelessWidget {
-  const _CometDot({
-    required this.color,
-    required this.offset,
-    required this.size,
-    required this.shadowBlur,
-  });
-
-  final Color color;
-  final Offset offset;
-  final double size;
-  final double shadowBlur;
-
-  @override
-  Widget build(BuildContext context) {
-    return Transform.translate(
-      offset: offset,
-      child: Container(
-        width: size,
-        height: size,
-        decoration: BoxDecoration(
-          color: color,
-          shape: BoxShape.circle,
-          boxShadow: [
-            BoxShadow(
-              color: color.withValues(alpha: 0.5),
-              blurRadius: shadowBlur,
-              spreadRadius: 1,
-            ),
-          ],
-        ),
+        child: pill,
       ),
     );
+  }
+}
+
+class _CometBadgePainter extends CustomPainter {
+  _CometBadgePainter({
+    required this.color,
+    required Animation<double> animation,
+  }) : super(repaint: animation) {
+    _animation = animation;
+  }
+
+  final Color color;
+  late final Animation<double> _animation;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final progress = _animation.value;
+    final center = Offset(size.width / 2, size.height / 2);
+    final radiusX = math.max(20, size.width / 2 + 5);
+    final radiusY = math.max(12, size.height / 2 + 4);
+    final angle = progress * math.pi * 2;
+
+    for (var i = 4; i >= 0; i--) {
+      final t = i / 4;
+      final trailAngle = angle - t * 0.62;
+      final dotCenter = Offset(
+        center.dx + math.cos(trailAngle) * radiusX,
+        center.dy + math.sin(trailAngle) * radiusY,
+      );
+      final alpha = math.max(0.08, 0.92 - i * 0.19);
+      final radius = math.max(1.8, 4.2 - t * 2.3);
+      final glowPaint = Paint()
+        ..color = color.withValues(alpha: alpha * 0.22)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5);
+      canvas.drawCircle(dotCenter, radius + 2, glowPaint);
+
+      final dotPaint = Paint()..color = color.withValues(alpha: alpha);
+      canvas.drawCircle(dotCenter, radius, dotPaint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _CometBadgePainter oldDelegate) {
+    return oldDelegate.color != color || oldDelegate._animation != _animation;
   }
 }
 

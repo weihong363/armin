@@ -948,10 +948,8 @@ Allow this command to run? Redirection detected.
 
     final resultList =
         find.byKey(const PageStorageKey<String>('task-detail-result-list'));
-    await tester.drag(resultList, const Offset(0, -240));
+    await tester.drag(resultList, const Offset(0, -720));
     await tester.pumpAndSettle();
-
-    expect(find.text('Turn 4').hitTestable(), findsNothing);
 
     await tester.tap(find.text('指标'));
     await tester.pumpAndSettle();
@@ -965,6 +963,57 @@ Allow this command to run? Redirection detected.
     expect(find.text('结果'), findsOneWidget);
     expect(find.text('Turn 4').hitTestable(), findsOneWidget);
     expect(find.text('Turn 3').hitTestable(), findsOneWidget);
+  });
+
+  testWidgets('result tab can scroll back to runtime controls', (tester) async {
+    tester.view.physicalSize = const Size(430, 820);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final now = DateTime(2026, 5, 18);
+    final task = _task().copyWith(
+      status: TaskStatus.turnIdle,
+      turns: [
+        for (var index = 1; index <= 8; index++)
+          NativeOutputTurn(
+            id: 'turn-task-1-$index',
+            taskId: 'task-1',
+            turnIndex: index,
+            userInput: '输出第 $index 段',
+            rawOutput: '第 $index 段结果\n' * 8,
+            cleanedOutput: '第 $index 段结果\n' * 8,
+            startedAt: now.add(Duration(seconds: index)),
+            lastOutputAt: now.add(Duration(seconds: index)),
+            status: NativeOutputTurnStatus.turnIdle,
+          ),
+      ],
+    );
+    final state = ArminAppState(
+      store: _TaskStore(task),
+      agentSessionService: const _NoopAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await tester.pumpWidget(
+      AppStateScope(
+        state: state,
+        child: const MaterialApp(home: TaskDetailScreen(taskId: 'task-1')),
+      ),
+    );
+    await tester.tap(find.text('结果'));
+    await tester.pumpAndSettle();
+
+    final resultList =
+        find.byKey(const PageStorageKey<String>('task-detail-result-list'));
+    await tester.drag(resultList, const Offset(0, -520));
+    await tester.pumpAndSettle();
+    expect(find.text('运行控制').hitTestable(), findsNothing);
+
+    await tester.drag(resultList, const Offset(0, 520));
+    await tester.pumpAndSettle();
+
+    expect(find.text('运行控制').hitTestable(), findsOneWidget);
   });
 
   testWidgets('timeline lists latest turns first and expands scoped output',

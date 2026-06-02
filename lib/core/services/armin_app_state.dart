@@ -118,7 +118,14 @@ class ArminAppState extends ChangeNotifier {
 
   Future<void> saveTask(TaskSession task) async {
     await _store.saveTask(task);
-    tasks = await _store.loadTasks();
+    final updatedTasks = [...tasks];
+    final index = updatedTasks.indexWhere((item) => item.id == task.id);
+    if (index >= 0) {
+      updatedTasks[index] = task;
+    } else {
+      updatedTasks.insert(0, task);
+    }
+    tasks = updatedTasks;
     notifyListeners();
   }
 

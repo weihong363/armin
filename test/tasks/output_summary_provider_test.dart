@@ -310,6 +310,40 @@ HELLO WORLD
     expect(summary.displaySummary, isNot(contains('Allow once')));
   });
 
+  test('rule provider removes dynamic asking-user transcript from results',
+      () async {
+    const interactive = OutputSummaryRequest(
+      cleanedOutput: '''
+▪ 项目中目前没有专门的中断测试用例。你是指以下哪种场景？
+   1. Ralph Loop 运行中被中断（Ctrl+C / SIGINT）— 测试循环能否优雅退出、保留已完成的迭代
+   2. API 请求超时中断 — 测试 Grafana/Prometheus 等外部调用超时时系统的降级行为
+   3. 其他场景 — 请具体说明
+Asking User
+──────────────────────────────────────────────────────────────────────────────────────────
+你想测试哪种中断场景？
+  ❯ 1. Ralph Loop 中断
+       测试 Ctrl+C / SIGINT 时循环能否优雅退出并保留已完成的迭代
+    2. API 请求超时中断
+       测试 Grafana/Prometheus 等外部调用超时时的降级行为
+    3. 两者都要
+       同时测试循环中断和超时降级
+    4. Type Something
+↑↓ navigate · Enter select · Esc back
+HELLO WORLD
+''',
+      status: TaskStatus.turnIdle,
+      taskTitle: '输出 HELLO WORLD',
+    );
+
+    final summary =
+        await const RuleBasedOutputSummaryProvider().summarize(interactive);
+
+    expect(summary.displaySummary, 'HELLO WORLD');
+    expect(summary.displaySummary, isNot(contains('Asking User')));
+    expect(summary.displaySummary, isNot(contains('Ralph Loop')));
+    expect(summary.displaySummary, isNot(contains('Type Something')));
+  });
+
   test('rule provider excludes terminal chrome from visible result', () async {
     const terminalSnapshot = OutputSummaryRequest(
       cleanedOutput: '''

@@ -67,8 +67,11 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
 
   @override
   Future<OutputSummary> summarize(OutputSummaryRequest request) async {
+    final withoutPromptBlocks = _removeTerminalPromptBlocks(
+      request.cleanedOutput,
+    );
     final cleaned =
-        _redactor.redactInlineSecrets(_cleaner.clean(request.cleanedOutput));
+        _redactor.redactInlineSecrets(_cleaner.clean(withoutPromptBlocks));
     final importantLines = _importantLines(cleaned, request);
     final display = _compactDisplay(importantLines.take(maxDisplayLines));
     final speech = DeviceVoiceService.cleanSpeechSummary(display);
@@ -80,11 +83,12 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
   }
 
   List<String> _importantLines(String cleaned, OutputSummaryRequest request) {
+    final withoutPromptBlocks = _removeTerminalPromptBlocks(cleaned);
     final promptInputs = {
       request.taskTitle,
       ...request.promptInputs,
     }.where((input) => input.trim().isNotEmpty).toList(growable: false);
-    final lines = _semanticLines(cleaned)
+    final lines = _semanticLines(withoutPromptBlocks)
         .where((line) => line.isNotEmpty)
         .where((line) => !_looksLikePromptEcho(line, promptInputs))
         .where((line) => !_looksLikeLowValueLine(line))
@@ -109,6 +113,100 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
         : useful.take(maxDisplayLines).toList();
     selected.sort((a, b) => a.index.compareTo(b.index));
     return selected.map((item) => item.line).toList(growable: false);
+  }
+
+  String _removeTerminalPromptBlocks(String cleaned) {
+    final lines = cleaned
+        .replaceAll(RegExp(r'\x1B\[[0-?]*[ -/]*[@-~]'), '')
+        .replaceAll('\r', '\n')
+        .split('\n');
+    final kept = <String>[];
+    var skipping = false;
+    var sawOption = false;
+
+    for (final line in lines) {
+      final trimmed = line.trim();
+      if (!skipping && _isTerminalPromptStart(trimmed)) {
+        _removeTerminalPromptPreface(kept);
+        skipping = true;
+        sawOption = false;
+        continue;
+      }
+      if (!skipping) {
+        kept.add(line);
+        continue;
+      }
+      if (trimmed.isEmpty ||
+          _isTerminalPromptStart(trimmed) ||
+          _isTerminalPromptSeparator(trimmed)) {
+        continue;
+      }
+      if (_isTerminalPromptFooter(trimmed)) {
+        skipping = false;
+        sawOption = false;
+        continue;
+      }
+      if (_isTerminalPromptOption(trimmed)) {
+        sawOption = true;
+        continue;
+      }
+      if (!sawOption || line.startsWith(RegExp(r'\s'))) {
+        continue;
+      }
+      skipping = false;
+      kept.add(line);
+    }
+    return kept.join('\n');
+  }
+
+  void _removeTerminalPromptPreface(List<String> lines) {
+    while (lines.isNotEmpty) {
+      final trimmed = lines.last.trim();
+      if (trimmed.isEmpty ||
+          _isTerminalPromptOption(trimmed) ||
+          _isTerminalPromptSeparator(trimmed) ||
+          _looksLikeTerminalPromptPreface(trimmed)) {
+        lines.removeLast();
+        continue;
+      }
+      break;
+    }
+  }
+
+  bool _looksLikeTerminalPromptPreface(String line) {
+    return line.startsWith('▪') ||
+        line.startsWith('•') ||
+        line.endsWith('?') ||
+        line.endsWith('？') ||
+        line.contains('你是指以下哪种') ||
+        line.contains('请选择') ||
+        line.contains('请具体说明');
+  }
+
+  bool _isTerminalPromptStart(String line) {
+    final lower = line.toLowerCase();
+    return lower == 'asking user' ||
+        lower.startsWith('allow this command to run') ||
+        lower.startsWith('allow execution of') ||
+        lower.startsWith('allow command execution') ||
+        lower.startsWith('would you like to run') ||
+        lower.startsWith('approve this command');
+  }
+
+  bool _isTerminalPromptOption(String line) {
+    return RegExp(r'^[>›❯]?\s*\d{1,2}[.)]\s+.+').hasMatch(line);
+  }
+
+  bool _isTerminalPromptFooter(String line) {
+    final lower = line.toLowerCase();
+    return lower.contains('navigate') ||
+        lower.contains('enter select') ||
+        lower.contains('esc back') ||
+        lower.contains('ctrl+o');
+  }
+
+  bool _isTerminalPromptSeparator(String line) {
+    return RegExp(r'^[─━_\-=]{3,}$').hasMatch(line);
   }
 
   List<String> _semanticLines(String cleaned) {

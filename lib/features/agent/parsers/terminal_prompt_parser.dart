@@ -5,17 +5,17 @@ class TerminalPromptParser {
 
   TerminalPrompt? parse(String output) {
     final lines = _plainLines(output);
-    final questionIndex = lines.lastIndexWhere(_isQuestion);
-    if (questionIndex < 0) {
+    final promptBlock = _findPromptBlock(lines);
+    if (promptBlock == null) {
       return null;
     }
-    final options = _readOptions(lines.skip(questionIndex + 1));
+    final options = _readOptions(lines.skip(promptBlock.optionIndex));
     if (options.length < 2) {
       return null;
     }
     return TerminalPrompt(
-      question: lines[questionIndex].trim(),
-      command: _readCommand(lines, questionIndex),
+      question: lines[promptBlock.questionIndex].trim(),
+      command: _readCommand(lines, promptBlock.questionIndex),
       options: options,
     );
   }
@@ -27,7 +27,76 @@ class TerminalPromptParser {
         .split('\n');
   }
 
-  bool _isQuestion(String line) {
+  _PromptBlock? _findPromptBlock(List<String> lines) {
+    final askingIndex = lines.lastIndexWhere(_isAskingUserMarker);
+    if (askingIndex >= 0) {
+      final optionIndex = _firstOptionIndex(lines, askingIndex + 1);
+      if (optionIndex != null) {
+        final questionIndex = _questionBeforeOptions(
+          lines,
+          start: askingIndex + 1,
+          optionIndex: optionIndex,
+        );
+        if (questionIndex != null) {
+          return _PromptBlock(
+            questionIndex: questionIndex,
+            optionIndex: optionIndex,
+          );
+        }
+      }
+    }
+
+    final questionIndex = lines.lastIndexWhere(_isKnownCommandQuestion);
+    if (questionIndex < 0) {
+      return null;
+    }
+    final optionIndex = _firstOptionIndex(lines, questionIndex + 1);
+    if (optionIndex == null) {
+      return null;
+    }
+    return _PromptBlock(
+      questionIndex: questionIndex,
+      optionIndex: optionIndex,
+    );
+  }
+
+  int? _firstOptionIndex(List<String> lines, int start) {
+    for (var index = start; index < lines.length; index++) {
+      if (_optionMatch(lines[index]) != null) {
+        return index;
+      }
+    }
+    return null;
+  }
+
+  int? _questionBeforeOptions(
+    List<String> lines, {
+    required int start,
+    required int optionIndex,
+  }) {
+    for (var index = optionIndex - 1; index >= start; index--) {
+      final line = lines[index].trim();
+      if (line.isEmpty || _isSeparator(line)) {
+        continue;
+      }
+      if (_looksLikeQuestion(line)) {
+        return index;
+      }
+    }
+    for (var index = optionIndex - 1; index >= start; index--) {
+      final line = lines[index].trim();
+      if (line.isNotEmpty && !_isSeparator(line)) {
+        return index;
+      }
+    }
+    return null;
+  }
+
+  bool _isAskingUserMarker(String line) {
+    return line.trim().toLowerCase() == 'asking user';
+  }
+
+  bool _isKnownCommandQuestion(String line) {
     final lower = line.toLowerCase();
     return lower.contains('allow execution of') ||
         lower.contains('allow this command to run') ||
@@ -36,25 +105,57 @@ class TerminalPromptParser {
         lower.contains('would you like to run');
   }
 
+  bool _looksLikeQuestion(String line) {
+    return _isKnownCommandQuestion(line) ||
+        line.trim().endsWith('?') ||
+        line.trim().endsWith('？');
+  }
+
   List<TerminalPromptOption> _readOptions(Iterable<String> lines) {
     final options = <TerminalPromptOption>[];
-    final pattern = RegExp(r'^\s*[>›❯]?\s*(\d+)\.\s+(.+?)\s*$');
     for (final line in lines) {
-      final match = pattern.firstMatch(line);
+      final match = _optionMatch(line);
       if (match == null) {
-        if (options.isNotEmpty && line.trim().isNotEmpty) {
+        final trimmed = line.trim();
+        if (options.isEmpty || trimmed.isEmpty || _isSeparator(trimmed)) {
+          continue;
+        }
+        if (_isPromptFooter(trimmed)) {
           break;
         }
-        continue;
+        if (line.startsWith(RegExp(r'\s')) && !_looksLikeQuestion(trimmed)) {
+          continue;
+        }
+        break;
+      }
+      final label = match.group(2)!.trim();
+      if (_isPromptFooter(label)) {
+        break;
       }
       options.add(
         TerminalPromptOption(
           key: match.group(1)!,
-          label: match.group(2)!.trim(),
+          label: label,
         ),
       );
     }
     return options;
+  }
+
+  RegExpMatch? _optionMatch(String line) {
+    return RegExp(r'^\s*[>›❯]?\s*(\d{1,2})[.)]\s+(.+?)\s*$').firstMatch(line);
+  }
+
+  bool _isPromptFooter(String line) {
+    final lower = line.toLowerCase();
+    return lower.contains('navigate') ||
+        lower.contains('enter select') ||
+        lower.contains('esc back') ||
+        lower.contains('ctrl+o');
+  }
+
+  bool _isSeparator(String line) {
+    return RegExp(r'^[─━_\-=]{3,}$').hasMatch(line.trim());
   }
 
   String _readCommand(List<String> lines, int questionIndex) {
@@ -77,4 +178,14 @@ class TerminalPromptParser {
             .firstMatch(lines[questionIndex]);
     return bracketed?.group(1)?.trim() ?? '';
   }
+}
+
+class _PromptBlock {
+  const _PromptBlock({
+    required this.questionIndex,
+    required this.optionIndex,
+  });
+
+  final int questionIndex;
+  final int optionIndex;
 }

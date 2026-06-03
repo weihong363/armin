@@ -175,6 +175,21 @@ runbook-copilot 是面向工程团队的 RAG 事故排障助手，用于根据�
     expect(cleaned, contains('可以继续查看引用和日志'));
   });
 
+  test('speech text keeps displayed mixed result with command fragments', () {
+    final cleaned = DeviceVoiceService.cleanSpeechTextForTest('''
+AskUserQuestion 测试类型 -> 中断 Ralph Loop
+中断 Ralph Loop 的测试在 tests/test_ralph_loop_followup.py, Now I'll run the Ralph Loop related tests.
+tests/test_ralph_loop_followup.py -v 2>&1 | tail -40) pytest -q && pytest tests/test_ralph_loop_followup.py -v 2>&1 | tail -50)
+============================= test session starts =============================
+platform darwin -- Python 3.13.5, pytest-7.4.0, pluggy-1.6.0 -- /usr/local/bin/python
+''');
+
+    expect(cleaned, isNotEmpty);
+    expect(cleaned, contains('AskUserQuestion'));
+    expect(cleaned, contains('中断Ralph Loop'));
+    expect(cleaned, contains('Now I'));
+  });
+
   test('long speech text is chunked before sending to TTS', () {
     final longResult = List.filled(
       4,

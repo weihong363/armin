@@ -400,6 +400,9 @@ class DeviceVoiceService implements VoiceService {
   }
 
   static bool _looksLikeCode(String line) {
+    if (RegExp(r'[\u4e00-\u9fff]').hasMatch(line)) {
+      return false;
+    }
     final symbols = RegExp(r'[{};=<>]').allMatches(line).length;
     if (symbols >= 2) {
       return true;

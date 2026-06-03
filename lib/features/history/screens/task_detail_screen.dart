@@ -1294,7 +1294,7 @@ class _RuntimeControlPanelState extends State<_RuntimeControlPanel> {
               onVoice: () => _showFollowUpSheet(
                 context,
                 title: '选择终端选项',
-                hintText: '说“允许一次”“始终允许”或“拒绝”',
+                hintText: _terminalPromptVoiceHint(task.terminalPrompt!),
               ),
             ),
             const SizedBox(height: 16),
@@ -1439,6 +1439,32 @@ class _RuntimeControlPanelState extends State<_RuntimeControlPanel> {
         label.contains('输入') ||
         label.contains('填写') ||
         label.contains('补充');
+  }
+
+  String _terminalPromptVoiceHint(TerminalPrompt prompt) {
+    final labels = prompt.options
+        .where((option) => !_optionNeedsManualInput(option))
+        .map((option) => _readableOptionLabel(option))
+        .where((label) => label.isNotEmpty)
+        .take(3)
+        .toList(growable: false);
+    if (labels.isEmpty) {
+      return '说出要选择的编号，或直接说明要输入的内容';
+    }
+    final quoted = labels.map((label) => '“$label”').toList(growable: false);
+    final examples = quoted.length == 1
+        ? quoted.single
+        : '${quoted.take(quoted.length - 1).join('、')}或${quoted.last}';
+    final hasManualInput = prompt.options.any(_optionNeedsManualInput);
+    return hasManualInput ? '说$examples，或说“输入内容”' : '说$examples';
+  }
+
+  String _readableOptionLabel(TerminalPromptOption option) {
+    final label = option.label.trim();
+    if (label.isNotEmpty) {
+      return label;
+    }
+    return '选 ${option.key}';
   }
 
   Future<String?> _askTerminalPromptResponse(

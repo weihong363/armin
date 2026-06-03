@@ -195,6 +195,45 @@ void main() {
     expect(state.tasks.single.terminalPrompt, isNull);
   });
 
+  testWidgets('terminal prompt voice hint uses current options',
+      (tester) async {
+    final task = _task().copyWith(
+      status: TaskStatus.needAttention,
+      terminalPrompt: const TerminalPrompt(
+        question: '你说的「中断测试」是指什么？',
+        options: [
+          TerminalPromptOption(key: '1', label: '运行现有测试套件'),
+          TerminalPromptOption(key: '2', label: '故障注入测试'),
+          TerminalPromptOption(key: '3', label: 'API 中断/超时测试'),
+          TerminalPromptOption(key: '4', label: '其他'),
+          TerminalPromptOption(key: '5', label: 'Type Something'),
+        ],
+      ),
+    );
+    final state = ArminAppState(
+      store: _TaskStore(task),
+      agentSessionService: const _NoopAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await tester.pumpWidget(
+      AppStateScope(
+        state: state,
+        child: const MaterialApp(home: TaskDetailScreen(taskId: 'task-1')),
+      ),
+    );
+
+    await tester.tap(find.byTooltip('语音选择'));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text('说“运行现有测试套件”、“故障注入测试”或“API 中断/超时测试”，或说“输入内容”'),
+      findsOneWidget,
+    );
+    expect(find.text('说“允许一次”“始终允许”或“拒绝”'), findsNothing);
+  });
+
   testWidgets(
       'approval requests surface manual and voice actions in runtime controls',
       (tester) async {

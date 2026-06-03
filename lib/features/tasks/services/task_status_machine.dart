@@ -22,7 +22,6 @@ class TaskStatusMachine {
       TaskStatus.runtimeLost,
       TaskStatus.userCompleted,
       TaskStatus.userFailed,
-      TaskStatus.completed,
       TaskStatus.failed,
     },
     TaskStatus.paused: {

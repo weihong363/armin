@@ -14,4 +14,10 @@ class AppStateScope extends InheritedNotifier<ArminAppState> {
     assert(scope != null, 'AppStateScope not found in widget tree.');
     return scope!.notifier!;
   }
+
+  static ArminAppState read(BuildContext context) {
+    final scope = context.getInheritedWidgetOfExactType<AppStateScope>();
+    assert(scope != null, 'AppStateScope not found in widget tree.');
+    return scope!.notifier!;
+  }
 }

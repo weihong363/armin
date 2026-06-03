@@ -8,6 +8,8 @@ abstract class VoiceService {
   Future<String> listenOnce();
 
   Future<void> speakSummary(String summary);
+
+  Future<void> stopSpeaking();
 }
 
 class VoiceUnavailableException implements Exception {

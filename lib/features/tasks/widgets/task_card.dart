@@ -5,7 +5,9 @@ import 'package:flutter/material.dart';
 import '../../../core/models/task_status.dart';
 import '../../../shared/theme/armin_theme.dart';
 import '../../../shared/widgets/status_badge.dart';
+import '../../agent/services/codex_output_cleaner.dart';
 import '../models/task_session.dart';
+import '../services/semantic_snippet_builder.dart';
 
 class TaskCard extends StatelessWidget {
   const TaskCard({
@@ -39,7 +41,7 @@ class TaskCard extends StatelessWidget {
                 children: [
                   Expanded(
                     child: Text(
-                      task.title,
+                      task.displayTitle,
                       style: Theme.of(context).textTheme.titleMedium,
                     ),
                   ),
@@ -53,7 +55,7 @@ class TaskCard extends StatelessWidget {
               StatusBadge(status: task.status),
               const SizedBox(height: 8),
               Text(
-                task.shortSummary.isEmpty ? task.userText : task.shortSummary,
+                _readableSummary(task),
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
                 style: Theme.of(context).textTheme.bodySmall,
@@ -160,7 +162,7 @@ class _FeaturedTaskCardState extends State<_FeaturedTaskCard> {
               ),
               const SizedBox(height: 16),
               Text(
-                task.title,
+                task.displayTitle,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(
@@ -171,7 +173,7 @@ class _FeaturedTaskCardState extends State<_FeaturedTaskCard> {
               ),
               const SizedBox(height: 8),
               Text(
-                task.shortSummary.isEmpty ? task.userText : task.shortSummary,
+                _readableSummary(task),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
@@ -258,6 +260,14 @@ class _FeaturedTaskCardState extends State<_FeaturedTaskCard> {
             task.status == TaskStatus.needAttention ||
             task.status == TaskStatus.observerDetached);
   }
+}
+
+String _readableSummary(TaskSession task) {
+  final summary = const CodexOutputCleaner().clean(task.shortSummary);
+  final text = summary.isEmpty ? task.userText : summary;
+  return const SemanticSnippetBuilder()
+      .build(text, contentType: SnippetContentType.agentSummary, maxChars: 140)
+      .visibleText;
 }
 
 class _DarkBadge extends StatelessWidget {

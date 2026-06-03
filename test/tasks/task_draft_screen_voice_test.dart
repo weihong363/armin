@@ -30,14 +30,16 @@ void main() {
 
   testWidgets('press and hold voice input fills empty task description',
       (tester) async {
+    final voiceService = MockVoiceService(recognizedText: '修复登录失败');
     await _pumpDraftScreen(
       tester,
-      voiceService: MockVoiceService(recognizedText: '修复登录失败'),
+      voiceService: voiceService,
     );
 
     await _pressAndReleaseVoiceButton(tester);
 
     expect(_taskDescription(tester), '修复登录失败');
+    expect(voiceService.stopSpeakingCount, 1);
   });
 
   testWidgets('voice partial is used when stop result is empty',
@@ -166,4 +168,7 @@ class _PartialFallbackVoiceService implements VoiceService {
 
   @override
   Future<void> speakSummary(String summary) async {}
+
+  @override
+  Future<void> stopSpeaking() async {}
 }

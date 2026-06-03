@@ -32,8 +32,17 @@ void main() {
     expect(result.detected, isTrue);
     expect(
       result.uiMessage,
-      'AGENTS.md detected. Agent may follow repository-specific '
-      'optimization rules.',
+      '检测到 AGENTS.md。Agent 可能会读取仓库内的专用规则。',
     );
+  });
+
+  test('AgentInstructionDiscovery key includes host project and path', () {
+    const key = AgentInstructionDiscoveryKey(
+      hostId: 'host-1',
+      projectPathId: 'project-2',
+      normalizedProjectPath: '~/workspace/armin',
+    );
+
+    expect(key.value, 'host-1::project-2::~/workspace/armin');
   });
 }

@@ -17,6 +17,7 @@ import '../models/task_constraint.dart';
 import '../models/task_draft.dart';
 import '../models/task_session.dart';
 import '../models/voice_input.dart';
+import '../services/agent_instruction_discovery.dart';
 import '../services/constraint_extractor.dart';
 import '../services/prompt_template_builder.dart';
 import '../services/secret_redactor.dart';
@@ -32,11 +33,13 @@ class TaskDraftScreen extends StatefulWidget {
   const TaskDraftScreen({
     this.initialTaskText = '',
     this.selectedHostId,
+    this.initialProjectPath,
     super.key,
   });
 
   final String initialTaskText;
   final String? selectedHostId;
+  final String? initialProjectPath;
 
   @override
   State<TaskDraftScreen> createState() => _TaskDraftScreenState();
@@ -49,9 +52,9 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
   final _secretValueController = TextEditingController();
   final _secretUsageController = TextEditingController();
   final _cleaner = SpeechDraftCleaner();
-  final _extractor = ConstraintExtractor();
+  final _extractor = const ConstraintExtractor();
   final _promptBuilder = PromptTemplateBuilder();
-  final _secretRedactor = SecretRedactor();
+  final _secretRedactor = const SecretRedactor();
   final List<SecretEntry> _secrets = [];
   final Set<TaskConstraint> _constraints = {
     TaskConstraint.minimalChange,
@@ -68,10 +71,9 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
   bool _isDiscoveringAgentInstructions = false;
   String? _selectedHostId;
   String? _selectedProjectPathId;
-  String _agentInstructionMessage =
-      'No AGENTS.md detected. Armin will use lightweight built-in prompt governance.';
+  String _agentInstructionMessage = '未检测到 AGENTS.md。Armin 将使用内置轻量上下文治理规则。';
   String _agentInstructionWarning = '';
-  String? _agentInstructionProjectPathId;
+  String? _agentInstructionDetectionKey;
 
   @override
   void initState() {
@@ -153,6 +155,7 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
           DropdownButtonFormField<String>(
             key: const ValueKey('host-selector'),
             initialValue: selectedHost?.id,
+            isExpanded: true,
             decoration: const InputDecoration(
               labelText: '执行主机',
             ),
@@ -162,13 +165,15 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
                   value: host.id,
                   child: Text(
                     '${host.name} · ${host.username}@${host.address}:${host.port}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                   ),
                 ),
             ],
             onChanged: (value) {
               setState(() {
                 _selectedHostId = value;
-                _agentInstructionProjectPathId = null;
+                _agentInstructionDetectionKey = null;
               });
             },
           ),
@@ -186,6 +191,7 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
                 child: DropdownButtonFormField<String>(
                   key: const ValueKey('project-path-selector'),
                   initialValue: selectedProjectPath?.id,
+                  isExpanded: true,
                   decoration: const InputDecoration(
                     labelText: '项目目录',
                   ),
@@ -193,14 +199,17 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
                     for (final projectPath in state.projectPaths)
                       DropdownMenuItem(
                         value: projectPath.id,
-                        child:
-                            Text('${projectPath.name} · ${projectPath.path}'),
+                        child: Text(
+                          '${projectPath.name} · ${projectPath.path}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
                       ),
                   ],
                   onChanged: (value) {
                     setState(() {
                       _selectedProjectPathId = value;
-                      _agentInstructionProjectPathId = null;
+                      _agentInstructionDetectionKey = null;
                     });
                     _refreshPreview();
                   },
@@ -384,6 +393,7 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
     });
 
     try {
+      await voiceService.stopSpeaking();
       await voiceService.startListening(
         onPartial: (partial) {
           if (!mounted) {
@@ -620,10 +630,12 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
     final taskId = 'task-${now.microsecondsSinceEpoch}';
     final prompt = _buildPrompt();
     final tmuxSessionName = _taskTmuxSessionName(host.tmuxSessionName, taskId);
-    final taskHost = host.copyWith(
-      projectPath: projectPath,
-      tmuxSessionName: tmuxSessionName,
-    );
+    final taskHost = host
+        .copyWith(
+          projectPath: projectPath,
+          tmuxSessionName: tmuxSessionName,
+        )
+        .toSafePersistedCopy();
     final secretRecords = _secrets
         .map(
             (secret) => secret.toRedactedRecord(taskId: taskId, createdAt: now))
@@ -733,23 +745,38 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
     ProjectPathConfig? project,
     HostConfig? host,
   ) {
-    if (project == null ||
-        host == null ||
-        project.id == _agentInstructionProjectPathId ||
-        _isDiscoveringAgentInstructions) {
+    if (project == null || host == null || _isDiscoveringAgentInstructions) {
       return;
     }
-    Future.microtask(() => _refreshAgentInstructionDiscovery(project, host));
+    final normalizedProjectPath = normalizeRemoteProjectPath(project.path);
+    final detectionKey = AgentInstructionDiscoveryKey(
+      hostId: host.id,
+      projectPathId: project.id,
+      normalizedProjectPath: normalizedProjectPath,
+    ).value;
+    if (detectionKey == _agentInstructionDetectionKey) {
+      return;
+    }
+    Future.microtask(
+      () => _refreshAgentInstructionDiscovery(
+        project,
+        host,
+        detectionKey,
+        normalizedProjectPath,
+      ),
+    );
   }
 
   Future<void> _refreshAgentInstructionDiscovery(
     ProjectPathConfig project,
     HostConfig host,
+    String detectionKey,
+    String normalizedProjectPath,
   ) async {
     final state = AppStateScope.of(context);
     setState(() {
       _isDiscoveringAgentInstructions = true;
-      _agentInstructionProjectPathId = project.id;
+      _agentInstructionDetectionKey = detectionKey;
       _agentInstructionWarning = '';
     });
 
@@ -759,10 +786,8 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
       }
       setState(() {
         _isDiscoveringAgentInstructions = false;
-        _agentInstructionMessage =
-            'No AGENTS.md detected. Armin will use lightweight built-in prompt governance.';
-        _agentInstructionWarning =
-            'AGENTS.md detection will run after Host password is configured.';
+        _agentInstructionMessage = '未检测到 AGENTS.md。Armin 将使用内置轻量上下文治理规则。';
+        _agentInstructionWarning = '主机密码未配置，暂时无法检测 AGENTS.md。';
       });
       return;
     }
@@ -774,7 +799,7 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
           port: host.port,
           username: host.username,
           password: host.password,
-          projectPath: normalizeRemoteProjectPath(project.path),
+          projectPath: normalizedProjectPath,
           pathPrepend: host.pathPrepend,
           shellWrapper: host.shellWrapper,
         ),
@@ -793,10 +818,8 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
       }
       setState(() {
         _isDiscoveringAgentInstructions = false;
-        _agentInstructionMessage =
-            'No AGENTS.md detected. Armin will use lightweight built-in prompt governance.';
-        _agentInstructionWarning =
-            'AGENTS.md detection failed. Built-in prompt governance is still enabled.';
+        _agentInstructionMessage = '未检测到 AGENTS.md。Armin 将使用内置轻量上下文治理规则。';
+        _agentInstructionWarning = 'AGENTS.md 检测失败。内置轻量上下文治理规则仍会启用。';
       });
     }
   }
@@ -809,6 +832,17 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
     if (selectedId != null) {
       for (final item in items) {
         if (item.id == selectedId) {
+          return item;
+        }
+      }
+    }
+    final initialPath = normalizeRemoteProjectPath(
+      widget.initialProjectPath ?? '',
+    );
+    if (initialPath.isNotEmpty) {
+      for (final item in items) {
+        if (normalizeRemoteProjectPath(item.path) == initialPath) {
+          _selectedProjectPathId = item.id;
           return item;
         }
       }

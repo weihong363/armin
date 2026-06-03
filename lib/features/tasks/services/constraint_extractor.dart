@@ -1,6 +1,8 @@
 import '../models/task_constraint.dart';
 
 class ConstraintExtractor {
+  const ConstraintExtractor();
+
   Set<TaskConstraint> extract(String text) {
     final input = text.trim().toLowerCase();
     if (input.isEmpty) {

@@ -1,3 +1,4 @@
+import 'agent_runtime_config.dart';
 import 'codex_output_cleaner.dart';
 
 enum NativeOutputObserverState {
@@ -30,8 +31,8 @@ class NativeOutputSnapshot {
 class NativeOutputObserver {
   NativeOutputObserver({
     CodexOutputCleaner cleaner = const CodexOutputCleaner(),
-    this.idleThreshold = const Duration(seconds: 20),
-    this.reconnectThreshold = const Duration(seconds: 60),
+    this.idleThreshold = AgentRuntimeConfig.turnIdleThreshold,
+    this.reconnectThreshold = AgentRuntimeConfig.reconnectThreshold,
   }) : _cleaner = cleaner;
 
   final CodexOutputCleaner _cleaner;
@@ -50,8 +51,8 @@ class NativeOutputObserver {
       _lastMeaningfulOutputAt = observedAt;
     }
 
-    final lower = cleaned.toLowerCase();
-    if (_containsAttention(lower)) {
+    final statusLines = _recentStatusLines(cleaned);
+    if (_containsAttention(statusLines)) {
       return NativeOutputSnapshot(
         rawOutput: output,
         cleanedOutput: cleaned,
@@ -62,7 +63,7 @@ class NativeOutputObserver {
       );
     }
 
-    if (_containsReconnect(lower)) {
+    if (_containsReconnect(statusLines)) {
       _reconnectStartedAt ??= observedAt;
       final reconnectingFor = observedAt.difference(_reconnectStartedAt!);
       final lost = reconnectingFor >= reconnectThreshold;
@@ -79,7 +80,7 @@ class NativeOutputObserver {
     }
     _reconnectStartedAt = null;
 
-    if (_containsActiveWork(lower)) {
+    if (_containsActiveWork(statusLines)) {
       return NativeOutputSnapshot(
         rawOutput: output,
         cleanedOutput: cleaned,
@@ -111,19 +112,45 @@ class NativeOutputObserver {
     return observe(output, now: observedAt.add(idleThreshold));
   }
 
-  bool _containsActiveWork(String lower) {
-    return lower.contains('working') ||
-        lower.contains('thinking') ||
-        lower.contains('running');
+  List<String> _recentStatusLines(String cleaned) {
+    final lines = cleaned
+        .split('\n')
+        .map((line) => line.trim().toLowerCase())
+        .where((line) => line.isNotEmpty)
+        .toList(growable: false);
+    final start = lines.length > 5 ? lines.length - 5 : 0;
+    return lines.sublist(start);
   }
 
-  bool _containsReconnect(String lower) {
-    return lower.contains('reconnecting') || lower.contains('connection lost');
+  bool _containsActiveWork(List<String> lines) {
+    return lines.any((line) {
+      final normalized = _statusWord(line);
+      return normalized == 'working' ||
+          normalized == 'thinking' ||
+          normalized == 'running';
+    });
   }
 
-  bool _containsAttention(String lower) {
-    return lower.contains('approval') ||
-        lower.contains('confirm') ||
-        lower.contains('permission');
+  bool _containsReconnect(List<String> lines) {
+    return lines.any((line) {
+      final normalized = _statusWord(line);
+      return normalized == 'reconnecting' || normalized == 'connection lost';
+    });
+  }
+
+  bool _containsAttention(List<String> lines) {
+    return lines.any((line) {
+      final normalized = _statusWord(line);
+      return normalized == 'approval' ||
+          normalized == 'confirm' ||
+          normalized == 'permission';
+    });
+  }
+
+  String _statusWord(String line) {
+    return line
+        .replaceAll(RegExp(r'^[›>\-*•\s]+'), '')
+        .replaceAll(RegExp(r'[.…]+$'), '')
+        .trim();
   }
 }

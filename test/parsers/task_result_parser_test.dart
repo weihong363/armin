@@ -152,6 +152,21 @@ gpt-5.5 medium fast · ~/workspace/momo
     expect(result!.summary, 'hello');
   });
 
+  test('drops turn headers and prompt governance echo from natural output', () {
+    final result = TaskResultParser().parseNatural('''
+Do not analyze unrelated architecture.
+- Run only targeted tests.
+- Keep command output short.
+
+Turn 1
+最小改动不要提交Git高风险操作先确认
+hello world
+''', prompt: '输出hello world在一行里面输出');
+
+    expect(result, isNotNull);
+    expect(result!.summary, 'hello world');
+  });
+
   test('parses only output from noisy Codex pane', () {
     final result = TaskResultParser().parseNatural('''
 ╭────────────────────────────────────────────╮

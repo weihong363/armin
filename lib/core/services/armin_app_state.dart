@@ -4,15 +4,19 @@ import 'package:flutter/foundation.dart';
 
 import '../../features/agent/services/agent_session_service.dart';
 import '../../features/agent/parsers/task_result.dart';
+import '../../features/agent/parsers/terminal_prompt.dart';
 import '../../features/agent/services/ssh_agent_session_service.dart';
 import '../../features/hosts/models/host_config.dart';
 import '../../features/projects/models/project_path_config.dart';
 import '../../features/tasks/models/execution_log.dart';
 import '../../features/tasks/models/metric_event.dart';
 import '../../features/tasks/models/native_output_turn.dart';
+import '../../features/tasks/models/task_constraint.dart';
 import '../../features/tasks/models/task_session.dart';
+import '../../features/tasks/models/voice_input.dart';
 import '../../features/tasks/services/output_summary_provider.dart';
 import '../../features/tasks/services/secret_redactor.dart';
+import '../../features/tasks/services/turn_output_slicer.dart';
 import '../../features/voice/services/device_voice_service.dart';
 import '../../features/voice/services/task_speech_policy.dart';
 import '../../features/voice/services/voice_service.dart';
@@ -21,6 +25,8 @@ import '../storage/json_task_history_store.dart';
 import '../storage/task_history_store.dart';
 
 class ArminAppState extends ChangeNotifier {
+  static const _turnOutputSlicer = TurnOutputSlicer();
+
   ArminAppState({
     required TaskHistoryStore store,
     required this.agentSessionService,
@@ -31,25 +37,31 @@ class ArminAppState extends ChangeNotifier {
   })  : _store = store,
         _taskSpeechPolicy = taskSpeechPolicy ?? const TaskSpeechPolicy(),
         outputSummaryProvider =
-            outputSummaryProvider ?? const RuleBasedOutputSummaryProvider();
+            outputSummaryProvider ?? SelectableOutputSummaryProvider() {
+    _configureOutputSummaryProvider();
+  }
 
   ArminAppState.phase2({
     TaskHistoryStore? store,
     AgentSessionService? agentSessionService,
     VoiceService? voiceService,
+    OutputSummaryProvider? outputSummaryProvider,
   })  : _store = store ?? JsonTaskHistoryStore(),
         agentSessionService = agentSessionService ?? SSHAgentSessionService(),
         voiceService = voiceService ?? DeviceVoiceService(),
         _taskSpeechPolicy = const TaskSpeechPolicy(),
-        outputSummaryProvider = const RuleBasedOutputSummaryProvider(),
-        speechSettings = const TaskSpeechSettings();
+        outputSummaryProvider =
+            outputSummaryProvider ?? SelectableOutputSummaryProvider(),
+        speechSettings = const TaskSpeechSettings() {
+    _configureOutputSummaryProvider();
+  }
 
   final TaskHistoryStore _store;
   final AgentSessionService agentSessionService;
   final VoiceService voiceService;
   final TaskSpeechPolicy _taskSpeechPolicy;
   final OutputSummaryProvider outputSummaryProvider;
-  final SecretRedactor _secretRedactor = SecretRedactor();
+  final SecretRedactor _secretRedactor = const SecretRedactor();
   TaskSpeechSettings speechSettings;
 
   List<HostConfig> hosts = const [];
@@ -106,17 +118,58 @@ class ArminAppState extends ChangeNotifier {
 
   Future<void> saveTask(TaskSession task) async {
     await _store.saveTask(task);
-    tasks = await _store.loadTasks();
+    final updatedTasks = [...tasks];
+    final index = updatedTasks.indexWhere((item) => item.id == task.id);
+    if (index >= 0) {
+      updatedTasks[index] = task;
+    } else {
+      updatedTasks.insert(0, task);
+    }
+    tasks = updatedTasks;
     notifyListeners();
+  }
+
+  Future<void> updateTaskTitle(TaskSession task, String title) async {
+    final trimmed = title.trim();
+    if (trimmed.isEmpty || trimmed == task.title.trim()) {
+      return;
+    }
+    await saveTask(
+      task.copyWith(
+        title: trimmed,
+        updatedAt: DateTime.now(),
+      ),
+    );
   }
 
   void updateSpeechSettings(TaskSpeechSettings settings) {
     speechSettings = settings;
+    _configureOutputSummaryProvider();
     if (voiceService is DeviceVoiceService) {
       (voiceService as DeviceVoiceService)
           .updateVoiceStyle(settings.voiceStyle);
     }
     notifyListeners();
+  }
+
+  Future<LocalSummaryCapability> localSummaryCapability() {
+    final provider = outputSummaryProvider;
+    if (provider is SelectableOutputSummaryProvider) {
+      return provider.localModelCapability();
+    }
+    return Future.value(
+      const LocalSummaryCapability(
+        available: false,
+        message: '当前摘要提供方不支持端侧增强。',
+      ),
+    );
+  }
+
+  void _configureOutputSummaryProvider() {
+    final provider = outputSummaryProvider;
+    if (provider is SelectableOutputSummaryProvider) {
+      provider.setPreferLocalModel(speechSettings.preferLocalSummaryModel);
+    }
   }
 
   Future<bool> speakTaskSummary(TaskSession task) async {
@@ -169,7 +222,12 @@ class ArminAppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> sendFollowUp(TaskSession task, String instruction) async {
+  Future<void> sendFollowUp(
+    TaskSession task,
+    String instruction, {
+    Set<TaskConstraint> addedConstraints = const {},
+    String rawVoiceText = '',
+  }) async {
     await agentSessionService.sendFollowUp(
       await _controlRequest(task, instruction: instruction),
     );
@@ -177,53 +235,120 @@ class ArminAppState extends ChangeNotifier {
       return;
     }
     final latest = _latestTask(task.id) ?? task;
+    final inputAt = DateTime.now();
+    final taskWithVoiceInput = _withVoiceInput(latest, rawVoiceText, inputAt);
+    final updatedConstraints = {
+      ...taskWithVoiceInput.constraints,
+      ...addedConstraints,
+    };
     final taskWithNewTurn = _taskWithNewTurn(
-      latest,
+      taskWithVoiceInput.copyWith(
+        constraints: Set.unmodifiable(updatedConstraints),
+      ),
       userInput: instruction.trim(),
-      now: DateTime.now(),
+      now: inputAt,
     );
     await _saveControlledTask(
       taskWithNewTurn,
       status: TaskStatus.running,
       logMessage: 'User sent follow-up instruction.',
+      eventType:
+          rawVoiceText.trim().isEmpty ? 'runtime_control' : 'voice_follow_up',
     );
     startTaskExecution(_latestTask(task.id) ?? latest,
         _attachRequest(_latestTask(task.id) ?? latest));
   }
 
-  Future<void> reconnectTask(TaskSession task) async {
+  Future<void> selectTerminalOption(
+      TaskSession task, TerminalPromptOption option,
+      {String customResponse = ''}) async {
     final latest = _latestTask(task.id) ?? task;
+    final prompt = latest.terminalPrompt;
+    if (prompt == null ||
+        !prompt.options.any((candidate) => candidate.key == option.key)) {
+      throw StateError('Terminal prompt option is no longer available.');
+    }
+    await agentSessionService.selectTerminalOption(
+      await _controlRequest(latest),
+      option.key,
+    );
+    final trimmedResponse = customResponse.trim();
+    if (trimmedResponse.isNotEmpty) {
+      await agentSessionService.sendFollowUp(
+        await _controlRequest(latest, instruction: trimmedResponse),
+      );
+    }
+    await _saveControlledTask(
+      latest.copyWith(clearTerminalPrompt: true),
+      status: TaskStatus.running,
+      logMessage: 'Terminal option selected by user: ${option.key}.',
+      eventType: 'terminal_prompt_resolved',
+    );
+    final updatedTask = _latestTask(task.id) ?? latest;
+    startTaskExecution(updatedTask, _attachRequest(updatedTask));
+  }
+
+  Future<void> reconnectTask(
+    TaskSession task, {
+    String rawVoiceText = '',
+  }) async {
+    final latest = _withVoiceInput(
+      _latestTask(task.id) ?? task,
+      rawVoiceText,
+      DateTime.now(),
+    );
     await _saveControlledTask(
       latest,
       status: TaskStatus.running,
       logMessage: 'Observer reconnected by user.',
       eventType: 'observer_reconnected',
     );
-    startTaskExecution(_latestTask(task.id) ?? latest,
-        _attachRequest(_latestTask(task.id) ?? latest));
+    final synced = await _syncRemoteSnapshot(_latestTask(task.id) ?? latest);
+    final attached = _latestTask(task.id) ?? synced;
+    startTaskExecution(attached, _attachRequest(attached));
   }
 
   Future<void> pauseTask(TaskSession task) async {
     await agentSessionService.pause(await _controlRequest(task));
+    await disconnectTask(task, markFailed: false, recordDetached: false);
+    final latest = _latestTask(task.id) ?? task;
     await _saveControlledTask(
-      task,
+      latest,
       status: TaskStatus.paused,
       logMessage: 'Task paused by user.',
     );
   }
 
-  Future<void> resumeTask(TaskSession task) async {
+  Future<void> resumeTask(
+    TaskSession task, {
+    String rawVoiceText = '',
+  }) async {
     await agentSessionService.resume(await _controlRequest(task));
+    final latest = _withVoiceInput(
+      _latestTask(task.id) ?? task,
+      rawVoiceText,
+      DateTime.now(),
+    );
     await _saveControlledTask(
-      task,
+      latest,
       status: TaskStatus.running,
       logMessage: 'Task resumed by user.',
     );
+    final resumed = _latestTask(task.id) ?? latest;
+    startTaskExecution(resumed, _attachRequest(resumed));
   }
 
-  Future<void> stopTask(TaskSession task) async {
-    final request = await _controlRequest(task);
-    final taskWithFinalLog = await _captureFinalLog(task, request);
+  Future<void> stopTask(
+    TaskSession task, {
+    String rawVoiceText = '',
+  }) async {
+    final latest = _withVoiceInput(
+      _latestTask(task.id) ?? task,
+      rawVoiceText,
+      DateTime.now(),
+    );
+    final request = await _controlRequest(latest);
+    final taskWithFinalLog = await _captureFinalLog(latest, request);
     await _saveControlledTask(
       taskWithFinalLog,
       status: TaskStatus.stopped,
@@ -232,7 +357,13 @@ class ArminAppState extends ChangeNotifier {
       turnStatus: NativeOutputTurnStatus.stopped,
       userDecision: 'stopped',
     );
-    await agentSessionService.stop(request);
+    try {
+      await agentSessionService.stop(request);
+    } catch (error) {
+      await _recordCleanupFailure(
+          _latestTask(task.id) ?? taskWithFinalLog, error);
+      rethrow;
+    }
   }
 
   Future<String> _captureLogBestEffort(AgentControlRequest request) async {
@@ -241,6 +372,38 @@ class ArminAppState extends ChangeNotifier {
     } catch (_) {
       return '';
     }
+  }
+
+  Future<TaskSession> _syncRemoteSnapshot(TaskSession task) async {
+    if (task.turns.isEmpty) {
+      return task;
+    }
+    final snapshot = await _captureLogBestEffort(await _controlRequest(task));
+    final captured = snapshot.trim();
+    if (captured.isEmpty) {
+      return task;
+    }
+    final synced = _taskWithSyncedTurnSnapshot(task, captured);
+    if (_turnsSignature(task) == _turnsSignature(synced)) {
+      return task;
+    }
+    await saveTask(synced);
+    return synced;
+  }
+
+  String _turnsSignature(TaskSession task) {
+    return task.turns
+        .map(
+          (turn) => [
+            turn.turnIndex,
+            turn.status.name,
+            turn.userInput,
+            turn.rawOutput,
+            turn.cleanedOutput,
+            turn.lastOutputAt.microsecondsSinceEpoch,
+          ].join('|'),
+        )
+        .join('\n---\n');
   }
 
   Future<TaskSession> _captureFinalLog(
@@ -254,9 +417,17 @@ class ArminAppState extends ChangeNotifier {
     return _appendRawLog(task, 'Final captured output:\n$finalLog\n');
   }
 
-  Future<void> markTaskCompleted(TaskSession task) async {
-    final request = await _controlRequest(task);
-    final taskWithFinalLog = await _captureFinalLog(task, request);
+  Future<void> markTaskCompleted(
+    TaskSession task, {
+    String rawVoiceText = '',
+  }) async {
+    final latest = _withVoiceInput(
+      _latestTask(task.id) ?? task,
+      rawVoiceText,
+      DateTime.now(),
+    );
+    final request = await _controlRequest(latest);
+    final taskWithFinalLog = await _captureFinalLog(latest, request);
     await _saveControlledTask(
       taskWithFinalLog,
       status: TaskStatus.userCompleted,
@@ -272,9 +443,17 @@ class ArminAppState extends ChangeNotifier {
     await _cleanupTaskSession(_latestTask(task.id) ?? taskWithFinalLog);
   }
 
-  Future<void> markTaskFailed(TaskSession task) async {
-    final request = await _controlRequest(task);
-    final taskWithFinalLog = await _captureFinalLog(task, request);
+  Future<void> markTaskFailed(
+    TaskSession task, {
+    String rawVoiceText = '',
+  }) async {
+    final latest = _withVoiceInput(
+      _latestTask(task.id) ?? task,
+      rawVoiceText,
+      DateTime.now(),
+    );
+    final request = await _controlRequest(latest);
+    final taskWithFinalLog = await _captureFinalLog(latest, request);
     await _saveControlledTask(
       taskWithFinalLog,
       status: TaskStatus.userFailed,
@@ -290,6 +469,19 @@ class ArminAppState extends ChangeNotifier {
     await _cleanupTaskSession(_latestTask(task.id) ?? taskWithFinalLog);
   }
 
+  Future<void> cleanupRemoteSession(TaskSession task) async {
+    final latest = _latestTask(task.id) ?? task;
+    final request = await _controlRequest(latest);
+    final taskWithFinalLog = await _captureFinalLog(latest, request);
+    await agentSessionService.cleanup(request);
+    await _saveControlledTask(
+      taskWithFinalLog,
+      status: taskWithFinalLog.status,
+      logMessage: 'Remote tmux session cleanup requested by user.',
+      eventType: 'runtime_cleanup',
+    );
+  }
+
   void startTaskExecution(
     TaskSession initialTask,
     AgentExecutionRequest request,
@@ -300,37 +492,56 @@ class ArminAppState extends ChangeNotifier {
     }
 
     var task = initialTask;
+    var pendingUpdates = Future<void>.value();
     late final StreamSubscription<AgentExecutionUpdate> subscription;
     subscription = agentSessionService.execute(request).listen(
-      (update) async {
-        if (!_runningExecutions.containsKey(task.id)) {
-          return;
-        }
-        final latest = _latestTask(task.id) ?? task;
-        if (_isTerminal(latest.status)) {
-          await disconnectTask(latest,
-              markFailed: false, recordDetached: false);
-          return;
-        }
-        final previousTask = latest;
-        task = _taskWithExecutionUpdate(previousTask, update);
-        await saveTask(task);
-        await _speakTaskUpdate(previousTask, task);
+      (update) {
+        pendingUpdates = pendingUpdates.then((_) async {
+          if (_runningExecutions[task.id] != subscription) {
+            return;
+          }
+          final latest = _latestTask(task.id) ?? task;
+          if (_isTerminal(latest.status)) {
+            await disconnectTask(latest,
+                markFailed: false, recordDetached: false);
+            return;
+          }
+          final previousTask = latest;
+          task = _taskWithExecutionUpdate(previousTask, update);
+          await saveTask(task);
+          await _speakTaskUpdate(previousTask, task);
+        });
       },
       onError: (Object error) async {
+        await pendingUpdates;
+        if (_runningExecutions[task.id] != subscription) {
+          return;
+        }
         _runningExecutions.remove(task.id);
         final latest = _latestTask(task.id) ?? task;
         if (_isTerminal(latest.status)) {
+          return;
+        }
+        if (_isRecoverableObserverError(error)) {
+          final detachedTask = await _saveObserverDisconnected(latest, error);
+          await _speakTaskUpdate(latest, detachedTask);
           return;
         }
         final failedTask = await _saveFailedExecution(latest, error);
-        await _speakTaskUpdate(latest, failedTask);
-        await _cleanupTaskSession(_latestTask(latest.id) ?? failedTask);
+        final finalTask = await _captureAndSaveFinalLog(failedTask);
+        await _speakTaskUpdate(latest, finalTask);
+        await _cleanupTaskSession(finalTask);
       },
       onDone: () async {
+        await pendingUpdates;
+        if (_runningExecutions[task.id] != subscription) {
+          return;
+        }
         _runningExecutions.remove(task.id);
-        if (_isTerminal(task.status)) {
-          await _cleanupTaskSession(task);
+        final latest = _latestTask(task.id) ?? task;
+        if (_isTerminal(latest.status)) {
+          final finalTask = await _captureAndSaveFinalLog(latest);
+          await _cleanupTaskSession(finalTask);
         }
       },
     );
@@ -373,9 +584,34 @@ class ArminAppState extends ChangeNotifier {
   Future<void> _cleanupTaskSession(TaskSession task) async {
     try {
       await agentSessionService.cleanup(await _controlRequest(task));
-    } catch (_) {
-      // Cleanup is best-effort; raw log has already been captured.
+    } catch (error) {
+      await _recordCleanupFailure(task, error);
     }
+  }
+
+  Future<void> _recordCleanupFailure(TaskSession task, Object error) async {
+    final latest = _latestTask(task.id) ?? task;
+    final safeError = _secretRedactor.redactInlineSecrets('$error');
+    const notice = '远端会话清理未确认，tmux 可能仍在运行；请从菜单重试清理。';
+    await _saveControlledTask(
+      latest,
+      status: latest.status,
+      logMessage: 'Remote tmux session cleanup failed: $safeError',
+      eventType: 'runtime_cleanup_failed',
+      shortSummary: latest.shortSummary.contains(notice)
+          ? latest.shortSummary
+          : '${latest.shortSummary.trim()}\n$notice'.trim(),
+    );
+  }
+
+  Future<TaskSession> _captureAndSaveFinalLog(TaskSession task) async {
+    final taskWithLog =
+        await _captureFinalLog(task, await _controlRequest(task));
+    if (identical(taskWithLog, task)) {
+      return task;
+    }
+    await saveTask(taskWithLog);
+    return taskWithLog;
   }
 
   Future<void> resolveApproval(TaskSession task,
@@ -590,17 +826,35 @@ Apply this decision to the pending approval request.
       );
     }
 
-    if (update.result != null) {
-      final completedAt = DateTime.now();
-      final resultStatus = update.result!.status;
+    if (update.terminalPrompt != null) {
       return taskWithTurn.copyWith(
-        status: resultStatus == 'success'
-            ? TaskStatus.completed
-            : TaskStatus.failed,
+        status: TaskStatus.needAttention,
+        rawLog: rawLog,
+        terminalPrompt: update.terminalPrompt,
+        executionLogs: executionLogs,
+        updatedAt: updateAt,
+        shortSummary: update.terminalPrompt!.question,
+        metricEvents: [
+          ...taskWithTurn.metricEvents,
+          MetricEvent.create(
+            taskId: task.id,
+            eventType: 'terminal_prompt_requested',
+            payloadJson: '{"options":${update.terminalPrompt!.options.length}}',
+            now: updateAt,
+          ),
+        ],
+      );
+    }
+
+    if (update.result != null) {
+      final observedAt = DateTime.now();
+      final resultStatus = update.result!.status;
+      final needsAttention = resultStatus != 'success';
+      return taskWithTurn.copyWith(
+        status: needsAttention ? TaskStatus.needAttention : TaskStatus.turnIdle,
         rawLog: rawLog,
         result: update.result,
-        updatedAt: completedAt,
-        completedAt: completedAt,
+        updatedAt: observedAt,
         shortSummary: update.result!.summary,
         summary: update.result!.summary,
         executionLogs: executionLogs,
@@ -608,12 +862,13 @@ Apply this decision to the pending approval request.
           ...taskWithTurn.metricEvents,
           MetricEvent.create(
             taskId: task.id,
-            eventType: 'task_completed',
-            payloadJson: '{"status":"$resultStatus"}',
-            now: completedAt,
+            eventType: needsAttention ? 'need_attention' : 'turn_idle',
+            payloadJson: '{"source":"legacy_result","status":"$resultStatus"}',
+            now: observedAt,
           ),
         ],
         clearApproval: true,
+        clearTerminalPrompt: true,
       );
     }
 
@@ -675,6 +930,7 @@ Apply this decision to the pending approval request.
           ),
         ],
         clearApproval: !update.needsAttention,
+        clearTerminalPrompt: !update.needsAttention,
       );
     }
 
@@ -720,6 +976,30 @@ Apply this decision to the pending approval request.
       status: NativeOutputTurnStatus.running,
     );
     return baseTask.copyWith(turns: [...baseTask.turns, nextTurn]);
+  }
+
+  TaskSession _withVoiceInput(
+    TaskSession task,
+    String rawVoiceText,
+    DateTime createdAt,
+  ) {
+    final redactedText =
+        _secretRedactor.redactInlineSecrets(rawVoiceText.trim());
+    if (redactedText.isEmpty) {
+      return task;
+    }
+    return task.copyWith(
+      voiceInputs: [
+        ...task.voiceInputs,
+        VoiceInput(
+          id: 'voice-${task.id}-${createdAt.microsecondsSinceEpoch}',
+          taskId: task.id,
+          rawSttText: redactedText,
+          language: 'zh-CN',
+          createdAt: createdAt,
+        ),
+      ],
+    );
   }
 
   TaskSession _taskWithInitialTurn(
@@ -776,6 +1056,60 @@ Apply this decision to the pending approval request.
     return task.copyWith(turns: updatedTurns);
   }
 
+  TaskSession _taskWithSyncedTurnSnapshot(
+    TaskSession task,
+    String capturedPane,
+  ) {
+    final turns = task.turns.isEmpty
+        ? _taskWithInitialTurn(
+            task,
+            userInput: task.userText.isEmpty ? task.title : task.userText,
+            now: task.startedAt ?? task.createdAt,
+          ).turns
+        : task.turns;
+    final snapshotTurns = [...turns];
+    final current = snapshotTurns.last;
+    final observedAt = DateTime.now();
+    snapshotTurns[snapshotTurns.length - 1] = current.copyWith(
+      rawOutput: capturedPane,
+      cleanedOutput: capturedPane,
+      lastOutputAt: observedAt,
+    );
+    final scopedRaw = _turnOutputSlicer.rawOutputForTurn(
+      snapshotTurns,
+      snapshotTurns.length - 1,
+    );
+    final scopedClean = _turnOutputSlicer.outputForTurn(
+      snapshotTurns,
+      snapshotTurns.length - 1,
+    );
+    if (scopedRaw.trim().isEmpty && scopedClean.trim().isEmpty) {
+      return task;
+    }
+    snapshotTurns[snapshotTurns.length - 1] = current.copyWith(
+      rawOutput: scopedRaw.isEmpty ? current.rawOutput : scopedRaw,
+      cleanedOutput: scopedClean.isEmpty ? current.cleanedOutput : scopedClean,
+      lastOutputAt: observedAt,
+    );
+    final summary = scopedClean.trim();
+    return task.copyWith(
+      turns: snapshotTurns,
+      updatedAt: observedAt,
+      summary: summary.isEmpty ? task.summary : summary,
+      shortSummary: summary.isEmpty ? task.shortSummary : summary,
+      result: summary.isEmpty
+          ? task.result
+          : TaskResult(
+              status: 'turn_idle',
+              summary: summary,
+              changedFiles: const [],
+              validation: const [],
+              risks: const [],
+              nextActions: const [],
+            ),
+    );
+  }
+
   TaskSession _taskWithCurrentTurnDecision(
     TaskSession task, {
     required NativeOutputTurnStatus status,
@@ -807,9 +1141,6 @@ Apply this decision to the pending approval request.
       return NativeOutputTurnStatus.needAttention;
     }
     if (update.turnIdle || update.done || update.result != null) {
-      if (update.result?.status == 'failed') {
-        return NativeOutputTurnStatus.failed;
-      }
       return NativeOutputTurnStatus.turnIdle;
     }
     return null;
@@ -817,6 +1148,9 @@ Apply this decision to the pending approval request.
 
   String _runtimeLostSummary(String? cleanedOutput) {
     final output = cleanedOutput?.toLowerCase() ?? '';
+    if (output.contains('runtime limit reached')) {
+      return '任务达到最长运行时限，远端会话已清理';
+    }
     if (output.contains('could not find tmux session') ||
         output.contains('could not capture tmux pane')) {
       return '远端会话不存在，可能已结束';
@@ -863,6 +1197,55 @@ Apply this decision to the pending approval request.
     );
     await saveTask(failedTask);
     return failedTask;
+  }
+
+  Future<TaskSession> _saveObserverDisconnected(
+    TaskSession task,
+    Object error,
+  ) async {
+    final now = DateTime.now();
+    final message = _secretRedactor.redactInlineSecrets(
+      'SSH 监听中断：${error.toString()}',
+    );
+    final detachedTask = task.copyWith(
+      status: TaskStatus.observerDetached,
+      rawLog: '${task.rawLog}$message\n',
+      updatedAt: now,
+      shortSummary: 'SSH 监听已断开，远端任务状态未知；可以重新监听或停止任务',
+      summary: message,
+      executionLogs: [
+        ...task.executionLogs,
+        ExecutionLog(
+          id: 'log-${now.microsecondsSinceEpoch}',
+          taskId: task.id,
+          rawOutput: '$message\n',
+          createdAt: now,
+        ),
+      ],
+      metricEvents: [
+        ...task.metricEvents,
+        MetricEvent.create(
+          taskId: task.id,
+          eventType: 'observer_connection_lost',
+          payloadJson: '{"status":"observerDetached"}',
+          now: now,
+        ),
+      ],
+      clearApproval: true,
+    );
+    await saveTask(detachedTask);
+    return detachedTask;
+  }
+
+  bool _isRecoverableObserverError(Object error) {
+    final text = error.toString().toLowerCase();
+    return text.contains('socketexception') ||
+        text.contains('socket exception') ||
+        text.contains('connection abort') ||
+        text.contains('connection reset') ||
+        text.contains('connection timed out') ||
+        text.contains('broken pipe') ||
+        text.contains('connection closed');
   }
 
   Future<void> _speakTaskUpdate(

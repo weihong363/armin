@@ -1,6 +1,7 @@
 import '../../../core/models/task_status.dart';
 import '../../agent/parsers/approval_request.dart';
 import '../../agent/parsers/task_result.dart';
+import '../../agent/parsers/terminal_prompt.dart';
 import '../../hosts/models/host_config.dart';
 import 'execution_log.dart';
 import 'metric_event.dart';
@@ -36,6 +37,7 @@ class TaskSession {
     this.summary,
     this.result,
     this.approval,
+    this.terminalPrompt,
     this.voiceInputs = const [],
     this.draftRecord,
     this.promptRecord,
@@ -68,6 +70,7 @@ class TaskSession {
   final String? summary;
   final TaskResult? result;
   final ApprovalRequest? approval;
+  final TerminalPrompt? terminalPrompt;
   final List<VoiceInput> voiceInputs;
   final TaskDraft? draftRecord;
   final PromptRecord? promptRecord;
@@ -76,6 +79,11 @@ class TaskSession {
   final List<MetricEvent> metricEvents;
   final List<Subtask> subtasks;
   final List<NativeOutputTurn> turns;
+
+  String get displayTitle {
+    final trimmed = title.trim();
+    return trimmed.isEmpty ? '未命名任务' : trimmed;
+  }
 
   factory TaskSession.fromJson(Map<String, Object?> json) {
     final hostJson = json['host'];
@@ -109,6 +117,8 @@ class TaskSession {
       summary: json['summary'] as String?,
       result: _objectOf(json['result'], TaskResult.fromJson),
       approval: _objectOf(json['approval'], ApprovalRequest.fromJson),
+      terminalPrompt:
+          _objectOf(json['terminalPrompt'], TerminalPrompt.fromJson),
       voiceInputs: _listOf(json['voiceInputs'], VoiceInput.fromJson),
       draftRecord: _objectOf(json['draftRecord'], TaskDraft.fromJson),
       promptRecord: _objectOf(json['promptRecord'], PromptRecord.fromJson),
@@ -144,6 +154,7 @@ class TaskSession {
     String? summary,
     TaskResult? result,
     ApprovalRequest? approval,
+    TerminalPrompt? terminalPrompt,
     List<VoiceInput>? voiceInputs,
     TaskDraft? draftRecord,
     PromptRecord? promptRecord,
@@ -153,6 +164,7 @@ class TaskSession {
     List<Subtask>? subtasks,
     List<NativeOutputTurn>? turns,
     bool clearApproval = false,
+    bool clearTerminalPrompt = false,
   }) {
     return TaskSession(
       id: id ?? this.id,
@@ -177,6 +189,8 @@ class TaskSession {
       summary: summary ?? this.summary,
       result: result ?? this.result,
       approval: clearApproval ? null : approval ?? this.approval,
+      terminalPrompt:
+          clearTerminalPrompt ? null : terminalPrompt ?? this.terminalPrompt,
       voiceInputs: voiceInputs ?? this.voiceInputs,
       draftRecord: draftRecord ?? this.draftRecord,
       promptRecord: promptRecord ?? this.promptRecord,
@@ -189,9 +203,38 @@ class TaskSession {
   }
 
   Map<String, Object?> toJson() {
+    final safeHost = host.toSafePersistedCopy();
+    final password = host.password.trim();
+    String safeText(String value) => _redactRuntimePassword(value, password);
+    Map<String, Object?> safePromptRecord(PromptRecord record) {
+      final json = record.toJson();
+      json['finalPrompt'] = safeText(record.finalPrompt);
+      return json;
+    }
+
+    Map<String, Object?> safeExecutionLog(ExecutionLog log) {
+      final json = log.toJson();
+      json['rawOutput'] = safeText(log.rawOutput);
+      return json;
+    }
+
+    Map<String, Object?> safeMetricEvent(MetricEvent event) {
+      final json = event.toJson();
+      json['payloadJson'] = safeText(event.payloadJson);
+      return json;
+    }
+
+    Map<String, Object?> safeTurn(NativeOutputTurn turn) {
+      final json = turn.toJson();
+      json['rawOutput'] = safeText(turn.rawOutput);
+      json['cleanedOutput'] = safeText(turn.cleanedOutput);
+      json['userInput'] = safeText(turn.userInput);
+      return json;
+    }
+
     return {
       'id': id,
-      'host': host.toJson(),
+      'host': safeHost.toJson(),
       'title': title,
       'status': status.name,
       'createdAt': createdAt.toIso8601String(),
@@ -205,24 +248,33 @@ class TaskSession {
       'userText': userText,
       'context': context,
       'constraints': constraints.map((constraint) => constraint.name).toList(),
-      'finalPrompt': finalPrompt,
+      'finalPrompt': safeText(finalPrompt),
       'secretRecords': secretRecords.map((record) => record.toJson()).toList(),
-      'rawLog': rawLog,
-      'shortSummary': shortSummary,
-      'summary': summary,
+      'rawLog': safeText(rawLog),
+      'shortSummary': safeText(shortSummary),
+      'summary': summary == null ? null : safeText(summary!),
       'result': result?.toJson(),
       'approval': approval?.toJson(),
+      'terminalPrompt': terminalPrompt?.toJson(),
       'voiceInputs': voiceInputs.map((input) => input.toJson()).toList(),
       'draftRecord': draftRecord?.toJson(),
-      'promptRecord': promptRecord?.toJson(),
-      'executionLogs': executionLogs.map((log) => log.toJson()).toList(),
+      'promptRecord':
+          promptRecord == null ? null : safePromptRecord(promptRecord!),
+      'executionLogs': executionLogs.map(safeExecutionLog).toList(),
       'approvalRequests':
           approvalRequests.map((approval) => approval.toJson()).toList(),
-      'metricEvents': metricEvents.map((event) => event.toJson()).toList(),
+      'metricEvents': metricEvents.map(safeMetricEvent).toList(),
       'subtasks': subtasks.map((subtask) => subtask.toJson()).toList(),
-      'turns': turns.map((turn) => turn.toJson()).toList(),
+      'turns': turns.map(safeTurn).toList(),
     };
   }
+}
+
+String _redactRuntimePassword(String value, String password) {
+  if (password.isEmpty || value.isEmpty) {
+    return value;
+  }
+  return value.replaceAll(password, '[REDACTED_PASSWORD]');
 }
 
 DateTime _date(Object? value) {

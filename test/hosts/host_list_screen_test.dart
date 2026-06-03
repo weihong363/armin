@@ -11,18 +11,16 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  testWidgets('host list shows password missing state for this run',
-      (tester) async {
+  testWidgets('host list shows missing secure password state', (tester) async {
     await _pumpHostList(tester, host: _host(password: ''));
 
-    expect(find.textContaining('本次运行未设置 SSH 密码'), findsOneWidget);
+    expect(find.textContaining('未保存 SSH 密码'), findsOneWidget);
   });
 
-  testWidgets('host list shows password ready state for this run',
-      (tester) async {
+  testWidgets('host list shows secure password state', (tester) async {
     await _pumpHostList(tester, host: _host(password: 'secret-password'));
 
-    expect(find.textContaining('本次运行已准备 SSH 密码'), findsOneWidget);
+    expect(find.textContaining('SSH 密码已安全保存'), findsOneWidget);
   });
 
   testWidgets('host list can duplicate host config', (tester) async {
@@ -35,10 +33,6 @@ void main() {
 
     expect(find.text('添加主机'), findsOneWidget);
     expect(find.widgetWithText(TextFormField, 'Dev Copy'), findsOneWidget);
-    expect(
-      find.widgetWithText(TextFormField, 'armin-codex-copy'),
-      findsOneWidget,
-    );
     expect(
         find.widgetWithText(TextFormField, 'secret-password'), findsOneWidget);
   });

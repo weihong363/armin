@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import 'app_state_scope.dart';
@@ -15,10 +17,20 @@ class ArminApp extends StatefulWidget {
 }
 
 class _ArminAppState extends State<ArminApp> {
+  late final _AppLifecycleObserver _lifecycleObserver =
+      _AppLifecycleObserver(widget.state);
+
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(_lifecycleObserver);
     widget.state.load();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(_lifecycleObserver);
+    super.dispose();
   }
 
   @override
@@ -32,5 +44,18 @@ class _ArminAppState extends State<ArminApp> {
         home: const TaskHomeScreen(),
       ),
     );
+  }
+}
+
+class _AppLifecycleObserver extends WidgetsBindingObserver {
+  _AppLifecycleObserver(this.state);
+
+  final ArminAppState state;
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState stateChange) {
+    if (stateChange == AppLifecycleState.resumed) {
+      unawaited(state.load());
+    }
   }
 }

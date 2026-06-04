@@ -883,6 +883,7 @@ class _ResultPanelState extends State<_ResultPanel> {
 
   String? _activeVoiceCardId;
   _VoicePlaybackState _voicePlaybackState = _VoicePlaybackState.idle;
+  VoiceService? _voiceService;
 
   Future<void> _onVoicePlay(String cardId, String fullOutput) async {
     final voiceService = AppStateScope.read(context).voiceService;
@@ -916,7 +917,7 @@ class _ResultPanelState extends State<_ResultPanel> {
         _voicePlaybackState != _VoicePlaybackState.playing) {
       return;
     }
-    AppStateScope.read(context).voiceService.pauseSpeaking();
+    _voiceService?.pauseSpeaking();
     _voicePlaybackState = _VoicePlaybackState.paused;
     setState(() {});
   }
@@ -925,7 +926,7 @@ class _ResultPanelState extends State<_ResultPanel> {
     if (_activeVoiceCardId == null) {
       return;
     }
-    AppStateScope.read(context).voiceService.stopSpeaking();
+    _voiceService?.stopSpeaking();
     _activeVoiceCardId = null;
     _voicePlaybackState = _VoicePlaybackState.idle;
     setState(() {});
@@ -934,6 +935,7 @@ class _ResultPanelState extends State<_ResultPanel> {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    _voiceService = AppStateScope.of(context).voiceService;
     _summariesFuture ??= _outputSummaries(widget.task);
     _maybeRevealLatestTurn();
   }
@@ -946,7 +948,7 @@ class _ResultPanelState extends State<_ResultPanel> {
 
   void _disposeVoiceCoordinator() {
     if (_activeVoiceCardId != null) {
-      AppStateScope.read(context).voiceService.stopSpeaking();
+      _voiceService?.stopSpeaking();
       _activeVoiceCardId = null;
       _voicePlaybackState = _VoicePlaybackState.idle;
     }

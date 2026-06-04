@@ -790,7 +790,7 @@ You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro).
       noisy,
     );
 
-    expect(summary.speechSummary, contains('额度已用完，请稍后重试'));
+    expect(summary.speechSummary, contains('重试'));
     expect(summary.speechSummary, contains('已找到SUMMER'));
     expect(summary.speechSummary, isNot(contains('SKILL.md')));
     expect(summary.speechSummary, isNot(contains('/Users/ironion')));

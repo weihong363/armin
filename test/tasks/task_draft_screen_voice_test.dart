@@ -170,5 +170,8 @@ class _PartialFallbackVoiceService implements VoiceService {
   Future<void> speakSummary(String summary) async {}
 
   @override
+  Future<void> pauseSpeaking() async {}
+
+  @override
   Future<void> stopSpeaking() async {}
 }

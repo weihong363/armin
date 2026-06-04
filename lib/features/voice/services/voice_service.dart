@@ -9,6 +9,8 @@ abstract class VoiceService {
 
   Future<void> speakSummary(String summary);
 
+  Future<void> pauseSpeaking();
+
   Future<void> stopSpeaking();
 }
 

@@ -330,7 +330,8 @@ void main() {
 
     await tester.tap(find.text('指标'));
     await tester.pumpAndSettle();
-    expect(find.text('语音追加'), findsOneWidget);
+    expect(find.text('指标展示已暂时关闭'), findsOneWidget);
+    expect(find.text('指标时间线'), findsNothing);
   });
 
   testWidgets('manual follow-up releases detail tree without inherited errors',
@@ -993,6 +994,8 @@ Allow this command to run? Redirection detected.
     await tester.tap(find.text('指标'));
     await tester.pumpAndSettle();
     expect(find.text('Turn 4').hitTestable(), findsNothing);
+    expect(find.text('指标展示已暂时关闭'), findsOneWidget);
+    expect(find.text('指标时间线'), findsNothing);
 
     tester.binding.handleAppLifecycleStateChanged(
       AppLifecycleState.resumed,
@@ -1504,6 +1507,9 @@ class _SilentVoiceService implements VoiceService {
   Future<void> speakSummary(String summary) async {}
 
   @override
+  Future<void> pauseSpeaking() async {}
+
+  @override
   Future<void> stopSpeaking() async {}
 
   @override
@@ -1533,6 +1539,9 @@ class _RecognizingVoiceService implements VoiceService {
   Future<void> speakSummary(String summary) async {
     spokenSummaries.add(summary);
   }
+
+  @override
+  Future<void> pauseSpeaking() async {}
 
   @override
   Future<void> stopSpeaking() async {

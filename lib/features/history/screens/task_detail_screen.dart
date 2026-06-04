@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
@@ -811,6 +810,8 @@ class _LazyTurnOutputExpansionState extends State<_LazyTurnOutputExpansion> {
   }
 }
 
+enum _VoicePlaybackState { idle, playing, paused }
+
 class _IndexedTurn {
   const _IndexedTurn({required this.index, required this.turn});
 
@@ -874,16 +875,81 @@ class _ResultPanel extends StatefulWidget {
 
 class _ResultPanelState extends State<_ResultPanel> {
   static const _turnOutputSlicer = TurnOutputSlicer();
+  static const _foldLineLimit = 20;
 
   final GlobalKey _topAnchorKey = GlobalKey();
   Future<List<_TurnOutputSummary>>? _summariesFuture;
   int _handledRevealToken = 0;
+
+  String? _activeVoiceCardId;
+  _VoicePlaybackState _voicePlaybackState = _VoicePlaybackState.idle;
+
+  Future<void> _onVoicePlay(String cardId, String fullOutput) async {
+    final voiceService = AppStateScope.read(context).voiceService;
+
+    if (_activeVoiceCardId != null) {
+      await voiceService.stopSpeaking();
+    }
+
+    _activeVoiceCardId = cardId;
+    _voicePlaybackState = _VoicePlaybackState.playing;
+    setState(() {});
+
+    final speechText = DeviceVoiceService.cleanSpeechText(fullOutput);
+    try {
+      await voiceService.speakSummary(speechText);
+    } catch (_) {}
+
+    if (!mounted) {
+      return;
+    }
+    if (_activeVoiceCardId == cardId &&
+        _voicePlaybackState == _VoicePlaybackState.playing) {
+      _activeVoiceCardId = null;
+      _voicePlaybackState = _VoicePlaybackState.idle;
+      setState(() {});
+    }
+  }
+
+  void _onVoicePause() {
+    if (_activeVoiceCardId == null ||
+        _voicePlaybackState != _VoicePlaybackState.playing) {
+      return;
+    }
+    AppStateScope.read(context).voiceService.pauseSpeaking();
+    _voicePlaybackState = _VoicePlaybackState.paused;
+    setState(() {});
+  }
+
+  void _onVoiceStop() {
+    if (_activeVoiceCardId == null) {
+      return;
+    }
+    AppStateScope.read(context).voiceService.stopSpeaking();
+    _activeVoiceCardId = null;
+    _voicePlaybackState = _VoicePlaybackState.idle;
+    setState(() {});
+  }
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
     _summariesFuture ??= _outputSummaries(widget.task);
     _maybeRevealLatestTurn();
+  }
+
+  @override
+  void dispose() {
+    _disposeVoiceCoordinator();
+    super.dispose();
+  }
+
+  void _disposeVoiceCoordinator() {
+    if (_activeVoiceCardId != null) {
+      AppStateScope.read(context).voiceService.stopSpeaking();
+      _activeVoiceCardId = null;
+      _voicePlaybackState = _VoicePlaybackState.idle;
+    }
   }
 
   @override
@@ -912,6 +978,12 @@ class _ResultPanelState extends State<_ResultPanel> {
         SizedBox(key: _topAnchorKey, height: 0),
         _InfoCard(
           title: '输出',
+          trailing: Text(
+            '点击播放/暂停 · 长按终止',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: ArminTheme.ink.withValues(alpha: 0.45),
+                ),
+          ),
           child: FutureBuilder<List<_TurnOutputSummary>>(
             future: _summariesFuture,
             builder: (context, snapshot) {
@@ -926,6 +998,15 @@ class _ResultPanelState extends State<_ResultPanel> {
                       title: output.title,
                       text: output.text,
                       speechText: output.speechText,
+                      fullOutputForSpeech: output.fullOutputForSpeech,
+                      foldLineLimit: _foldLineLimit,
+                      cardId: output.title,
+                      voicePlaybackState: _activeVoiceCardId == output.title
+                          ? _voicePlaybackState
+                          : _VoicePlaybackState.idle,
+                      onVoicePlay: _onVoicePlay,
+                      onVoicePause: _onVoicePause,
+                      onVoiceStop: _onVoiceStop,
                     ),
                 ],
               );
@@ -958,9 +1039,10 @@ class _ResultPanelState extends State<_ResultPanel> {
       if (!_isResultTurn(turn.status)) {
         continue;
       }
+      final cleanedOutput = _turnOutputSlicer.outputForTurn(task.turns, index);
       final summary = await provider.summarize(
         OutputSummaryRequest(
-          cleanedOutput: _turnOutputSlicer.outputForTurn(task.turns, index),
+          cleanedOutput: cleanedOutput,
           status: task.status,
           taskTitle: task.title,
           promptInputs: [turn.userInput],
@@ -968,12 +1050,16 @@ class _ResultPanelState extends State<_ResultPanel> {
         ),
       );
       final text = summary.displaySummary.trim();
+      final speechText = summary.speechSummary.trim().isNotEmpty
+          ? summary.speechSummary.trim()
+          : DeviceVoiceService.cleanSpeechText(text);
       if (text.isNotEmpty) {
         summaries.add(
           _TurnOutputSummary(
             title: 'Turn ${turn.turnIndex}',
             text: text,
-            speechText: DeviceVoiceService.cleanSpeechText(text),
+            speechText: speechText,
+            fullOutputForSpeech: text,
           ),
         );
       }
@@ -1000,7 +1086,10 @@ class _ResultPanelState extends State<_ResultPanel> {
             _TurnOutputSummary(
               title: '输出结果',
               text: text,
-              speechText: DeviceVoiceService.cleanSpeechText(text),
+              speechText: legacy.speechSummary.trim().isNotEmpty
+                  ? legacy.speechSummary.trim()
+                  : DeviceVoiceService.cleanSpeechText(text),
+              fullOutputForSpeech: text,
             ),
           ];
   }
@@ -1139,26 +1228,57 @@ class _TurnOutputSummary {
     required this.title,
     required this.text,
     this.speechText = '',
+    required this.fullOutputForSpeech,
   });
 
   final String title;
   final String text;
   final String speechText;
+  final String fullOutputForSpeech;
 }
 
-class _OutputSegmentCard extends StatelessWidget {
+class _OutputSegmentCard extends StatefulWidget {
   const _OutputSegmentCard({
     required this.title,
     required this.text,
     required this.speechText,
+    required this.fullOutputForSpeech,
+    required this.foldLineLimit,
+    required this.cardId,
+    required this.voicePlaybackState,
+    required this.onVoicePlay,
+    required this.onVoicePause,
+    required this.onVoiceStop,
   });
 
   final String title;
   final String text;
   final String speechText;
+  final String fullOutputForSpeech;
+  final int foldLineLimit;
+  final String cardId;
+  final _VoicePlaybackState voicePlaybackState;
+  final Future<void> Function(String cardId, String fullOutput) onVoicePlay;
+  final VoidCallback onVoicePause;
+  final VoidCallback onVoiceStop;
+
+  @override
+  State<_OutputSegmentCard> createState() => _OutputSegmentCardState();
+}
+
+class _OutputSegmentCardState extends State<_OutputSegmentCard> {
+  bool _outputExpanded = false;
 
   @override
   Widget build(BuildContext context) {
+    final lines = widget.text.split('\n');
+    final needsFolding = lines.length > widget.foldLineLimit;
+    final displayText = (needsFolding && !_outputExpanded)
+        ? lines.take(widget.foldLineLimit).join('\n')
+        : widget.text;
+
+    final voiceButton = _buildVoiceButton();
+
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
       child: DecoratedBox(
@@ -1172,21 +1292,37 @@ class _OutputSegmentCard extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(title, style: Theme.of(context).textTheme.labelLarge),
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      widget.title,
+                      style: Theme.of(context).textTheme.labelLarge,
+                    ),
+                  ),
+                  voiceButton,
+                ],
+              ),
               const SizedBox(height: 8),
-              SelectableText(text),
-              const SizedBox(height: 8),
-              Align(
-                alignment: Alignment.centerRight,
-                child: IconButton.filledTonal(
-                  tooltip: '朗读这段输出',
-                  icon: const Icon(Icons.volume_up_outlined),
-                  onPressed: () => _speakSegment(
-                    context,
-                    speechText.isNotEmpty ? speechText : text,
+              SelectableText(displayText),
+              if (needsFolding) ...[
+                const SizedBox(height: 4),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: TextButton.icon(
+                    onPressed: () {
+                      setState(() => _outputExpanded = !_outputExpanded);
+                    },
+                    icon: Icon(
+                      _outputExpanded ? Icons.expand_less : Icons.expand_more,
+                      size: 18,
+                    ),
+                    label: Text(
+                      _outputExpanded ? '收起' : '展开完整输出',
+                    ),
                   ),
                 ),
-              ),
+              ],
             ],
           ),
         ),
@@ -1194,17 +1330,55 @@ class _OutputSegmentCard extends StatelessWidget {
     );
   }
 
-  Future<void> _speakSegment(BuildContext context, String text) async {
-    try {
-      await AppStateScope.read(context).voiceService.speakSummary(text);
-    } catch (error) {
-      if (!context.mounted) {
-        return;
-      }
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('朗读失败：$error')),
-      );
+  Widget _buildVoiceButton() {
+    final state = widget.voicePlaybackState;
+
+    final IconData icon;
+    final String tooltip;
+    final VoidCallback onTap;
+    final VoidCallback? onLongPress;
+
+    switch (state) {
+      case _VoicePlaybackState.idle:
+        icon = Icons.volume_up_outlined;
+        tooltip = '朗读这段输出';
+        onTap = () => _onPlay();
+        onLongPress = null;
+      case _VoicePlaybackState.playing:
+        icon = Icons.pause_outlined;
+        tooltip = '暂停朗读（长按停止）';
+        onTap = () => widget.onVoicePause();
+        onLongPress = () => widget.onVoiceStop();
+      case _VoicePlaybackState.paused:
+        icon = Icons.play_arrow_outlined;
+        tooltip = '继续朗读（长按停止）';
+        onTap = () => _onPlay();
+        onLongPress = () => widget.onVoiceStop();
     }
+
+    return Tooltip(
+      message: tooltip,
+      child: Material(
+        color: Theme.of(context).colorScheme.secondaryContainer,
+        borderRadius: BorderRadius.circular(20),
+        child: InkWell(
+          onTap: onTap,
+          onLongPress: onLongPress,
+          borderRadius: BorderRadius.circular(20),
+          child: Padding(
+            padding: const EdgeInsets.all(8),
+            child: Icon(icon, size: 24),
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _onPlay() {
+    final speechSource = widget.fullOutputForSpeech.isNotEmpty
+        ? widget.fullOutputForSpeech
+        : (widget.speechText.isNotEmpty ? widget.speechText : widget.text);
+    widget.onVoicePlay(widget.cardId, speechSource);
   }
 }
 
@@ -1786,9 +1960,10 @@ class _RuntimeControlPanelState extends State<_RuntimeControlPanel> {
       );
       final latestText = summary.displaySummary.trim();
       if (latestText.isNotEmpty) {
-        // TODO: Replace full-text result speech with a dedicated summarizer
-        // only after card-copy quality is stable enough to avoid omissions.
-        return DeviceVoiceService.cleanSpeechText(latestText);
+        final speechText = summary.speechSummary.trim();
+        return speechText.isNotEmpty
+            ? speechText
+            : DeviceVoiceService.cleanSpeechText(latestText);
       }
     }
 
@@ -1805,8 +1980,12 @@ class _RuntimeControlPanelState extends State<_RuntimeControlPanel> {
       ),
     );
     final legacyText = legacySummary.displaySummary.trim();
-    return legacyText.isEmpty
-        ? ''
+    if (legacyText.isEmpty) {
+      return '';
+    }
+    final speechText = legacySummary.speechSummary.trim();
+    return speechText.isNotEmpty
+        ? speechText
         : DeviceVoiceService.cleanSpeechText(legacyText);
   }
 
@@ -2108,19 +2287,6 @@ class _LogPanelState extends State<_LogPanel> {
           ),
         ),
         _InfoCard(
-          title: 'Raw Log',
-          child: ExpansionTile(
-            tilePadding: EdgeInsets.zero,
-            title: const Text('展开 terminal output'),
-            children: [
-              Align(
-                alignment: Alignment.centerLeft,
-                child: SelectableText(_fallback(task.rawLog, '无')),
-              ),
-            ],
-          ),
-        ),
-        _InfoCard(
           title: 'Approval Requests',
           child: task.approvalRequests.isEmpty && task.approval == null
               ? const Text('无')
@@ -2259,247 +2425,25 @@ class _MetricsPanel extends StatelessWidget {
     return ListView(
       padding: const EdgeInsets.all(20),
       children: [
-        _MetricsSummary(task: task),
         _InfoCard(
-          title: '指标时间线',
-          child: task.metricEvents.isEmpty
-              ? const Text('暂无 metrics events')
-              : _MetricsTimeline(task: task),
-        ),
-      ],
-    );
-  }
-}
-
-class _MetricsSummary extends StatelessWidget {
-  const _MetricsSummary({required this.task});
-
-  final TaskSession task;
-
-  @override
-  Widget build(BuildContext context) {
-    final duration = task.completedAt?.difference(
-      task.startedAt ?? task.createdAt,
-    );
-    return Card(
-      margin: const EdgeInsets.only(bottom: 12),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Row(
-          children: [
-            Expanded(
-              child: _MetricTile(
-                label: '事件',
-                value: '${task.metricEvents.length}',
+          title: '指标',
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '指标展示已暂时关闭',
+                style: Theme.of(context).textTheme.titleSmall,
               ),
-            ),
-            Expanded(
-              child: _MetricTile(
-                label: '确认',
-                value: '${task.approvalRequests.length}',
+              const SizedBox(height: 6),
+              Text(
+                '任务仍会记录必要运行指标，但当前页面不渲染 metrics 节点，避免长任务详情页卡顿。',
+                style: Theme.of(context).textTheme.bodyMedium,
               ),
-            ),
-            Expanded(
-              child: _MetricTile(
-                label: '日志',
-                value: '${task.rawLog.length}',
-              ),
-            ),
-            Expanded(
-              child: _MetricTile(
-                label: '耗时',
-                value: duration == null ? '--' : _shortDuration(duration),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _MetricTile extends StatelessWidget {
-  const _MetricTile({required this.label, required this.value});
-
-  final String label;
-  final String value;
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      children: [
-        Text(
-          value,
-          style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                color: ArminTheme.primary,
-              ),
-        ),
-        const SizedBox(height: 4),
-        Text(label, style: Theme.of(context).textTheme.bodySmall),
-      ],
-    );
-  }
-}
-
-class _MetricsTimeline extends StatelessWidget {
-  const _MetricsTimeline({required this.task});
-
-  final TaskSession task;
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      children: [
-        for (var index = 0; index < task.metricEvents.length; index++)
-          _MetricTimelineRow(
-            eventType: task.metricEvents[index].eventType,
-            payloadJson: task.metricEvents[index].payloadJson,
-            createdAt: task.metricEvents[index].createdAt,
-            isFirst: index == 0,
-            isLast: index == task.metricEvents.length - 1,
-          ),
-      ],
-    );
-  }
-}
-
-class _MetricTimelineRow extends StatelessWidget {
-  const _MetricTimelineRow({
-    required this.eventType,
-    required this.payloadJson,
-    required this.createdAt,
-    required this.isFirst,
-    required this.isLast,
-  });
-
-  final String eventType;
-  final String payloadJson;
-  final DateTime createdAt;
-  final bool isFirst;
-  final bool isLast;
-
-  @override
-  Widget build(BuildContext context) {
-    final color = _eventColor(eventType);
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        SizedBox(
-          width: 46,
-          child: Text(_timeLabel(createdAt),
-              style: Theme.of(context).textTheme.bodySmall),
-        ),
-        Column(
-          children: [
-            if (!isFirst)
-              Container(
-                width: 2,
-                height: 10,
-                color: ArminTheme.border,
-              ),
-            Container(
-              width: 22,
-              height: 22,
-              decoration: BoxDecoration(
-                color: color.withValues(alpha: 0.14),
-                shape: BoxShape.circle,
-              ),
-              child: Icon(_eventIcon(eventType), color: color, size: 14),
-            ),
-            if (!isLast)
-              Container(
-                width: 2,
-                height: 32,
-                color: ArminTheme.border,
-              ),
-          ],
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Padding(
-            padding: EdgeInsets.only(bottom: isLast ? 0 : 18),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(_eventLabel(eventType),
-                    style: Theme.of(context).textTheme.titleSmall),
-                const SizedBox(height: 4),
-                _MetricPayloadDisplay(payloadJson: payloadJson),
-              ],
-            ),
+            ],
           ),
         ),
       ],
     );
-  }
-}
-
-class _MetricPayloadDisplay extends StatelessWidget {
-  const _MetricPayloadDisplay({required this.payloadJson});
-
-  final String payloadJson;
-
-  @override
-  Widget build(BuildContext context) {
-    final structured = _parsePayload(payloadJson);
-
-    if (structured.isEmpty) {
-      return Text('无数据', style: Theme.of(context).textTheme.bodySmall);
-    }
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        for (final entry in structured.entries)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 4),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  '${entry.key}: ',
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        fontWeight: FontWeight.w500,
-                        color: ArminTheme.ink.withValues(alpha: 0.7),
-                      ),
-                ),
-                Expanded(
-                  child: Text(
-                    _formatValue(entry.value),
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                ),
-              ],
-            ),
-          ),
-      ],
-    );
-  }
-
-  Map<String, dynamic> _parsePayload(String json) {
-    try {
-      final decoded = jsonDecode(json);
-      if (decoded is Map<String, dynamic>) {
-        return decoded;
-      }
-      return {};
-    } catch (_) {
-      return {};
-    }
-  }
-
-  String _formatValue(dynamic value) {
-    if (value == null) return '--';
-    if (value is num) {
-      if (value is int) return value.toString();
-      return value.toStringAsFixed(2);
-    }
-    if (value is bool) return value ? '是' : '否';
-    if (value is List) {
-      if (value.isEmpty) return '无';
-      return value.map((e) => e.toString()).join(', ');
-    }
-    return value.toString();
   }
 }
 
@@ -2964,82 +2908,5 @@ Color _turnStatusColor(NativeOutputTurnStatus status) {
     NativeOutputTurnStatus.completedByUser => Colors.green,
     NativeOutputTurnStatus.failedByUser => Colors.red,
     NativeOutputTurnStatus.stopped => Colors.red,
-  };
-}
-
-String _shortDuration(Duration duration) {
-  if (duration.inMinutes <= 0) {
-    return '${duration.inSeconds}s';
-  }
-  return '${duration.inMinutes}m';
-}
-
-String _eventLabel(String eventType) {
-  return switch (eventType) {
-    'task_created' => '任务创建',
-    'task_started' => '任务开始',
-    'agent_output' => '收到输出',
-    'approval_requested' => '请求确认',
-    'terminal_prompt_requested' => '等待终端选择',
-    'terminal_prompt_resolved' => '已选择终端选项',
-    'voice_follow_up' => '语音追加',
-    'turn_idle' => '等待继续',
-    'need_attention' => '需要处理',
-    'observer_detached' => '断开监听',
-    'observer_reconnected' => '重新监听',
-    'observer_connection_lost' => '监听连接中断',
-    'runtime_lost' => '运行丢失',
-    'runtime_cleanup' => '清理远端会话',
-    'runtime_cleanup_failed' => '清理未确认',
-    'user_mark_completed' => '用户确认完成',
-    'user_mark_failed' => '用户标记失败',
-    'task_completed' => '任务完成',
-    _ => eventType,
-  };
-}
-
-IconData _eventIcon(String eventType) {
-  return switch (eventType) {
-    'task_created' => Icons.add_task_outlined,
-    'task_started' => Icons.play_arrow_outlined,
-    'agent_output' => Icons.terminal_outlined,
-    'approval_requested' => Icons.verified_user_outlined,
-    'terminal_prompt_requested' => Icons.touch_app_outlined,
-    'terminal_prompt_resolved' => Icons.check_circle_outline,
-    'voice_follow_up' => Icons.mic_none_outlined,
-    'turn_idle' => Icons.pause_circle_outline,
-    'need_attention' => Icons.priority_high_outlined,
-    'observer_detached' => Icons.link_off_outlined,
-    'observer_reconnected' => Icons.sensors_outlined,
-    'observer_connection_lost' => Icons.wifi_off_outlined,
-    'runtime_lost' => Icons.signal_wifi_connected_no_internet_4_outlined,
-    'runtime_cleanup' => Icons.cleaning_services_outlined,
-    'runtime_cleanup_failed' => Icons.warning_amber_outlined,
-    'user_mark_completed' => Icons.check_circle_outline,
-    'user_mark_failed' => Icons.report_gmailerrorred_outlined,
-    'task_completed' => Icons.check_circle_outline,
-    _ => Icons.circle_outlined,
-  };
-}
-
-Color _eventColor(String eventType) {
-  return switch (eventType) {
-    'approval_requested' => Colors.orange.shade800,
-    'terminal_prompt_requested' => Colors.orange.shade800,
-    'terminal_prompt_resolved' => ArminTheme.primary,
-    'voice_follow_up' => ArminTheme.primary,
-    'turn_idle' => Colors.teal.shade700,
-    'need_attention' => Colors.orange.shade800,
-    'observer_detached' => Colors.blueGrey.shade700,
-    'observer_reconnected' => ArminTheme.primary,
-    'observer_connection_lost' => Colors.orange.shade800,
-    'runtime_lost' => Colors.red.shade800,
-    'runtime_cleanup' => ArminTheme.primary,
-    'runtime_cleanup_failed' => Colors.orange.shade800,
-    'user_mark_completed' => Colors.green.shade700,
-    'user_mark_failed' => Colors.red.shade700,
-    'task_completed' => Colors.green.shade700,
-    'agent_output' => Colors.blueGrey.shade700,
-    _ => ArminTheme.primary,
   };
 }

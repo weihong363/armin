@@ -367,6 +367,235 @@ pin-up 风格，含 9 个动画状态（idle/running/waving/jumping/failed/waiti
     expect(summary.displaySummary, isNot(contains('█')));
   });
 
+  test('rule provider summarizes structured table results', () async {
+    const tableOutput = OutputSummaryRequest(
+      cleanedOutput: '''
+当前测试模块：你想测试哪个模块？
+
+| 模块 | 测试文件 |
+| --- | --- |
+| 答案生成 | test_answer_generator.py |
+| API 调试 | test_api_debug.py |
+| 文档分块 | test_chunking.py |
+| 配置 | test_config.py |
+| 嵌入向量 | test_embedding_provider.py |
+| 评估 | test_evaluation.py |
+| 工厂模式 | test_factory.py |
+| Grafana 适配器 | test_grafana_adapter.py |
+| 知识库 lint | test_knowledge_lint.py |
+| 日志解析 | test_log_parser.py |
+| Loop API | test_loop_api.py |
+| Loop 存储 | test_loop_storage.py |
+| 可观测性适配器 | test_observability_adapters.py |
+| 值班循环运行时 | test_oncall_loop_runtime.py |
+| 产品化 | test_productization.py |
+| Ralph Loop 跟进 | test_ralph_loop_followup.py |
+| 检索 | test_retrieval.py |
+| Schema | test_schema.py |
+
+你想测试哪个模块？
+''',
+      status: TaskStatus.turnIdle,
+      taskTitle: '你想测试哪个模块？',
+      promptInputs: ['你想测试哪个模块？'],
+    );
+
+    final summary =
+        await const RuleBasedOutputSummaryProvider().summarize(tableOutput);
+
+    expect(summary.displaySummary, startsWith('结构化结果如下：共 18 个测试文件'));
+    expect(summary.displaySummary, contains('test_answer_generator.py'));
+    expect(summary.displaySummary, contains('test_observability_adapters.py'));
+    expect(summary.displaySummary, contains('test_schema.py'));
+    expect(RegExp(r'test_[A-Za-z0-9_]+\.py').allMatches(summary.displaySummary),
+        hasLength(18));
+    expect(summary.displaySummary, isNot(contains('|')));
+    expect(summary.displaySummary, isNot(contains('当前测试模块')));
+    expect(summary.displaySummary, isNot(endsWith('你想测试哪个模块？')));
+  });
+
+  test('rule provider summarizes unicode box table results', () async {
+    const tableOutput = OutputSummaryRequest(
+      cleanedOutput: '''
+▪ 核心测试文件汇总如下：
+   ┌───────────────────────────┬──────┬────────────────────────────┬─────────────────┐
+   │ 测试文件                  │ 用例 │ 覆盖模块                   │ 核心职责        │
+   │                           │ 数   │                            │                 │
+   ├───────────────────────────┼──────┼────────────────────────────┼─────────────────┤
+   │ test_chunking.py          │ 3    │ app/rag/chunking           │ Markdown        │
+   │                           │      │                            │ 分块策略        │
+   │ test_retrieval.py         │ 7    │ app/rag/retriever          │ RAG 检索与引用  │
+   │ test_answer_generator.py  │ 5    │ app/llm/answer_generator   │ 答案生成与引用  │
+   │                           │      │                            │ 绑定            │
+   │ test_schema.py            │ 6    │ app/models/schemas         │ Pydantic        │
+   │                           │      │                            │ 模型校验        │
+   │ test_log_parser.py        │ 4    │ app/services/log_parser    │ 日志结构化解析  │
+   │ test_grafana_adapter.py   │ 5    │ app/services/grafana_adapt │ Grafana         │
+   │                           │      │ er                         │ 数据源适配      │
+   │ test_observability_adapte │ 8    │ app/services/evidence_prov │ 可观测性证据采  │
+   │ rs.py                     │      │ iders                      │ 集              │
+   │ test_loop_storage.py      │ 15   │ app/services/loop_storage  │ Loop 会话持久化 │
+   │ test_oncall_loop_runtime. │ 12   │ app/services/oncall_loop_r │ Ralph Loop      │
+   │ py                        │      │ untime                     │ 诊断循环        │
+   │ test_productization.py    │ 7    │ 多模块                     │ 产品化集成验收  │
+   └───────────────────────────┴──────┴────────────────────────────┴─────────────────┘
+
+✓ Update successful! The new version will be used on your next run.
+''',
+      status: TaskStatus.turnIdle,
+      taskTitle: '让显示所有测试文件',
+    );
+
+    final summary =
+        await const RuleBasedOutputSummaryProvider().summarize(tableOutput);
+
+    expect(summary.displaySummary, startsWith('核心测试文件汇总如下：共 10 个测试文件'));
+    expect(summary.displaySummary, contains('test_chunking.py'));
+    expect(summary.displaySummary, contains('test_answer_generator.py'));
+    expect(summary.displaySummary, contains('test_loop_storage.py'));
+    expect(summary.displaySummary, contains('test_observability_adapters.py'));
+    expect(summary.displaySummary, contains('test_oncall_loop_runtime.py'));
+    expect(summary.displaySummary, isNot(contains('│')));
+    expect(summary.displaySummary, isNot(contains('┌')));
+    expect(summary.displaySummary, isNot(contains('Update successful')));
+  });
+
+  test('rule provider summarizes generic table results', () async {
+    const tableOutput = OutputSummaryRequest(
+      cleanedOutput: '''
+检查结果如下：
+| 模块 | 状态 | 说明 |
+| --- | --- | --- |
+| API | 通过 | 3 个接口可用 |
+| 数据库 | 失败 | 连接超时 |
+''',
+      status: TaskStatus.turnIdle,
+      taskTitle: '检查系统状态',
+    );
+
+    final summary =
+        await const RuleBasedOutputSummaryProvider().summarize(tableOutput);
+
+    expect(
+        summary.displaySummary, '检查结果如下：共 2 行，分别是：API，通过，3 个接口可用；数据库，失败，连接超时。');
+    expect(summary.speechSummary, contains('API'));
+    expect(summary.displaySummary, isNot(contains('|')));
+    expect(summary.displaySummary, isNot(contains('---')));
+  });
+
+  test('rule provider merges wrapped table cells before summarizing', () async {
+    const tableOutput = OutputSummaryRequest(
+      cleanedOutput: '''
+核心模块清单如下：
+┌──────────────┬────────────────────────────────┬──────────────────────────────┐
+│ 模块         │ 路径                           │ 职责                         │
+├──────────────┼────────────────────────────────┼──────────────────────────────┤
+│ 核心配       │ app/core/                      │ 应用配置（config.py）、数据库连接 │
+│ 置           │                                │ （database.py）               │
+│ 事故分       │ app/services/incident_analyzer │ 事故诊断分析                  │
+│ 析           │ .py                            │                              │
+│ Runbook      │ app/services/runbook_matcher.p │ Runbook 知识检索与匹配        │
+│ 匹配         │ y                              │                              │
+│ Evidence     │ app/services/evidence_provider │ 可观测性证据采集：Prometheus  │
+│ Providers    │ s/                             │ 指标、Tempo 追踪、Loki 日志   │
+└──────────────┴────────────────────────────────┴──────────────────────────────┘
+''',
+      status: TaskStatus.turnIdle,
+      taskTitle: '输出核心模块清单',
+    );
+
+    final summary =
+        await const RuleBasedOutputSummaryProvider().summarize(tableOutput);
+
+    expect(summary.displaySummary,
+        contains('核心配置：app/core/，应用配置（config.py）、数据库连接（database.py）'));
+    expect(summary.displaySummary,
+        contains('事故分析：app/services/incident_analyzer.py，事故诊断分析'));
+    expect(summary.displaySummary,
+        contains('Runbook匹配：app/services/runbook_matcher.py，Runbook 知识检索与匹配'));
+    expect(
+        summary.displaySummary,
+        contains(
+            'Evidence Providers：app/services/evidence_providers/，可观测性证据采集：Prometheus指标、Tempo 追踪、Loki 日志'));
+    expect(summary.displaySummary,
+        isNot(contains('app/services/runbook_matcher.p，Runbook')));
+    expect(summary.displaySummary, isNot(contains('│')));
+  });
+
+  test('rule provider merges single-cell wrapped table labels', () async {
+    const tableOutput = OutputSummaryRequest(
+      cleanedOutput: '''
+核心模块清单如下：
+┌────────────┬──────────────────────────────┬──────────────────────┐
+│ 模块       │ 路径                         │ 职责                 │
+├────────────┼──────────────────────────────┼──────────────────────┤
+│ 事故存     │ app/services/incident_store.py │ 事故持久化（SQLite） │
+│ 储         │                              │                      │
+│ Loop       │ app/services/loop_storage.py │ Loop 会话持久化      │
+│ 存储       │                              │                      │
+│ 应用入     │ app/main.py                  │ FastAPI 应用创建与启动 │
+│ 口         │                              │                      │
+└────────────┴──────────────────────────────┴──────────────────────┘
+''',
+      status: TaskStatus.turnIdle,
+      taskTitle: '输出核心模块清单',
+    );
+
+    final summary =
+        await const RuleBasedOutputSummaryProvider().summarize(tableOutput);
+
+    expect(summary.displaySummary,
+        contains('事故存储：app/services/incident_store.py，事故持久化（SQLite）'));
+    expect(summary.displaySummary,
+        contains('Loop存储：app/services/loop_storage.py，Loop 会话持久化'));
+    expect(
+        summary.displaySummary, contains('应用入口：app/main.py，FastAPI 应用创建与启动'));
+    expect(summary.displaySummary, isNot(contains('事故存：')));
+    expect(summary.displaySummary, isNot(contains('应用入：')));
+  });
+
+  test('rule provider merges right-column wrapped table descriptions',
+      () async {
+    const tableOutput = OutputSummaryRequest(
+      cleanedOutput: '''
+核心模块清单如下：
+┌────────────┬──────────┬──────────────────────────────────────┐
+│ 模块       │ 路径     │ 职责                                 │
+├────────────┼──────────┼──────────────────────────────────────┤
+│ RAG        │ app/rag/ │ 知识库分块（chunking）、向量化       │
+│ 引擎       │          │ （embedding）、BM25                  │
+│            │          │ 检索、向量存储、检索器、ingestion、 │
+│            │          │ 知识库 lint                          │
+│ LLM        │ app/llm/ │ Prompt 模板（prompts）、答案生成     │
+│ 生成       │          │ （answer_generator）、Grounded 答案  │
+│            │          │ （grounded_answer）                  │
+│ 评估       │ app/evaluation/ │ RAG 评估（evaluate.py）、Loop 评估 │
+│            │          │ （evaluate_loop.py）                 │
+└────────────┴──────────┴──────────────────────────────────────┘
+''',
+      status: TaskStatus.turnIdle,
+      taskTitle: '输出核心模块清单',
+    );
+
+    final summary =
+        await const RuleBasedOutputSummaryProvider().summarize(tableOutput);
+
+    expect(
+        summary.displaySummary,
+        contains(
+            'RAG引擎：app/rag/，知识库分块（chunking）、向量化（embedding）、BM25检索、向量存储、检索器、ingestion、知识库 lint'));
+    expect(
+        summary.displaySummary,
+        contains(
+            'LLM生成：app/llm/，Prompt 模板（prompts）、答案生成（answer_generator）、Grounded 答案（grounded_answer）'));
+    expect(
+        summary.displaySummary,
+        contains(
+            '评估：app/evaluation/，RAG 评估（evaluate.py）、Loop 评估（evaluate_loop.py）'));
+    expect(summary.displaySummary, isNot(contains('BM25；')));
+    expect(summary.displaySummary, isNot(contains('│')));
+  });
+
   test('local model provider falls back when unavailable', () async {
     final summary = await const LocalSmallModelSummaryProvider().summarize(
       request,
@@ -432,6 +661,39 @@ pin-up 风格，含 9 个动画状态（idle/running/waving/jumping/failed/waiti
     expect(modelSummary.displaySummary, isNot(contains('hunter2')));
     expect(modelSummary.speechSummary, contains('token=[REDACTED]'));
     expect(modelSummary.speechSummary, isNot(contains('secret-token')));
+  });
+
+  test('selectable provider keeps structured tables on rule summary', () async {
+    final provider = SelectableOutputSummaryProvider(
+      localModel: LocalSmallModelSummaryProvider(
+        runner: (_) async => const OutputSummary(
+          displaySummary: '''
+│ 测试文件 │ 用例 │
+│ test_chunking.py │ 3 │
+│ test_retrieval.py │ 7 │
+''',
+          speechSummary: '竖线 测试文件 竖线 用例',
+        ),
+      ),
+    )..setPreferLocalModel(true);
+
+    final summary = await provider.summarize(
+      const OutputSummaryRequest(
+        cleanedOutput: '''
+核心测试文件汇总如下：
+│ 测试文件 │ 用例 │
+│ test_chunking.py │ 3 │
+│ test_retrieval.py │ 7 │
+''',
+        status: TaskStatus.turnIdle,
+        taskTitle: '显示所有测试文件',
+      ),
+    );
+
+    expect(summary.displaySummary,
+        '核心测试文件汇总如下：共 2 个测试文件，包括 test_chunking.py、test_retrieval.py。');
+    expect(summary.speechSummary, contains('共2个测试文件'));
+    expect(summary.displaySummary, isNot(contains('│')));
   });
 
   test('local model never receives unredacted task output or prompt text',

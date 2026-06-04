@@ -756,6 +756,19 @@ fi
   }
 
   @visibleForTesting
+  List<String> rawOutputsForSnapshotsForTest(List<String> snapshots) {
+    final output = _ExecutionOutputState();
+    return snapshots.map((snapshot) {
+      output.write(
+        '\n${_ExecutionOutputState.snapshotBeginForTest}\n'
+        '$snapshot\n'
+        '${_ExecutionOutputState.snapshotEndForTest}\n',
+      );
+      return output.rawOutputForLatestUpdate(fallback: '');
+    }).toList(growable: false);
+  }
+
+  @visibleForTesting
   String buildRemoteTmuxCommand({
     required String command,
     String pathPrepend = '',
@@ -878,9 +891,16 @@ class _ExecutionOutputState {
   static const _snapshotBegin = '__ARMIN_SNAPSHOT_BEGIN__';
   static const _snapshotEnd = '__ARMIN_SNAPSHOT_END__';
 
+  @visibleForTesting
+  static const snapshotBeginForTest = _snapshotBegin;
+
+  @visibleForTesting
+  static const snapshotEndForTest = _snapshotEnd;
+
   final StringBuffer _stream = StringBuffer();
   String _latestSnapshot = '';
   String _lastRawOutput = '';
+  String _lastRawSignature = '';
 
   void write(String text) {
     _stream.write(text);
@@ -903,8 +923,14 @@ class _ExecutionOutputState {
     if (_latestSnapshot == _lastRawOutput) {
       return '';
     }
+    final signature = _semanticSignature(_latestSnapshot);
+    if (signature.isNotEmpty && signature == _lastRawSignature) {
+      _lastRawOutput = _latestSnapshot;
+      return '';
+    }
     final previous = _lastRawOutput;
     _lastRawOutput = _latestSnapshot;
+    _lastRawSignature = signature;
     if (previous.isNotEmpty && _latestSnapshot.startsWith(previous)) {
       return _latestSnapshot.substring(previous.length);
     }
@@ -922,6 +948,34 @@ class _ExecutionOutputState {
     }
     final start = begin + _snapshotBegin.length;
     return text.substring(start, end).trim();
+  }
+
+  String _semanticSignature(String snapshot) {
+    final withoutAnsi =
+        snapshot.replaceAll(RegExp(r'\x1B\[[0-?]*[ -/]*[@-~]'), '');
+    return withoutAnsi
+        .replaceAll('\r', '\n')
+        .split('\n')
+        .map((line) => line.trim())
+        .where((line) => line.isNotEmpty && !_isVolatileChromeLine(line))
+        .join('\n');
+  }
+
+  bool _isVolatileChromeLine(String line) {
+    final lower = line.toLowerCase();
+    return RegExp(r'^[─▄▀█\s]+$').hasMatch(line) ||
+        RegExp(r'^[⠁-⣿]\s').hasMatch(line) ||
+        lower.contains('thinking...') ||
+        lower.contains('esc to cancel') ||
+        lower.contains('shift+tab to auto-accept edits') ||
+        lower.contains('type your message') ||
+        lower.contains('qoder cli') ||
+        lower.contains('not login please auth') ||
+        lower.startsWith('model · ctx') ||
+        lower.startsWith('auto model · ctx') ||
+        lower.startsWith('gpt-') ||
+        lower.contains('ctx ░') ||
+        lower.contains('ctx ');
   }
 }
 

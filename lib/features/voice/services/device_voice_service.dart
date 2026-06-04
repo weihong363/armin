@@ -110,6 +110,15 @@ class DeviceVoiceService implements VoiceService {
   }
 
   @override
+  Future<void> pauseSpeaking() async {
+    try {
+      await _flutterTts.pause();
+    } catch (_) {
+      // Pause is not supported on all platforms; treat as no-op.
+    }
+  }
+
+  @override
   Future<void> stopSpeaking() async {
     await _flutterTts.stop();
   }

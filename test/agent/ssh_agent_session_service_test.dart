@@ -323,6 +323,64 @@ void main() {
     expect(log, contains('boom'));
   });
 
+  test('raw snapshot output skips repeated TUI chrome refreshes', () {
+    final service = SSHAgentSessionService();
+    final outputs = service.rawOutputsForSnapshotsForTest([
+      '''
+────────────────────────────────────────────────────────────────────────────────
+ Shift+Tab to Auto-accept Edits                    1 AGENTS.md file · 12 skills
+▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+ > Armin context governance:
+   - Keep edits minimal and focused.
+   ## User task
+   帮我执行中断测试
+▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+ Auto Model · ctx ░░░░░░░░░░ 0% · ~/workspace/runbook
+  ██      ██   Qoder CLI v1.0.11
+    ████  ██
+ ⠦ Thinking... (esc to cancel, 0s)
+''',
+      '''
+────────────────────────────────────────────────────────────────────────────────
+ Shift+Tab to Auto-accept Edits                    1 AGENTS.md file · 12 skills
+▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+ > Armin context governance:
+   - Keep edits minimal and focused.
+   ## User task
+   帮我执行中断测试
+▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+ Auto Model · ctx ░░░░░░░░░░ 0% · ~/workspace/runbook
+  ██      ██   Qoder CLI v1.0.11
+    ████  ██
+ ⠹ Thinking... (esc to cancel, 1s)
+''',
+    ]);
+
+    expect(outputs.first, contains('帮我执行中断测试'));
+    expect(outputs.last, isEmpty);
+  });
+
+  test('raw snapshot output keeps semantic changes', () {
+    final service = SSHAgentSessionService();
+    final outputs = service.rawOutputsForSnapshotsForTest([
+      '''
+ > Armin context governance:
+   ## User task
+   帮我执行中断测试
+ ⠦ Thinking... (esc to cancel, 0s)
+''',
+      '''
+ > Armin context governance:
+   ## User task
+   帮我执行中断测试
+执行中断测试完成
+''',
+    ]);
+
+    expect(outputs.first, contains('帮我执行中断测试'));
+    expect(outputs.last, contains('执行中断测试完成'));
+  });
+
   test('approval decision is sent without runtime update wrapper', () async {
     final service = SSHAgentSessionService();
 

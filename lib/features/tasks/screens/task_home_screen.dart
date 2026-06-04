@@ -7,9 +7,10 @@ import '../../history/screens/task_detail_screen.dart';
 import '../../history/screens/task_history_screen.dart';
 import '../../settings/screens/settings_screen.dart';
 import '../../voice/services/voice_service.dart';
+import '../../agent/services/codex_output_cleaner.dart';
 import '../models/task_session.dart';
+import '../services/semantic_snippet_builder.dart';
 import '../services/speech_draft_cleaner.dart';
-import '../widgets/task_card.dart';
 import 'task_draft_screen.dart';
 
 enum _HomeVoiceStatus {
@@ -36,10 +37,7 @@ class _TaskHomeScreenState extends State<TaskHomeScreen> {
   @override
   Widget build(BuildContext context) {
     final state = AppStateScope.of(context);
-    final currentTask = _currentTask(state.tasks);
-    final recentTasks = state.tasks
-        .where((task) => task.id != currentTask?.id)
-        .toList(growable: false);
+    final groups = _groupTasks(state.tasks);
 
     return Scaffold(
       body: SafeArea(
@@ -48,7 +46,7 @@ class _TaskHomeScreenState extends State<TaskHomeScreen> {
             : Stack(
                 children: [
                   ListView(
-                    padding: const EdgeInsets.fromLTRB(20, 18, 20, 132),
+                    padding: const EdgeInsets.fromLTRB(20, 18, 20, 148),
                     children: [
                       Row(
                         children: [
@@ -78,7 +76,7 @@ class _TaskHomeScreenState extends State<TaskHomeScreen> {
                                       ?.copyWith(fontSize: 26),
                                 ),
                                 Text(
-                                  'AI coding agent Shell',
+                                  'Your task inbox for AI agents.',
                                   style: Theme.of(context).textTheme.bodyMedium,
                                 ),
                               ],
@@ -92,36 +90,34 @@ class _TaskHomeScreenState extends State<TaskHomeScreen> {
                           ),
                         ],
                       ),
-                      const SizedBox(height: 28),
-                      const _SectionHeader(title: '当前任务'),
                       const SizedBox(height: 12),
-                      if (currentTask == null)
-                        _EmptyCurrentTask(
-                          onCreate: () => _openNewTask(context),
-                        )
-                      else
-                        TaskCard(
-                          task: currentTask,
-                          featured: true,
-                          onTap: () => _openTask(context, currentTask.id),
-                        ),
-                      Row(
-                        children: [
-                          const _SectionHeader(title: '最近任务'),
-                          const Spacer(),
-                          TextButton.icon(
-                            onPressed: () => _openNewTask(context),
-                            icon: const Icon(Icons.add, size: 18),
-                            label: const Text('新任务'),
-                          ),
-                        ],
+                      _InboxSummary(
+                        needsAttentionCount: groups.needsAttention.length,
+                        inProgressCount: groups.inProgress.length,
                       ),
-                      const SizedBox(height: 8),
-                      for (final task in recentTasks)
-                        TaskCard(
-                          task: task,
-                          onTap: () => _openTask(context, task.id),
+                      const SizedBox(height: 22),
+                      if (state.tasks.isEmpty)
+                        _EmptyInbox(onCreate: () => _openNewTask(context))
+                      else ...[
+                        _TaskSection(
+                          title: 'Needs Attention',
+                          emptyText: 'No task needs you right now.',
+                          tasks: groups.needsAttention,
+                          onOpenTask: _openTask,
                         ),
+                        _TaskSection(
+                          title: 'In Progress',
+                          emptyText: 'No task is running right now.',
+                          tasks: groups.inProgress,
+                          onOpenTask: _openTask,
+                        ),
+                        _TaskSection(
+                          title: 'Recently Completed',
+                          emptyText: 'No completed task yet.',
+                          tasks: groups.recentlyCompleted,
+                          onOpenTask: _openTask,
+                        ),
+                      ],
                     ],
                   ),
                   if (_voiceStatus != _HomeVoiceStatus.idle)
@@ -135,55 +131,18 @@ class _TaskHomeScreenState extends State<TaskHomeScreen> {
                         onCancel: _cancelVoiceCapture,
                         onUseResult: _recognizedText.trim().isEmpty
                             ? null
-                            : () => _openNewTask(
-                                  context,
-                                  initialTaskText: _recognizedText,
-                                ),
+                            : () => _useVoiceResult(context),
                       ),
                     ),
                 ],
               ),
       ),
-      floatingActionButtonLocation: FloatingActionButtonLocation.centerDocked,
-      floatingActionButton: SizedBox(
-        width: 70,
-        height: 70,
-        child: Listener(
-          key: const ValueKey('home-voice-button'),
-          onPointerDown: (_) => _startVoiceCapture(),
-          onPointerUp: (_) => _stopVoiceCapture(),
-          onPointerCancel: (_) => _stopVoiceCapture(),
-          child: FloatingActionButton(
-            backgroundColor: _voiceStatus == _HomeVoiceStatus.listening
-                ? ArminTheme.mint
-                : ArminTheme.primary,
-            foregroundColor: Colors.white,
-            shape: const CircleBorder(),
-            onPressed: () {},
-            child: const Icon(Icons.mic, size: 32),
-          ),
-        ),
-      ),
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: 0,
-        height: 76,
-        destinations: const [
-          NavigationDestination(
-            icon: Icon(Icons.home_outlined),
-            selectedIcon: Icon(Icons.home),
-            label: '首页',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.history_outlined),
-            selectedIcon: Icon(Icons.history),
-            label: '历史',
-          ),
-        ],
-        onDestinationSelected: (index) {
-          if (index == 1) {
-            _openHistory(context);
-          }
-        },
+      bottomNavigationBar: _HomeBottomActions(
+        listening: _voiceStatus == _HomeVoiceStatus.listening,
+        onNewTask: () => _openNewTask(context),
+        onVoiceStart: _startVoiceCapture,
+        onVoiceStop: _stopVoiceCapture,
+        onHistory: () => _openHistory(context),
       ),
     );
   }
@@ -271,11 +230,14 @@ class _TaskHomeScreenState extends State<TaskHomeScreen> {
         return;
       }
       final cleaned = _cleaner.clean(raw);
+      if (cleaned.isEmpty) {
+        _resetVoiceCapture();
+        return;
+      }
       setState(() {
         _partialText = '';
         _recognizedText = cleaned;
-        _voiceStatus =
-            cleaned.isEmpty ? _HomeVoiceStatus.failed : _HomeVoiceStatus.ready;
+        _voiceStatus = _HomeVoiceStatus.ready;
       });
     } catch (e) {
       if (!mounted) {
@@ -297,6 +259,10 @@ class _TaskHomeScreenState extends State<TaskHomeScreen> {
   }
 
   void _cancelVoiceCapture() {
+    _resetVoiceCapture();
+  }
+
+  void _resetVoiceCapture() {
     setState(() {
       _voiceStatus = _HomeVoiceStatus.idle;
       _partialText = '';
@@ -304,18 +270,10 @@ class _TaskHomeScreenState extends State<TaskHomeScreen> {
     });
   }
 
-  TaskSession? _currentTask(List<TaskSession> tasks) {
-    for (final task in tasks) {
-      if (task.status == TaskStatus.running ||
-          task.status == TaskStatus.paused ||
-          task.status == TaskStatus.needApproval ||
-          task.status == TaskStatus.turnIdle ||
-          task.status == TaskStatus.needAttention ||
-          task.status == TaskStatus.observerDetached) {
-        return task;
-      }
-    }
-    return tasks.isEmpty ? null : tasks.first;
+  void _useVoiceResult(BuildContext context) {
+    final initialTaskText = _recognizedText;
+    _resetVoiceCapture();
+    _openNewTask(context, initialTaskText: initialTaskText);
   }
 
   void _openTask(BuildContext context, String taskId) {
@@ -333,6 +291,500 @@ class _TaskHomeScreenState extends State<TaskHomeScreen> {
       ),
     );
   }
+}
+
+_TaskInboxGroups _groupTasks(List<TaskSession> tasks) {
+  final needsAttention = <TaskSession>[];
+  final inProgress = <TaskSession>[];
+  final recentlyCompleted = <TaskSession>[];
+
+  for (final task in tasks) {
+    switch (_inboxGroupFor(task.status)) {
+      case _TaskInboxGroup.needsAttention:
+        needsAttention.add(task);
+      case _TaskInboxGroup.inProgress:
+        inProgress.add(task);
+      case _TaskInboxGroup.recentlyCompleted:
+        recentlyCompleted.add(task);
+    }
+  }
+
+  return _TaskInboxGroups(
+    needsAttention: needsAttention,
+    inProgress: inProgress,
+    recentlyCompleted: recentlyCompleted,
+  );
+}
+
+// UI-only mapping: collapse existing runtime statuses into inbox sections.
+_TaskInboxGroup _inboxGroupFor(TaskStatus status) {
+  return switch (status) {
+    TaskStatus.needApproval ||
+    TaskStatus.needAttention ||
+    TaskStatus.turnIdle ||
+    TaskStatus.paused ||
+    TaskStatus.observerDetached ||
+    TaskStatus.runtimeLost =>
+      _TaskInboxGroup.needsAttention,
+    TaskStatus.draft ||
+    TaskStatus.pending ||
+    TaskStatus.running =>
+      _TaskInboxGroup.inProgress,
+    TaskStatus.completed ||
+    TaskStatus.userCompleted ||
+    TaskStatus.failed ||
+    TaskStatus.userFailed ||
+    TaskStatus.stopped =>
+      _TaskInboxGroup.recentlyCompleted,
+  };
+}
+
+enum _TaskInboxGroup {
+  needsAttention,
+  inProgress,
+  recentlyCompleted,
+}
+
+class _TaskInboxGroups {
+  const _TaskInboxGroups({
+    required this.needsAttention,
+    required this.inProgress,
+    required this.recentlyCompleted,
+  });
+
+  final List<TaskSession> needsAttention;
+  final List<TaskSession> inProgress;
+  final List<TaskSession> recentlyCompleted;
+}
+
+class _InboxSummary extends StatelessWidget {
+  const _InboxSummary({
+    required this.needsAttentionCount,
+    required this.inProgressCount,
+  });
+
+  final int needsAttentionCount;
+  final int inProgressCount;
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: const Color(0xFFF1F8F5),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFDCECE6)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        child: Row(
+          children: [
+            const Icon(Icons.inbox_outlined, color: ArminTheme.primary),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                '$needsAttentionCount need attention · $inProgressCount running',
+                style: Theme.of(context).textTheme.bodyMedium,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _HomeBottomActions extends StatelessWidget {
+  const _HomeBottomActions({
+    required this.listening,
+    required this.onNewTask,
+    required this.onVoiceStart,
+    required this.onVoiceStop,
+    required this.onHistory,
+  });
+
+  final bool listening;
+  final VoidCallback onNewTask;
+  final VoidCallback onVoiceStart;
+  final VoidCallback onVoiceStop;
+  final VoidCallback onHistory;
+  static const _buttonHeight = 72.0;
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      top: false,
+      child: DecoratedBox(
+        decoration: const BoxDecoration(
+          color: Colors.white,
+          border: Border(top: BorderSide(color: ArminTheme.border)),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 10, 16, 14),
+          child: Row(
+            children: [
+              Expanded(
+                child: SizedBox(
+                  height: _buttonHeight,
+                  child: FilledButton(
+                    style: FilledButton.styleFrom(
+                      padding: EdgeInsets.zero,
+                    ),
+                    onPressed: onNewTask,
+                    child: const _BottomActionContent(
+                      icon: Icons.add_task_outlined,
+                      label: 'New Task',
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: SizedBox(
+                  height: _buttonHeight,
+                  child: Listener(
+                    key: const ValueKey('home-voice-button'),
+                    onPointerDown: (_) => onVoiceStart(),
+                    onPointerUp: (_) => onVoiceStop(),
+                    onPointerCancel: (_) => onVoiceStop(),
+                    child: OutlinedButton(
+                      style: OutlinedButton.styleFrom(
+                        padding: EdgeInsets.zero,
+                      ),
+                      onPressed: () {},
+                      child: _BottomActionContent(
+                        icon: listening ? Icons.mic : Icons.mic_none_outlined,
+                        label: listening ? 'Listening' : 'Hold to Talk',
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: SizedBox(
+                  height: _buttonHeight,
+                  child: OutlinedButton(
+                    style: OutlinedButton.styleFrom(
+                      padding: EdgeInsets.zero,
+                    ),
+                    onPressed: onHistory,
+                    child: const _BottomActionContent(
+                      icon: Icons.history_outlined,
+                      label: 'History',
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _BottomActionContent extends StatelessWidget {
+  const _BottomActionContent({
+    required this.icon,
+    required this.label,
+  });
+
+  final IconData icon;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(icon, size: 20),
+        const SizedBox(height: 4),
+        Text(
+          label,
+          maxLines: 1,
+          textAlign: TextAlign.center,
+          overflow: TextOverflow.visible,
+          style: const TextStyle(fontSize: 12),
+        ),
+      ],
+    );
+  }
+}
+
+class _TaskSection extends StatelessWidget {
+  const _TaskSection({
+    required this.title,
+    required this.emptyText,
+    required this.tasks,
+    required this.onOpenTask,
+  });
+
+  final String title;
+  final String emptyText;
+  final List<TaskSession> tasks;
+  final void Function(BuildContext context, String taskId) onOpenTask;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 18),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _SectionHeader(title: title),
+          const SizedBox(height: 8),
+          if (tasks.isEmpty)
+            _SectionEmptyText(text: emptyText)
+          else
+            for (final task in tasks.take(4))
+              _InboxTaskCard(
+                task: task,
+                onOpen: () => onOpenTask(context, task.id),
+              ),
+        ],
+      ),
+    );
+  }
+}
+
+class _InboxTaskCard extends StatelessWidget {
+  const _InboxTaskCard({
+    required this.task,
+    required this.onOpen,
+  });
+
+  final TaskSession task;
+  final VoidCallback onOpen;
+
+  @override
+  Widget build(BuildContext context) {
+    final statusTone = _statusTone(task.status);
+    return Card(
+      margin: const EdgeInsets.only(bottom: 10),
+      child: InkWell(
+        onTap: onOpen,
+        borderRadius: BorderRadius.circular(14),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: Text(
+                      task.displayTitle,
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                  ),
+                  Text(
+                    _taskFreshnessLabel(task),
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              _HumanStatusPill(
+                label: _humanStatusLabel(task.status),
+                color: statusTone,
+              ),
+              const SizedBox(height: 10),
+              Text(
+                _latestUsefulUpdate(task),
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.bodyMedium,
+              ),
+              const SizedBox(height: 10),
+              Text(
+                _nextActionLabel(task.status),
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: ArminTheme.ink.withValues(alpha: 0.72),
+                      fontWeight: FontWeight.w600,
+                    ),
+              ),
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  FilledButton.tonal(
+                    onPressed: onOpen,
+                    child: Text(_primaryActionLabel(task.status)),
+                  ),
+                  OutlinedButton(
+                    onPressed: onOpen,
+                    child: Text(_secondaryActionLabel(task.status)),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _HumanStatusPill extends StatelessWidget {
+  const _HumanStatusPill({
+    required this.label,
+    required this.color,
+  });
+
+  final String label;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        child: Text(
+          label,
+          style: TextStyle(
+            color: color,
+            fontSize: 12,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SectionEmptyText extends StatelessWidget {
+  const _SectionEmptyText({required this.text});
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Text(
+        text,
+        style: Theme.of(context).textTheme.bodySmall,
+      ),
+    );
+  }
+}
+
+String _humanStatusLabel(TaskStatus status) {
+  return switch (status) {
+    TaskStatus.needApproval => 'Needs your decision',
+    TaskStatus.needAttention => 'Needs your attention',
+    TaskStatus.turnIdle => 'Waiting for your next instruction',
+    TaskStatus.paused => 'Paused · waiting for you',
+    TaskStatus.observerDetached => 'Updates paused',
+    TaskStatus.runtimeLost => 'Connection paused',
+    TaskStatus.running => 'Running',
+    TaskStatus.pending || TaskStatus.draft => 'Waiting to start',
+    TaskStatus.completed || TaskStatus.userCompleted => 'Ready to review',
+    TaskStatus.failed || TaskStatus.userFailed => 'Failed · review result',
+    TaskStatus.stopped => 'Stopped',
+  };
+}
+
+String _nextActionLabel(TaskStatus status) {
+  return switch (status) {
+    TaskStatus.needApproval ||
+    TaskStatus.needAttention =>
+      'Next: Review and decide',
+    TaskStatus.turnIdle => 'Next: Continue or accept the result',
+    TaskStatus.paused => 'Next: Resume, continue, or stop',
+    TaskStatus.observerDetached ||
+    TaskStatus.runtimeLost =>
+      'Next: Open task to reconnect if needed',
+    TaskStatus.running => 'No action needed now',
+    TaskStatus.pending || TaskStatus.draft => 'Next: Wait for execution',
+    TaskStatus.completed ||
+    TaskStatus.userCompleted =>
+      'Next: Review result or continue',
+    TaskStatus.failed || TaskStatus.userFailed => 'Next: Review failure',
+    TaskStatus.stopped => 'Next: Review final output',
+  };
+}
+
+String _primaryActionLabel(TaskStatus status) {
+  return switch (status) {
+    TaskStatus.needApproval ||
+    TaskStatus.needAttention ||
+    TaskStatus.observerDetached ||
+    TaskStatus.runtimeLost =>
+      'Review',
+    TaskStatus.turnIdle || TaskStatus.paused => 'Continue',
+    TaskStatus.completed || TaskStatus.userCompleted => 'View result',
+    TaskStatus.failed || TaskStatus.userFailed || TaskStatus.stopped => 'Open',
+    TaskStatus.running || TaskStatus.pending || TaskStatus.draft => 'Open',
+  };
+}
+
+String _secondaryActionLabel(TaskStatus status) {
+  return switch (status) {
+    TaskStatus.completed || TaskStatus.userCompleted => 'Continue',
+    TaskStatus.failed ||
+    TaskStatus.userFailed ||
+    TaskStatus.stopped =>
+      'Review',
+    TaskStatus.running ||
+    TaskStatus.pending ||
+    TaskStatus.draft =>
+      'Add context',
+    _ => 'Add context',
+  };
+}
+
+Color _statusTone(TaskStatus status) {
+  return switch (status) {
+    TaskStatus.needApproval ||
+    TaskStatus.needAttention ||
+    TaskStatus.turnIdle ||
+    TaskStatus.paused =>
+      Colors.orange.shade800,
+    TaskStatus.observerDetached ||
+    TaskStatus.runtimeLost =>
+      Colors.blueGrey.shade700,
+    TaskStatus.running ||
+    TaskStatus.pending ||
+    TaskStatus.draft =>
+      ArminTheme.primary,
+    TaskStatus.completed || TaskStatus.userCompleted => Colors.green.shade700,
+    TaskStatus.failed ||
+    TaskStatus.userFailed ||
+    TaskStatus.stopped =>
+      Colors.red.shade700,
+  };
+}
+
+String _latestUsefulUpdate(TaskSession task) {
+  final summary = const CodexOutputCleaner().clean(task.shortSummary);
+  final source = summary.trim().isEmpty ? task.userText : summary;
+  final text = const SemanticSnippetBuilder()
+      .build(source,
+          contentType: SnippetContentType.agentSummary, maxChars: 150)
+      .visibleText
+      .trim();
+  if (text.isEmpty) {
+    return 'Task is ready for its next update.';
+  }
+  return text;
+}
+
+String _taskFreshnessLabel(TaskSession task) {
+  return _timeLabel(task.updatedAt);
+}
+
+String _timeLabel(DateTime value) {
+  final hour = value.hour.toString().padLeft(2, '0');
+  final minute = value.minute.toString().padLeft(2, '0');
+  return '$hour:$minute';
 }
 
 class _HomeVoicePanel extends StatelessWidget {
@@ -420,8 +872,8 @@ class _SectionHeader extends StatelessWidget {
   }
 }
 
-class _EmptyCurrentTask extends StatelessWidget {
-  const _EmptyCurrentTask({required this.onCreate});
+class _EmptyInbox extends StatelessWidget {
+  const _EmptyInbox({required this.onCreate});
 
   final VoidCallback onCreate;
 
@@ -432,13 +884,24 @@ class _EmptyCurrentTask extends StatelessWidget {
       child: InkWell(
         onTap: onCreate,
         borderRadius: BorderRadius.circular(14),
-        child: const Padding(
-          padding: EdgeInsets.all(20),
-          child: Row(
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Icon(Icons.mic_none_outlined, color: ArminTheme.primary),
-              SizedBox(width: 12),
-              Expanded(child: Text('暂无运行任务，点击创建新的委派任务')),
+              const Icon(Icons.task_alt_outlined, color: ArminTheme.primary),
+              const SizedBox(height: 12),
+              Text(
+                'No active tasks yet.',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Create a task, send it to your local or China-friendly Agent, then come back when it needs your input.',
+                style: Theme.of(context).textTheme.bodyMedium,
+              ),
+              const SizedBox(height: 14),
+              const Text('Create first task'),
             ],
           ),
         ),

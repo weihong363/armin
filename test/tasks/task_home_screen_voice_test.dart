@@ -51,6 +51,34 @@ void main() {
     expect(field.controller!.text, '修复首页登录失败');
   });
 
+  testWidgets('home voice panel disappears when no speech is captured',
+      (tester) async {
+    await _pumpHome(
+      tester,
+      voiceService: MockVoiceService(recognizedText: ''),
+    );
+
+    await _pressAndReleaseHomeMic(tester);
+
+    expect(find.byKey(const ValueKey('home-voice-panel')), findsNothing);
+  });
+
+  testWidgets('home voice state resets after using recognized draft',
+      (tester) async {
+    await _pumpHome(
+      tester,
+      voiceService: MockVoiceService(recognizedText: '修复首页登录失败'),
+    );
+
+    await _pressAndReleaseHomeMic(tester);
+    await tester.tap(find.byKey(const ValueKey('home-voice-use-result')));
+    await tester.pumpAndSettle();
+    Navigator.of(tester.element(find.byType(TextField).first)).pop();
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('home-voice-panel')), findsNothing);
+  });
+
   testWidgets('header settings button opens unified settings screen',
       (tester) async {
     await _pumpHome(tester, voiceService: MockVoiceService());
@@ -71,8 +99,8 @@ void main() {
 
     expect(find.text('主机'), findsNothing);
     expect(find.text('我'), findsNothing);
-    expect(find.text('历史'), findsOneWidget);
-    await tester.tap(find.text('历史'));
+    expect(find.text('History'), findsOneWidget);
+    await tester.tap(find.text('History'));
     await tester.pumpAndSettle();
 
     expect(find.text('历史任务'), findsOneWidget);

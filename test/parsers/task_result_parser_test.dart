@@ -97,6 +97,86 @@ TASK _ RESULT _ END
     expect(result.nextActions, isEmpty);
   });
 
+  test('parses JSON result from fenced code block', () {
+    final result = TaskResultParser().parse('''
+Agent finished:
+```json
+{
+  "status": "success",
+  "summary": "implemented structured output",
+  "changed_files": ["lib/parser.dart"],
+  "validation": ["flutter test"],
+  "risks": ["none"],
+  "next_actions": ["manual smoke test"]
+}
+```
+''');
+
+    expect(result, isNotNull);
+    expect(result!.summary, 'implemented structured output');
+    expect(result.changedFiles, ['lib/parser.dart']);
+    expect(result.validation, ['flutter test']);
+    expect(result.risks, ['none']);
+    expect(result.nextActions, ['manual smoke test']);
+  });
+
+  test('parses markdown structured result from fenced code block', () {
+    final result = TaskResultParser().parse('''
+```markdown
+Status: success
+Summary: fixed metrics
+Changed files:
+- lib/core/services/armin_app_state.dart
+Validation:
+- flutter analyze
+Risks:
+- none
+Next actions:
+- open metrics tab
+```
+''');
+
+    expect(result, isNotNull);
+    expect(result!.status, 'success');
+    expect(result.summary, 'fixed metrics');
+    expect(result.changedFiles, ['lib/core/services/armin_app_state.dart']);
+    expect(result.validation, ['flutter analyze']);
+    expect(result.risks, ['none']);
+    expect(result.nextActions, ['open metrics tab']);
+  });
+
+  test('falls back to natural output when structured parsing fails', () {
+    final result = TaskResultParser().parseNatural('''
+```json
+{not valid json}
+```
+plain answer
+''');
+
+    expect(result, isNotNull);
+    expect(result!.summary, contains('plain answer'));
+  });
+
+  test('parses markdown table structured result', () {
+    final result = TaskResultParser().parse('''
+| Field | Value |
+| --- | --- |
+| Status | success |
+| Summary | table result |
+| Changed files | lib/table.dart |
+| Validation | flutter test |
+| Risks | none |
+| Next actions | inspect UI |
+''');
+
+    expect(result, isNotNull);
+    expect(result!.summary, 'table result');
+    expect(result.changedFiles, ['lib/table.dart']);
+    expect(result.validation, ['flutter test']);
+    expect(result.risks, ['none']);
+    expect(result.nextActions, ['inspect UI']);
+  });
+
   test('parses natural Codex TUI output without structure', () {
     final result = TaskResultParser().parseNatural('''
 ┌──────────────────────────────┐

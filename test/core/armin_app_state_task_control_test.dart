@@ -611,6 +611,52 @@ world
     expect(voice.spokenSummaries.single, contains('HELLO WORLD'));
   });
 
+  test('empty polling updates do not create log or metric nodes', () async {
+    final task = _task(status: TaskStatus.running);
+    final store = _TaskStore(task);
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: _EmptyPollingAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    state.startTaskExecution(
+      task,
+      const AgentExecutionRequest(prompt: 'Task'),
+    );
+    await Future<void>.delayed(Duration.zero);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(store.task!.executionLogs, isEmpty);
+    expect(store.task!.metricEvents, isEmpty);
+  });
+
+  test('repeated log updates keep a single metrics node', () async {
+    final task = _task(status: TaskStatus.running);
+    final store = _TaskStore(task);
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: _RepeatedLogUpdateAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    state.startTaskExecution(
+      task,
+      const AgentExecutionRequest(prompt: 'Task'),
+    );
+    await Future<void>.delayed(Duration.zero);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(
+      store.task!.metricEvents
+          .where((event) => event.eventType == 'log_update'),
+      hasLength(1),
+    );
+    expect(store.task!.metricEvents.single.payloadJson, '{"bytes":6}');
+  });
+
   test('approval request is spoken when attention speech is enabled', () async {
     final task = _task(status: TaskStatus.running);
     final store = _TaskStore(task);
@@ -1132,6 +1178,22 @@ class _StreamingThenIdleAgent extends _ControlAgent {
   }
 }
 
+class _EmptyPollingAgent extends _ControlAgent {
+  @override
+  Stream<AgentExecutionUpdate> execute(AgentExecutionRequest request) async* {
+    yield const AgentExecutionUpdate(rawOutput: '');
+    yield const AgentExecutionUpdate(rawOutput: '');
+  }
+}
+
+class _RepeatedLogUpdateAgent extends _ControlAgent {
+  @override
+  Stream<AgentExecutionUpdate> execute(AgentExecutionRequest request) async* {
+    yield const AgentExecutionUpdate(rawOutput: 'first\n');
+    yield const AgentExecutionUpdate(rawOutput: 'second');
+  }
+}
+
 class _ApprovalAgent extends _ControlAgent {
   @override
   Stream<AgentExecutionUpdate> execute(AgentExecutionRequest request) async* {
@@ -1190,6 +1252,9 @@ class _SilentVoiceService implements VoiceService {
   Future<void> speakSummary(String summary) async {}
 
   @override
+  Future<void> pauseSpeaking() async {}
+
+  @override
   Future<void> stopSpeaking() async {}
 
   @override
@@ -1213,6 +1278,9 @@ class _CapturingVoiceService implements VoiceService {
   Future<void> speakSummary(String summary) async {
     spokenSummaries.add(summary);
   }
+
+  @override
+  Future<void> pauseSpeaking() async {}
 
   @override
   Future<void> stopSpeaking() async {}

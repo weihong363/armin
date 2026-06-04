@@ -55,8 +55,10 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
   const RuleBasedOutputSummaryProvider({
     CodexOutputCleaner cleaner = const CodexOutputCleaner(),
     SecretRedactor redactor = const SecretRedactor(),
-    this.maxDisplayLines = 4,
+    this.maxDisplayLines = 20,
     this.maxDisplayChars = 420,
+    this.maxStructuredDisplayLines = 80,
+    this.maxStructuredDisplayChars = 3000,
   })  : _cleaner = cleaner,
         _redactor = redactor;
 
@@ -64,6 +66,8 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
   final SecretRedactor _redactor;
   final int maxDisplayLines;
   final int maxDisplayChars;
+  final int maxStructuredDisplayLines;
+  final int maxStructuredDisplayChars;
 
   @override
   Future<OutputSummary> summarize(OutputSummaryRequest request) async {
@@ -72,6 +76,16 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
     );
     final cleaned =
         _redactor.redactInlineSecrets(_cleaner.clean(withoutPromptBlocks));
+    final structuredLines = _structuredLines(cleaned, request);
+    if (structuredLines.isNotEmpty) {
+      final display = _structuredNaturalSummary(structuredLines);
+      final speech = DeviceVoiceService.cleanSpeechSummary(display);
+      return OutputSummary(
+        displaySummary: display,
+        speechSummary: speech,
+        importantLines: structuredLines,
+      );
+    }
     final importantLines = _importantLines(cleaned, request);
     final display = _compactDisplay(importantLines.take(maxDisplayLines));
     final speech = DeviceVoiceService.cleanSpeechSummary(display);
@@ -114,6 +128,375 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
     selected.sort((a, b) => a.index.compareTo(b.index));
     return selected.map((item) => item.line).toList(growable: false);
   }
+
+  List<String> _structuredLines(String cleaned, OutputSummaryRequest request) {
+    final promptInputs = {
+      request.taskTitle,
+      ...request.promptInputs,
+    }.where((input) => input.trim().isNotEmpty).toList(growable: false);
+    final lines = _semanticLines(_removeTerminalPromptBlocks(cleaned))
+        .where((line) => line.isNotEmpty)
+        .where((line) => !_looksLikePromptEcho(line, promptInputs))
+        .where((line) => !_looksLikeLowValueLine(line))
+        .toList(growable: false);
+    final blocks = <List<String>>[];
+    var current = <String>[];
+    String? pendingIntro;
+
+    void flush() {
+      if (_isUsefulStructuredBlock(current)) {
+        blocks.add(List<String>.from(current));
+      }
+      current = <String>[];
+    }
+
+    for (final line in lines) {
+      if (_looksLikeTableLine(line) ||
+          (current.isNotEmpty && _looksLikeTableContinuation(line))) {
+        if (current.isEmpty && pendingIntro != null) {
+          current.add(pendingIntro);
+        }
+        current.add(line);
+      } else {
+        flush();
+        pendingIntro = _looksLikeStructuredIntroLine(line) ? line : null;
+      }
+    }
+    flush();
+    if (blocks.isEmpty) {
+      return const [];
+    }
+    blocks.sort((a, b) => _structuredScore(b).compareTo(_structuredScore(a)));
+    return blocks.first;
+  }
+
+  bool _isUsefulStructuredBlock(List<String> lines) {
+    if (lines.length < 3) {
+      return false;
+    }
+    final dataRows = lines.where(_looksLikeTableDataRow).length;
+    return dataRows >= 2;
+  }
+
+  int _structuredScore(List<String> lines) {
+    final dataRows = lines.where(_looksLikeTableDataRow).length;
+    final fileRows = lines.where(_looksLikeFileReferenceLine).length;
+    return dataRows * 10 + fileRows * 4 + lines.length;
+  }
+
+  bool _looksLikeTableLine(String line) {
+    return _looksLikeTableDataRow(line) || _looksLikeTableSeparator(line);
+  }
+
+  bool _looksLikeTableDataRow(String line) {
+    if (!_hasTableDelimiter(line)) {
+      return false;
+    }
+    if (_looksLikeTableSeparator(line)) {
+      return false;
+    }
+    final cells = _tableCells(line);
+    return cells.where((cell) => cell.isNotEmpty).length >= 2 &&
+        cells.any(_looksLikeStructuredCell);
+  }
+
+  bool _looksLikeStructuredCell(String cell) {
+    final lower = cell.toLowerCase();
+    return lower.contains('.py') ||
+        lower.contains('.dart') ||
+        lower.contains('.ts') ||
+        lower.contains('.json') ||
+        lower.contains('test_') ||
+        RegExp(r'^[A-Za-z0-9_\-./]+$').hasMatch(cell) ||
+        RegExp(r'[\u4e00-\u9fff]').hasMatch(cell);
+  }
+
+  bool _looksLikeTableSeparator(String line) {
+    final trimmed = line.trim();
+    return RegExp(r'^\|?\s*[-:─━_\s|]+\|?\s*$').hasMatch(trimmed) ||
+        RegExp(r'^[┌┬┐├┼┤└┴┘─━│\s]+$').hasMatch(trimmed);
+  }
+
+  bool _looksLikeTableContinuation(String line) {
+    return _looksLikeFileReferenceLine(line) ||
+        _looksLikeTableSeparator(line) ||
+        _hasTableDelimiter(line);
+  }
+
+  bool _looksLikeFileReferenceLine(String line) {
+    return RegExp(r'\b[A-Za-z0-9_\-./]*test[A-Za-z0-9_\-./]*\.(?:py|dart|ts)\b')
+        .hasMatch(line);
+  }
+
+  bool _hasTableDelimiter(String line) {
+    return line.contains('|') || line.contains('│');
+  }
+
+  bool _looksLikeStructuredIntroLine(String line) {
+    return line.contains('汇总') ||
+        line.contains('如下') ||
+        line.contains('表格') ||
+        (line.contains('测试') && line.contains('文件'));
+  }
+
+  List<String> _tableCells(String line) {
+    final cells = line
+        .split(RegExp(r'[|│]'))
+        .map((cell) => cell.trim())
+        .toList(growable: true);
+    if (cells.isNotEmpty && cells.first.isEmpty && _startsWithDelimiter(line)) {
+      cells.removeAt(0);
+    }
+    if (cells.isNotEmpty && cells.last.isEmpty && _endsWithDelimiter(line)) {
+      cells.removeLast();
+    }
+    return cells;
+  }
+
+  bool _startsWithDelimiter(String line) {
+    final trimmed = line.trimLeft();
+    return trimmed.startsWith('|') || trimmed.startsWith('│');
+  }
+
+  bool _endsWithDelimiter(String line) {
+    final trimmed = line.trimRight();
+    return trimmed.endsWith('|') || trimmed.endsWith('│');
+  }
+
+  String _structuredNaturalSummary(List<String> lines) {
+    final intro = lines
+        .firstWhere(
+          (line) =>
+              !_looksLikeTableLine(line) && _looksLikeStructuredIntroLine(line),
+          orElse: () => '结构化结果如下',
+        )
+        .replaceFirst(RegExp(r'[：:，,。.\s]+$'), '');
+    final testFiles = _extractTestFiles(lines);
+    if (testFiles.isNotEmpty) {
+      return '$intro：共 ${testFiles.length} 个测试文件，包括 ${testFiles.join('、')}。';
+    }
+    final tableRows = _extractTableRows(lines);
+    if (tableRows.isNotEmpty) {
+      return '$intro：共 ${tableRows.length} 行，分别是：${tableRows.join('；')}。';
+    }
+    return intro;
+  }
+
+  List<String> _extractTableRows(List<String> lines) {
+    final rows = <String>[];
+    for (final cells in _logicalTableRows(lines)) {
+      final row = _formatLogicalRow(cells);
+      if (row.isEmpty) {
+        continue;
+      }
+      if (!rows.contains(row)) {
+        rows.add(row);
+      }
+    }
+    return rows;
+  }
+
+  List<List<String>> _logicalTableRows(List<String> lines) {
+    final rows = <List<String>>[];
+    for (final line in lines) {
+      if (!_hasTableDelimiter(line) || _looksLikeTableSeparator(line)) {
+        continue;
+      }
+      final cells = _normalizedTableCells(line);
+      if (_looksLikeWrappedContinuation(line, cells, rows)) {
+        rows[rows.length - 1] = _mergeTableCells(rows.last, cells);
+        continue;
+      }
+      if (cells.where((cell) => cell.isNotEmpty).length < 2 ||
+          _looksLikeHeaderCells(cells)) {
+        continue;
+      }
+      rows.add(cells);
+    }
+    return rows;
+  }
+
+  List<String> _normalizedTableCells(String line) {
+    return _tableCells(line)
+        .map((cell) => cell.replaceAll(RegExp(r'\s+'), ' ').trim())
+        .toList(growable: false);
+  }
+
+  bool _looksLikeWrappedContinuation(
+    String line,
+    List<String> cells,
+    List<List<String>> rows,
+  ) {
+    if (!line.contains('│') || rows.isEmpty) {
+      return false;
+    }
+    if (_onlyFirstCellHasValue(cells)) {
+      return true;
+    }
+    if (cells.length < 2) {
+      return false;
+    }
+    final previous = rows.last;
+    final currentSecond = cells.length > 1 ? cells[1] : '';
+    final previousSecond = previous.length > 1 ? previous[1] : '';
+    if (_looksLikePathCell(previousSecond) &&
+        !_startsRootedPath(currentSecond)) {
+      return true;
+    }
+    return _looksLikeInteger(previousSecond) && currentSecond.isEmpty;
+  }
+
+  bool _onlyFirstCellHasValue(List<String> cells) {
+    if (cells.isEmpty || cells.first.isEmpty) {
+      return false;
+    }
+    return cells.skip(1).every((cell) => cell.isEmpty);
+  }
+
+  List<String> _mergeTableCells(List<String> previous, List<String> current) {
+    final width =
+        previous.length > current.length ? previous.length : current.length;
+    return [
+      for (var index = 0; index < width; index++)
+        _joinCellParts(
+          index < previous.length ? previous[index] : '',
+          index < current.length ? current[index] : '',
+        ),
+    ];
+  }
+
+  String _joinCellParts(String previous, String current) {
+    if (current.isEmpty) {
+      return previous;
+    }
+    if (previous.isEmpty) {
+      return current;
+    }
+    if (previous.endsWith('/') ||
+        previous.endsWith('_') ||
+        current.startsWith('.') ||
+        current == 'py' ||
+        current == 'y' ||
+        (_looksLikePathCell(previous) &&
+            RegExp(r'^[A-Za-z0-9_./-]+$').hasMatch(current))) {
+      return '$previous$current';
+    }
+    if (_endsWithCjk(previous) || _startsWithCjk(current)) {
+      return '$previous$current';
+    }
+    return '$previous $current';
+  }
+
+  bool _endsWithCjk(String value) {
+    return value.isNotEmpty && RegExp(r'[\u4e00-\u9fff]$').hasMatch(value);
+  }
+
+  bool _startsWithCjk(String value) {
+    return value.isNotEmpty && RegExp(r'^[\u4e00-\u9fff]').hasMatch(value);
+  }
+
+  String _formatLogicalRow(List<String> cells) {
+    final values =
+        cells.where((cell) => cell.isNotEmpty).toList(growable: false);
+    if (values.length < 2) {
+      return '';
+    }
+    if (cells.length >= 3 && _looksLikePathCell(cells[1])) {
+      final name = cells.first.trim();
+      final path = cells[1].trim();
+      final details = cells.skip(2).where((cell) => cell.isNotEmpty).join('，');
+      return details.isEmpty ? '$name：$path' : '$name：$path，$details';
+    }
+    return values.join('，');
+  }
+
+  bool _looksLikePathCell(String value) {
+    return value.startsWith('app/') ||
+        value.startsWith('lib/') ||
+        value.startsWith('test/') ||
+        value.startsWith('/') ||
+        value.contains('/');
+  }
+
+  bool _startsRootedPath(String value) {
+    return value.startsWith('app/') ||
+        value.startsWith('lib/') ||
+        value.startsWith('test/') ||
+        value.startsWith('/');
+  }
+
+  bool _looksLikeInteger(String value) {
+    return RegExp(r'^\d+$').hasMatch(value.trim());
+  }
+
+  bool _looksLikeHeaderCells(List<String> cells) {
+    final normalized = cells
+        .where((cell) => cell.isNotEmpty)
+        .map((cell) => cell.toLowerCase())
+        .toList(growable: false);
+    if (normalized.isEmpty) {
+      return false;
+    }
+    const headerWords = {
+      '模块',
+      '文件',
+      '测试文件',
+      '路径',
+      '状态',
+      '说明',
+      '用例',
+      '覆盖模块',
+      '核心职责',
+      '职责',
+      'name',
+      'status',
+    };
+    return normalized.every(headerWords.contains);
+  }
+
+  List<String> _extractTestFiles(List<String> lines) {
+    final files = <String>[];
+    String? pendingFragment;
+    for (final cells in _logicalTableRows(lines)) {
+      if (cells.isEmpty) {
+        continue;
+      }
+      final firstCell = cells.first.replaceAll(RegExp(r'\s+'), '');
+      if (firstCell.isEmpty) {
+        continue;
+      }
+      final wholeLineMatch = _testFilePattern.firstMatch(
+        cells.join(' ').replaceAll(RegExp(r'\s+'), ''),
+      );
+      if (wholeLineMatch != null) {
+        _addUnique(files, wholeLineMatch.group(0)!);
+        pendingFragment = null;
+        continue;
+      }
+      if (pendingFragment != null) {
+        final candidate = '$pendingFragment$firstCell';
+        final match = _testFilePattern.firstMatch(candidate);
+        if (match != null) {
+          _addUnique(files, match.group(0)!);
+          pendingFragment = null;
+        } else {
+          pendingFragment = candidate;
+        }
+      } else if (firstCell.startsWith('test_')) {
+        pendingFragment = firstCell;
+      }
+    }
+    return files;
+  }
+
+  void _addUnique(List<String> values, String value) {
+    if (!values.contains(value)) {
+      values.add(value);
+    }
+  }
+
+  static final RegExp _testFilePattern =
+      RegExp(r'test[A-Za-z0-9_]*\.(?:py|dart|ts)');
 
   String _removeTerminalPromptBlocks(String cleaned) {
     final lines = cleaned
@@ -745,11 +1128,27 @@ class SelectableOutputSummaryProvider implements OutputSummaryProvider {
   }
 
   @override
-  Future<OutputSummary> summarize(OutputSummaryRequest request) {
+  Future<OutputSummary> summarize(OutputSummaryRequest request) async {
+    final fallbackSummary = await _fallback.summarize(request);
+    if (_isStructuredRuleSummary(fallbackSummary)) {
+      return fallbackSummary;
+    }
     if (_preferLocalModel) {
       return _localModel.summarize(request);
     }
-    return _fallback.summarize(request);
+    return fallbackSummary;
+  }
+
+  bool _isStructuredRuleSummary(OutputSummary summary) {
+    final hasStructuredSource = summary.importantLines.any(
+      (line) =>
+          line.contains('|') ||
+          line.contains('│') ||
+          RegExp(r'^[┌┬┐├┼┤└┴┘─━│\s]+$').hasMatch(line.trim()),
+    );
+    final displayIsNatural = !summary.displaySummary.contains('|') &&
+        !summary.displaySummary.contains('│');
+    return hasStructuredSource && displayIsNatural;
   }
 }
 

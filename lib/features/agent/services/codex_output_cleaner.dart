@@ -26,22 +26,35 @@ class CodexOutputCleaner {
         .hasMatch(line)) {
       return '额度已用完，请稍后重试。';
     }
+    final preserveTableLine = _looksLikeDelimitedTableLine(line);
     return line
-        .replaceFirst(RegExp(r'^[│|]\s*'), '')
+        .replaceFirst(
+            preserveTableLine ? RegExp(r'(?!)') : RegExp(r'^[│|]\s*'), '')
         .replaceFirst(RegExp(r'^[›]\s*'), '')
         .replaceFirst(RegExp(r'^[✨⚠]\s*'), '')
         .replaceFirst(RegExp(r'^[•*-]\s+'), '')
         .replaceAll(
-          RegExp(r'\bType your message or @path/to/file\b.*', caseSensitive: false),
+          RegExp(r'\bType your message or @path/to/file\b.*',
+              caseSensitive: false),
           '',
         )
         .replaceAll(RegExp(r'\bAuto Model\b.*', caseSensitive: false), '')
         .replaceAll(
-          RegExp(r'\bShift\+Tab to Auto-accept Edits\b.*', caseSensitive: false),
+          RegExp(r'\bShift\+Tab to Auto-accept Edits\b.*',
+              caseSensitive: false),
           '',
         )
         .replaceAll(RegExp(r'\bAGENTS\.md file\b.*', caseSensitive: false), '')
         .trim();
+  }
+
+  bool _looksLikeDelimitedTableLine(String line) {
+    final trimmed = line.trimLeft();
+    if (!(trimmed.startsWith('│') || trimmed.startsWith('|'))) {
+      return false;
+    }
+    final delimiter = trimmed.startsWith('│') ? '│' : '|';
+    return delimiter.allMatches(trimmed).length >= 2;
   }
 
   bool _isNoiseLine(String line) {
@@ -52,7 +65,6 @@ class CodexOutputCleaner {
         line.startsWith('└') ||
         line.startsWith('┐') ||
         line.startsWith('┘') ||
-        line.startsWith('│') ||
         line.startsWith('─') ||
         line.startsWith('_') ||
         line.startsWith('━') ||

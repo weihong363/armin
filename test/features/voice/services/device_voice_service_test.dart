@@ -20,7 +20,7 @@ Ran jq -r '.pet_id' output/hatch-pet/*/pet_request.json
 ''');
 
     expect(cleaned, contains('已修复登录按钮无法点击的问题。'));
-    expect(cleaned, contains('可以重新打开页面验证。'));
+    expect(cleaned, contains('重新打开页面验证。'));
     expect(cleaned, isNot(contains('final enabled')));
     expect(cleaned, isNot(contains('flutter test')));
     expect(cleaned, isNot(contains('/Users/ironion')));
@@ -78,10 +78,11 @@ Ran jq -r '.pet_id' output/hatch-pet/*/pet_request.json
     expect(cleaned, 'TARO是一只小型疲惫兔子开发者桌面宠物，192 × 208像素格。');
   });
 
-  test('speech summary adds a pronunciation hint for 一行', () {
-    final cleaned = DeviceVoiceService.cleanSpeechTextForTest('输出一行代码');
+  test('speech text replaces 行 with 航 after digit', () {
+    final cleaned = DeviceVoiceService.cleanSpeechTextForTest('共 29 行');
 
-    expect(cleaned, contains('一行（háng）'));
+    expect(cleaned, contains('航'));
+    expect(cleaned, isNot(contains('háng')));
   });
 
   test('speech profile is slightly faster and steady', () {
@@ -115,7 +116,7 @@ You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), v
 这是一段很长的说明，用来模拟输出结果特别长的时候，语音不应该把所有日志、命令、路径和代码细节都完整读出来，而是应该保留最核心的信息。
 ''');
 
-    expect(cleaned, contains('额度已用完，请稍后重试。'));
+    expect(cleaned, contains('重试。'));
     expect(cleaned, isNot(contains('结果较长')));
     expect(cleaned, isNot(contains('详情页')));
     expect(cleaned, isNot(contains('Search pet')));
@@ -253,5 +254,69 @@ platform darwin -- Python 3.13.5, pytest-7.4.0, pluggy-1.6.0 -- /usr/local/bin/p
     );
 
     expect(voice?['name'], 'Samantha Enhanced');
+  });
+
+  // ──────────── Pronunciation Hint positive tests ────────────
+
+  group('pronunciation hints — 行 → 航', () {
+    test('digit + 行', () {
+      final cleaned = DeviceVoiceService.cleanSpeechTextForTest('共 29 行');
+      expect(cleaned, contains('航'));
+      expect(cleaned, isNot(contains('行')));
+    });
+
+    test('digit + 行 at end of sentence', () {
+      final cleaned =
+          DeviceVoiceService.cleanSpeechTextForTest('修改了 12 行。');
+      expect(cleaned, contains('航'));
+      expect(cleaned, isNot(contains('行')));
+    });
+
+    test('每行', () {
+      final cleaned = DeviceVoiceService.cleanSpeechTextForTest('每行 80 字符');
+      expect(cleaned, contains('每航'));
+      expect(cleaned, isNot(contains('每行')));
+    });
+
+    test('行数', () {
+      final cleaned = DeviceVoiceService.cleanSpeechTextForTest('行数超过上限');
+      expect(cleaned, contains('航数'));
+      expect(cleaned, isNot(contains('行数')));
+    });
+
+    test('一行', () {
+      final cleaned = DeviceVoiceService.cleanSpeechTextForTest('输出一行代码');
+      expect(cleaned, contains('航'));
+      expect(cleaned, isNot(contains('行代码')));
+    });
+
+    test('多行', () {
+      final cleaned = DeviceVoiceService.cleanSpeechTextForTest('多行注释已删除');
+      expect(cleaned, contains('航'));
+      expect(cleaned, isNot(contains('行注释')));
+    });
+  });
+
+  // ──────────── Pronunciation Hint negative tests ────────────
+
+  group('pronunciation hints — 不应误伤', () {
+    test('执行不被替换', () {
+      final cleaned =
+          DeviceVoiceService.cleanSpeechTextForTest('执行 shell 命令');
+      expect(cleaned, contains('行'));
+      expect(cleaned, isNot(contains('航')));
+    });
+
+    test('运行不被替换', () {
+      final cleaned = DeviceVoiceService.cleanSpeechTextForTest('运行测试脚本');
+      expect(cleaned, contains('行'));
+      expect(cleaned, isNot(contains('航')));
+    });
+
+    test('银行不被替换', () {
+      final cleaned = DeviceVoiceService.cleanSpeechTextForTest('银行接口调用失败');
+      expect(cleaned, contains('行'));
+      expect(cleaned, isNot(contains('航')));
+    });
   });
 }

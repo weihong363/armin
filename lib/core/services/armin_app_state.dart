@@ -733,20 +733,21 @@ Apply this decision to the pending approval request.
             createdAt: now,
           ),
         ],
-        metricEvents: [
-          ...taskWithTurn.metricEvents,
-          MetricEvent.create(
-            taskId: taskWithTurn.id,
-            eventType: eventType,
-            payloadJson: '{"status":"${status.name}"}',
-            now: now,
-          ),
-        ],
+        metricEvents: _metricEventsWithCreated(
+          taskWithTurn.metricEvents,
+          taskId: taskWithTurn.id,
+          eventType: eventType,
+          payloadJson: '{"status":"${status.name}"}',
+          now: now,
+        ),
       ),
     );
   }
 
   Future<TaskSession> _appendRawLog(TaskSession task, String rawOutput) async {
+    if (rawOutput.trim().isEmpty) {
+      return task;
+    }
     final now = DateTime.now();
     final taskWithTurn = _taskWithTurnOutput(
       task,
@@ -786,15 +787,7 @@ Apply this decision to the pending approval request.
   ) {
     final updateAt = DateTime.now();
     final rawLog = '${task.rawLog}${update.rawOutput}';
-    final executionLogs = [
-      ...task.executionLogs,
-      ExecutionLog(
-        id: 'log-${updateAt.microsecondsSinceEpoch}',
-        taskId: task.id,
-        rawOutput: update.rawOutput,
-        createdAt: updateAt,
-      ),
-    ];
+    final executionLogs = _executionLogsWithUpdate(task, update, updateAt);
     final taskWithTurn = _taskWithTurnOutput(
       task,
       rawOutput: update.rawOutput,
@@ -814,15 +807,13 @@ Apply this decision to the pending approval request.
         executionLogs: executionLogs,
         updatedAt: updateAt,
         shortSummary: approval.reason,
-        metricEvents: [
-          ...taskWithTurn.metricEvents,
-          MetricEvent.create(
-            taskId: task.id,
-            eventType: 'approval_requested',
-            payloadJson: '{"risk":"${approval.risk}"}',
-            now: updateAt,
-          ),
-        ],
+        metricEvents: _metricEventsWithCreated(
+          taskWithTurn.metricEvents,
+          taskId: task.id,
+          eventType: 'approval_requested',
+          payloadJson: '{"risk":"${approval.risk}"}',
+          now: updateAt,
+        ),
       );
     }
 
@@ -834,15 +825,13 @@ Apply this decision to the pending approval request.
         executionLogs: executionLogs,
         updatedAt: updateAt,
         shortSummary: update.terminalPrompt!.question,
-        metricEvents: [
-          ...taskWithTurn.metricEvents,
-          MetricEvent.create(
-            taskId: task.id,
-            eventType: 'terminal_prompt_requested',
-            payloadJson: '{"options":${update.terminalPrompt!.options.length}}',
-            now: updateAt,
-          ),
-        ],
+        metricEvents: _metricEventsWithCreated(
+          taskWithTurn.metricEvents,
+          taskId: task.id,
+          eventType: 'terminal_prompt_requested',
+          payloadJson: '{"options":${update.terminalPrompt!.options.length}}',
+          now: updateAt,
+        ),
       );
     }
 
@@ -858,15 +847,13 @@ Apply this decision to the pending approval request.
         shortSummary: update.result!.summary,
         summary: update.result!.summary,
         executionLogs: executionLogs,
-        metricEvents: [
-          ...taskWithTurn.metricEvents,
-          MetricEvent.create(
-            taskId: task.id,
-            eventType: needsAttention ? 'need_attention' : 'turn_idle',
-            payloadJson: '{"source":"legacy_result","status":"$resultStatus"}',
-            now: observedAt,
-          ),
-        ],
+        metricEvents: _metricEventsWithCreated(
+          taskWithTurn.metricEvents,
+          taskId: task.id,
+          eventType: needsAttention ? 'need_attention' : 'turn_idle',
+          payloadJson: '{"source":"legacy_result","status":"$resultStatus"}',
+          now: observedAt,
+        ),
         clearApproval: true,
         clearTerminalPrompt: true,
       );
@@ -883,15 +870,13 @@ Apply this decision to the pending approval request.
         shortSummary: runtimeLostSummary,
         summary: update.cleanedOutput,
         executionLogs: executionLogs,
-        metricEvents: [
-          ...taskWithTurn.metricEvents,
-          MetricEvent.create(
-            taskId: task.id,
-            eventType: 'runtime_lost',
-            payloadJson: '{"observer_state":"${update.observerState.name}"}',
-            now: failedAt,
-          ),
-        ],
+        metricEvents: _metricEventsWithCreated(
+          taskWithTurn.metricEvents,
+          taskId: task.id,
+          eventType: 'runtime_lost',
+          payloadJson: '{"observer_state":"${update.observerState.name}"}',
+          now: failedAt,
+        ),
         clearApproval: true,
       );
     }
@@ -920,34 +905,71 @@ Apply this decision to the pending approval request.
             : (summary.isEmpty ? 'Agent 暂时停止输出' : summary),
         summary: summary.isEmpty ? task.summary : summary,
         executionLogs: executionLogs,
-        metricEvents: [
-          ...taskWithTurn.metricEvents,
-          MetricEvent.create(
-            taskId: task.id,
-            eventType: update.needsAttention ? 'need_attention' : 'turn_idle',
-            payloadJson: '{"observer_state":"${update.observerState.name}"}',
-            now: idleAt,
-          ),
-        ],
+        metricEvents: _metricEventsWithCreated(
+          taskWithTurn.metricEvents,
+          taskId: task.id,
+          eventType: update.needsAttention ? 'need_attention' : 'turn_idle',
+          payloadJson: '{"observer_state":"${update.observerState.name}"}',
+          now: idleAt,
+        ),
         clearApproval: !update.needsAttention,
         clearTerminalPrompt: !update.needsAttention,
       );
     }
 
+    final hasLogOutput = update.rawOutput.trim().isNotEmpty;
     return taskWithTurn.copyWith(
       rawLog: rawLog,
       executionLogs: executionLogs,
       updatedAt: updateAt,
-      metricEvents: [
-        ...taskWithTurn.metricEvents,
-        MetricEvent.create(
-          taskId: task.id,
-          eventType: 'log_update',
-          payloadJson: '{"bytes":${update.rawOutput.length}}',
-          now: updateAt,
-        ),
-      ],
+      metricEvents: hasLogOutput
+          ? _metricEventsWithCreated(
+              taskWithTurn.metricEvents,
+              taskId: task.id,
+              eventType: 'log_update',
+              payloadJson: '{"bytes":${update.rawOutput.length}}',
+              now: updateAt,
+            )
+          : taskWithTurn.metricEvents,
     );
+  }
+
+  List<ExecutionLog> _executionLogsWithUpdate(
+    TaskSession task,
+    AgentExecutionUpdate update,
+    DateTime updateAt,
+  ) {
+    if (update.rawOutput.trim().isEmpty) {
+      return task.executionLogs;
+    }
+    return [
+      ...task.executionLogs,
+      ExecutionLog(
+        id: 'log-${updateAt.microsecondsSinceEpoch}',
+        taskId: task.id,
+        rawOutput: update.rawOutput,
+        createdAt: updateAt,
+      ),
+    ];
+  }
+
+  List<MetricEvent> _metricEventsWithCreated(
+    List<MetricEvent> events, {
+    required String taskId,
+    required String eventType,
+    required String payloadJson,
+    required DateTime now,
+  }) {
+    final event = MetricEvent.createIfUseful(
+      taskId: taskId,
+      eventType: eventType,
+      payloadJson: payloadJson,
+      now: now,
+    );
+    if (event == null) {
+      return events;
+    }
+    return MetricEvent.appendControlled(events, event);
   }
 
   TaskSession _taskWithNewTurn(
@@ -1184,15 +1206,13 @@ Apply this decision to the pending approval request.
           createdAt: failedAt,
         ),
       ],
-      metricEvents: [
-        ...taskWithFailedTurn.metricEvents,
-        MetricEvent.create(
-          taskId: task.id,
-          eventType: 'task_failed',
-          payloadJson: '{"reason":"ssh_execution_error"}',
-          now: failedAt,
-        ),
-      ],
+      metricEvents: _metricEventsWithCreated(
+        taskWithFailedTurn.metricEvents,
+        taskId: task.id,
+        eventType: 'task_failed',
+        payloadJson: '{"reason":"ssh_execution_error"}',
+        now: failedAt,
+      ),
       clearApproval: true,
     );
     await saveTask(failedTask);
@@ -1222,15 +1242,13 @@ Apply this decision to the pending approval request.
           createdAt: now,
         ),
       ],
-      metricEvents: [
-        ...task.metricEvents,
-        MetricEvent.create(
-          taskId: task.id,
-          eventType: 'observer_connection_lost',
-          payloadJson: '{"status":"observerDetached"}',
-          now: now,
-        ),
-      ],
+      metricEvents: _metricEventsWithCreated(
+        task.metricEvents,
+        taskId: task.id,
+        eventType: 'observer_connection_lost',
+        payloadJson: '{"status":"observerDetached"}',
+        now: now,
+      ),
       clearApproval: true,
     );
     await saveTask(detachedTask);

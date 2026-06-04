@@ -43,6 +43,9 @@ class MockVoiceService implements VoiceService {
   }
 
   @override
+  Future<void> pauseSpeaking() async {}
+
+  @override
   Future<void> stopSpeaking() async {
     stopSpeakingCount++;
   }

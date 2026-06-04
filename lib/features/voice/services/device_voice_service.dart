@@ -110,6 +110,15 @@ class DeviceVoiceService implements VoiceService {
   }
 
   @override
+  Future<void> pauseSpeaking() async {
+    try {
+      await _flutterTts.pause();
+    } catch (_) {
+      // Pause is not supported on all platforms; treat as no-op.
+    }
+  }
+
+  @override
   Future<void> stopSpeaking() async {
     await _flutterTts.stop();
   }
@@ -211,11 +220,44 @@ class DeviceVoiceService implements VoiceService {
   }
 
   static String _applyPronunciationHints(String text) {
-    return text.replaceAllMapped(
-      RegExp(r'(?<![A-Za-z0-9])一行(?![A-Za-z0-9])'),
-      (match) => '${match.group(0)}（háng）',
-    );
+    // Replace 行 (line) with 航 — a Chinese character always read as háng
+    // on every platform.  Direct pinyin (e.g. háng) causes macOS / iOS
+    // system TTS to spell Latin letters one by one regardless of voice
+    // segment.
+    var result = text;
+    for (final rule in _kPronunciationHintRules) {
+      result = result.replaceAllMapped(rule.pattern, rule.replacement);
+    }
+    return result;
   }
+
+  /// Rules are limited to the highest-frequency polyphonic character
+  /// that modern TTS engines consistently misread in code-analysis
+  /// output: 行 (xíng → háng).  Compound words like 长度 / 重新 / 传入
+  /// are already handled correctly by current engines and need no
+  /// intervention.
+  static final _kPronunciationHintRules = <PronunciationHintRule>[
+    PronunciationHintRule(
+      pattern: RegExp(r'(?<=\d)\s*行'),
+      replacement: (_) => '航',
+      description: '数字后的"行(line)"替换为同音字"航"（如"29 行" → "29航"）',
+    ),
+    PronunciationHintRule(
+      pattern: RegExp(r'每\s*行'),
+      replacement: (_) => '每航',
+      description: '"每行"替换为"每航"',
+    ),
+    PronunciationHintRule(
+      pattern: RegExp(r'(?<![A-Za-z0-9])行数(?![A-Za-z0-9])'),
+      replacement: (_) => '航数',
+      description: '"行数"替换为"航数"',
+    ),
+    PronunciationHintRule(
+      pattern: RegExp(r'(?<![A-Za-z0-9])([一两几多])\s*行(?![A-Za-z0-9])'),
+      replacement: (m) => '${m.group(1)}航',
+      description: '量词+行替换为量词+航（如"一行代码" → "一航代码"）',
+    ),
+  ];
 
   static String _normalizeSpeechSpacing(String text) {
     var normalized = text.replaceAll(RegExp(r'\s+'), ' ').trim();
@@ -747,6 +789,19 @@ class DeviceVoiceService implements VoiceService {
     'google',
     'microsoft',
   ];
+}
+
+@visibleForTesting
+class PronunciationHintRule {
+  const PronunciationHintRule({
+    required this.pattern,
+    required this.replacement,
+    required this.description,
+  });
+
+  final RegExp pattern;
+  final String Function(Match match) replacement;
+  final String description;
 }
 
 enum SpeechVoiceStyle {

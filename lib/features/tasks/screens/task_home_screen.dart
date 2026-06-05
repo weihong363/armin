@@ -559,8 +559,14 @@ class _InboxTaskCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final statusTone = _statusTone(task.status);
+    final variant = _cardVariantFor(task.status);
+    final statusTone = _statusTone(variant);
     return Card(
+      color: _cardBackground(variant),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+        side: BorderSide(color: _cardBorderColor(variant), width: 1.2),
+      ),
       margin: const EdgeInsets.only(bottom: 10),
       child: InkWell(
         onTap: onOpen,
@@ -575,8 +581,12 @@ class _InboxTaskCard extends StatelessWidget {
                 children: [
                   Expanded(
                     child: Text(
-                      task.displayTitle,
-                      style: Theme.of(context).textTheme.titleMedium,
+                      _taskTitle(task),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.w800,
+                          ),
                     ),
                   ),
                   Text(
@@ -589,6 +599,7 @@ class _InboxTaskCard extends StatelessWidget {
               _HumanStatusPill(
                 label: _humanStatusLabel(task.status),
                 color: statusTone,
+                emphasized: variant == _TaskCardVariant.needsAttention,
               ),
               const SizedBox(height: 10),
               Text(
@@ -610,7 +621,11 @@ class _InboxTaskCard extends StatelessWidget {
                 spacing: 8,
                 runSpacing: 8,
                 children: [
-                  FilledButton.tonal(
+                  FilledButton(
+                    style: FilledButton.styleFrom(
+                      backgroundColor: _primaryActionColor(variant),
+                      foregroundColor: Colors.white,
+                    ),
                     onPressed: onOpen,
                     child: Text(_primaryActionLabel(task.status)),
                   ),
@@ -632,10 +647,12 @@ class _HumanStatusPill extends StatelessWidget {
   const _HumanStatusPill({
     required this.label,
     required this.color,
+    required this.emphasized,
   });
 
   final String label;
   final Color color;
+  final bool emphasized;
 
   @override
   Widget build(BuildContext context) {
@@ -651,7 +668,7 @@ class _HumanStatusPill extends StatelessWidget {
           style: TextStyle(
             color: color,
             fontSize: 12,
-            fontWeight: FontWeight.w700,
+            fontWeight: emphasized ? FontWeight.w800 : FontWeight.w700,
           ),
         ),
       ),
@@ -676,18 +693,32 @@ class _SectionEmptyText extends StatelessWidget {
   }
 }
 
+enum _TaskCardVariant {
+  needsAttention,
+  inProgress,
+  completed,
+}
+
+_TaskCardVariant _cardVariantFor(TaskStatus status) {
+  return switch (_inboxGroupFor(status)) {
+    _TaskInboxGroup.needsAttention => _TaskCardVariant.needsAttention,
+    _TaskInboxGroup.inProgress => _TaskCardVariant.inProgress,
+    _TaskInboxGroup.recentlyCompleted => _TaskCardVariant.completed,
+  };
+}
+
 String _humanStatusLabel(TaskStatus status) {
   return switch (status) {
     TaskStatus.needApproval => 'Needs your decision',
     TaskStatus.needAttention => 'Needs your attention',
     TaskStatus.turnIdle => 'Waiting for your next instruction',
-    TaskStatus.paused => 'Paused · waiting for you',
+    TaskStatus.paused => 'Paused',
     TaskStatus.observerDetached => 'Updates paused',
     TaskStatus.runtimeLost => 'Connection paused',
     TaskStatus.running => 'Running',
     TaskStatus.pending || TaskStatus.draft => 'Waiting to start',
     TaskStatus.completed || TaskStatus.userCompleted => 'Ready to review',
-    TaskStatus.failed || TaskStatus.userFailed => 'Failed · review result',
+    TaskStatus.failed || TaskStatus.userFailed => 'Needs review',
     TaskStatus.stopped => 'Stopped',
   };
 }
@@ -696,19 +727,17 @@ String _nextActionLabel(TaskStatus status) {
   return switch (status) {
     TaskStatus.needApproval ||
     TaskStatus.needAttention =>
-      'Next: Review and decide',
-    TaskStatus.turnIdle => 'Next: Continue or accept the result',
-    TaskStatus.paused => 'Next: Resume, continue, or stop',
+      'Next: Review strategy',
+    TaskStatus.turnIdle => 'Next: Continue with instruction',
+    TaskStatus.paused => 'Next: Resume or stop',
     TaskStatus.observerDetached ||
     TaskStatus.runtimeLost =>
-      'Next: Open task to reconnect if needed',
+      'Next: Reconnect if needed',
     TaskStatus.running => 'No action needed now',
     TaskStatus.pending || TaskStatus.draft => 'Next: Wait for execution',
-    TaskStatus.completed ||
-    TaskStatus.userCompleted =>
-      'Next: Review result or continue',
-    TaskStatus.failed || TaskStatus.userFailed => 'Next: Review failure',
-    TaskStatus.stopped => 'Next: Review final output',
+    TaskStatus.completed || TaskStatus.userCompleted => 'Next: Review result',
+    TaskStatus.failed || TaskStatus.userFailed => 'Next: Review issue',
+    TaskStatus.stopped => 'Next: View final output',
   };
 }
 
@@ -721,7 +750,10 @@ String _primaryActionLabel(TaskStatus status) {
       'Review',
     TaskStatus.turnIdle || TaskStatus.paused => 'Continue',
     TaskStatus.completed || TaskStatus.userCompleted => 'View result',
-    TaskStatus.failed || TaskStatus.userFailed || TaskStatus.stopped => 'Open',
+    TaskStatus.failed ||
+    TaskStatus.userFailed ||
+    TaskStatus.stopped =>
+      'View details',
     TaskStatus.running || TaskStatus.pending || TaskStatus.draft => 'Open',
   };
 }
@@ -732,7 +764,7 @@ String _secondaryActionLabel(TaskStatus status) {
     TaskStatus.failed ||
     TaskStatus.userFailed ||
     TaskStatus.stopped =>
-      'Review',
+      'Continue',
     TaskStatus.running ||
     TaskStatus.pending ||
     TaskStatus.draft =>
@@ -741,40 +773,90 @@ String _secondaryActionLabel(TaskStatus status) {
   };
 }
 
-Color _statusTone(TaskStatus status) {
-  return switch (status) {
-    TaskStatus.needApproval ||
-    TaskStatus.needAttention ||
-    TaskStatus.turnIdle ||
-    TaskStatus.paused =>
-      Colors.orange.shade800,
-    TaskStatus.observerDetached ||
-    TaskStatus.runtimeLost =>
-      Colors.blueGrey.shade700,
-    TaskStatus.running ||
-    TaskStatus.pending ||
-    TaskStatus.draft =>
-      ArminTheme.primary,
-    TaskStatus.completed || TaskStatus.userCompleted => Colors.green.shade700,
-    TaskStatus.failed ||
-    TaskStatus.userFailed ||
-    TaskStatus.stopped =>
-      Colors.red.shade700,
+Color _statusTone(_TaskCardVariant variant) {
+  return switch (variant) {
+    _TaskCardVariant.needsAttention => Colors.orange.shade800,
+    _TaskCardVariant.inProgress => ArminTheme.primary,
+    _TaskCardVariant.completed => Colors.green.shade700,
   };
 }
 
+Color _cardBackground(_TaskCardVariant variant) {
+  return switch (variant) {
+    _TaskCardVariant.needsAttention => const Color(0xFFFFFAF1),
+    _TaskCardVariant.inProgress => Colors.white,
+    _TaskCardVariant.completed => const Color(0xFFF8FAF8),
+  };
+}
+
+Color _cardBorderColor(_TaskCardVariant variant) {
+  return switch (variant) {
+    _TaskCardVariant.needsAttention => Colors.orange.shade200,
+    _TaskCardVariant.inProgress => ArminTheme.border,
+    _TaskCardVariant.completed => Colors.green.shade100,
+  };
+}
+
+Color _primaryActionColor(_TaskCardVariant variant) {
+  return switch (variant) {
+    _TaskCardVariant.needsAttention => Colors.orange.shade800,
+    _TaskCardVariant.inProgress => ArminTheme.primary,
+    _TaskCardVariant.completed => Colors.green.shade700,
+  };
+}
+
+String _taskTitle(TaskSession task) {
+  final title = task.displayTitle.trim();
+  if (title.isNotEmpty && title != '未命名任务') {
+    return title;
+  }
+  return _snippetFrom(task.userText, maxChars: 48, fallback: 'Untitled task');
+}
+
 String _latestUsefulUpdate(TaskSession task) {
-  final summary = const CodexOutputCleaner().clean(task.shortSummary);
-  final source = summary.trim().isEmpty ? task.userText : summary;
+  final latestTurn = _latestTurnOutput(task);
+  final candidates = [
+    task.result?.summary ?? '',
+    task.summary ?? '',
+    latestTurn,
+    task.shortSummary,
+    task.userText,
+  ];
+  for (final candidate in candidates) {
+    final snippet = _snippetFrom(candidate, maxChars: 150);
+    if (snippet.isNotEmpty) {
+      return snippet;
+    }
+  }
+  return 'Task is ready for its next update.';
+}
+
+String _latestTurnOutput(TaskSession task) {
+  for (final turn in task.turns.reversed) {
+    final cleaned = turn.cleanedOutput.trim();
+    if (cleaned.isNotEmpty) {
+      return cleaned;
+    }
+    final raw = turn.rawOutput.trim();
+    if (raw.isNotEmpty) {
+      return raw;
+    }
+  }
+  return '';
+}
+
+String _snippetFrom(
+  String source, {
+  required int maxChars,
+  String fallback = '',
+}) {
+  final cleaned = const CodexOutputCleaner().clean(source);
   final text = const SemanticSnippetBuilder()
-      .build(source,
-          contentType: SnippetContentType.agentSummary, maxChars: 150)
+      .build(cleaned,
+          contentType: SnippetContentType.agentSummary, maxChars: maxChars)
       .visibleText
       .trim();
-  if (text.isEmpty) {
-    return 'Task is ready for its next update.';
-  }
-  return text;
+  return text.isEmpty ? fallback : text;
 }
 
 String _taskFreshnessLabel(TaskSession task) {

@@ -5,7 +5,6 @@ import 'package:flutter/material.dart';
 import '../../../app_state_scope.dart';
 import '../../../core/models/task_status.dart';
 import '../../../shared/theme/armin_theme.dart';
-import '../../../shared/widgets/status_badge.dart';
 import '../../agent/parsers/approval_request.dart';
 import '../../agent/parsers/terminal_prompt.dart';
 import '../../agent/services/codex_output_cleaner.dart';
@@ -14,7 +13,6 @@ import '../../voice/services/voice_service.dart';
 import '../../tasks/models/native_output_turn.dart';
 import '../../tasks/models/task_session.dart';
 import '../../tasks/models/voice_input.dart';
-import '../../projects/models/project_path_config.dart';
 import '../../tasks/services/output_summary_provider.dart';
 import '../../tasks/services/semantic_snippet_builder.dart';
 import '../../tasks/services/turn_output_slicer.dart';
@@ -138,6 +136,12 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
             SliverPadding(
               padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
               sliver: SliverToBoxAdapter(child: _SummaryBanner(task: task)),
+            ),
+            SliverPadding(
+              padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
+              sliver: SliverToBoxAdapter(
+                child: _LatestProgressCard(task: task),
+              ),
             ),
             SliverPadding(
               padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
@@ -372,26 +376,31 @@ class _SummaryBannerState extends State<_SummaryBanner> {
 
   @override
   Widget build(BuildContext context) {
-    final state = AppStateScope.of(context);
     final task = widget.task;
-    final projectLabel = _projectLabel(task, state.projectPaths);
+    final statusColor = _detailStatusColor(task.status);
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: const Color(0xFFF1F8F5),
+        color: statusColor.withValues(alpha: 0.08),
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFFDCECE6)),
+        border: Border.all(color: statusColor.withValues(alpha: 0.22)),
       ),
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
+            Wrap(
+              spacing: 10,
+              runSpacing: 8,
+              crossAxisAlignment: WrapCrossAlignment.center,
               children: [
-                StatusBadge(status: task.status),
-                const Spacer(),
+                _MiniBadge(
+                  label: _detailStatusLabel(task.status),
+                  color: statusColor,
+                  animate: task.status == TaskStatus.running,
+                ),
                 Text(
-                  _finishedLabel(task),
+                  _statusTimingText(task),
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
               ],
@@ -463,16 +472,11 @@ class _SummaryBannerState extends State<_SummaryBanner> {
                     ),
             ),
             const SizedBox(height: 10),
-            _TaskMetaLine(
-              icon: Icons.folder_outlined,
-              label: '项目名',
-              value: projectLabel,
-            ),
-            const SizedBox(height: 6),
-            _TaskMetaLine(
-              icon: Icons.terminal_outlined,
-              label: 'CLI',
-              value: _cliLabel(task.host.agentCommand),
+            Text(
+              _taskSummaryText(task),
+              maxLines: 3,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.bodyMedium,
             ),
           ],
         ),
@@ -534,57 +538,41 @@ class _SummaryBannerState extends State<_SummaryBanner> {
   }
 }
 
-class _TaskMetaLine extends StatelessWidget {
-  const _TaskMetaLine({
-    required this.icon,
-    required this.label,
-    required this.value,
-  });
+class _LatestProgressCard extends StatelessWidget {
+  const _LatestProgressCard({required this.task});
 
-  final IconData icon;
-  final String label;
-  final String value;
+  final TaskSession task;
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Icon(icon, size: 18, color: ArminTheme.ink),
-        const SizedBox(width: 8),
-        Text(
-          '$label：',
-          style: Theme.of(context).textTheme.bodySmall,
-        ),
-        Expanded(
-          child: Text(
-            value,
-            style: Theme.of(context).textTheme.bodySmall,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
-        ),
-      ],
+    final updates = _latestProgressUpdates(task);
+    return _InfoCard(
+      title: 'What changed since last check',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          for (final update in updates)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Icon(Icons.check_circle_outline, size: 18),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      update,
+                      maxLines: 3,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+        ],
+      ),
     );
   }
-}
-
-String _projectLabel(TaskSession task, List<ProjectPathConfig> projectPaths) {
-  final projectPath = normalizeRemoteProjectPath(task.host.projectPath);
-  if (projectPath.isEmpty) {
-    return '未设置';
-  }
-  for (final project in projectPaths) {
-    if (normalizeRemoteProjectPath(project.path) == projectPath) {
-      return project.name.trim().isEmpty ? projectPath : project.name.trim();
-    }
-  }
-  return projectPath;
-}
-
-String _cliLabel(String agentCommand) {
-  final trimmed = agentCommand.trim();
-  return trimmed.isEmpty ? '未设置' : trimmed;
 }
 
 class _TimelinePanel extends StatelessWidget {
@@ -979,7 +967,7 @@ class _ResultPanelState extends State<_ResultPanel> {
       children: [
         SizedBox(key: _topAnchorKey, height: 0),
         _InfoCard(
-          title: '输出',
+          title: 'Result / Deliverable',
           trailing: Text(
             '点击播放/暂停 · 长按终止',
             style: Theme.of(context).textTheme.bodySmall?.copyWith(
@@ -1016,7 +1004,7 @@ class _ResultPanelState extends State<_ResultPanel> {
           ),
         ),
         _InfoCard(
-          title: '执行详情',
+          title: 'Deliverable details',
           child: _ResultDetailsSection(
             changedFiles: result?.changedFiles ?? const [],
             validation: result?.validation ?? const [],
@@ -1086,7 +1074,7 @@ class _ResultPanelState extends State<_ResultPanel> {
         ? const []
         : [
             _TurnOutputSummary(
-              title: '输出结果',
+              title: 'Result',
               text: text,
               speechText: legacy.speechSummary.trim().isNotEmpty
                   ? legacy.speechSummary.trim()
@@ -1426,17 +1414,42 @@ class _RuntimeControlPanelState extends State<_RuntimeControlPanel> {
   Widget build(BuildContext context) {
     final task = widget.task;
     final controlState = _runtimeControlStateFromTask(task.status);
+    final nextAction = _nextActionForTask(task.status);
     return _InfoCard(
-      title: '运行控制',
+      title: 'Next Action',
       trailing: _MiniBadge(
         key: const Key('runtime-control-state-badge'),
-        label: controlState.label,
-        color: controlState.color,
+        label: _detailStatusLabel(task.status),
+        color: _detailStatusColor(task.status),
         animate: task.status == TaskStatus.running,
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(nextAction.icon, color: nextAction.color),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      nextAction.title,
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      nextAction.description,
+                      style: Theme.of(context).textTheme.bodyMedium,
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
           if (_pendingApproval(task) != null) ...[
             _ApprovalPromptCard(
               approval: _pendingApproval(task)!,
@@ -1475,18 +1488,26 @@ class _RuntimeControlPanelState extends State<_RuntimeControlPanel> {
             ),
             const SizedBox(height: 16),
           ],
+          _AddContextEntry(
+            enabled: controlState != RuntimeControlState.stopped,
+            onPressed: () => _showFollowUpSheet(
+              context,
+              title: 'Add context to this task',
+              hintText: 'Add a constraint, decision, or next instruction...',
+            ),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            'Task controls',
+            style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                  color: ArminTheme.ink.withValues(alpha: 0.62),
+                ),
+          ),
+          const SizedBox(height: 8),
           Wrap(
             spacing: 10,
             runSpacing: 10,
             children: [
-              _ControlButton(
-                icon: Icons.add_comment_outlined,
-                label: '追加指令',
-                tone: ControlTone.neutral,
-                onPressed: controlState == RuntimeControlState.stopped
-                    ? null
-                    : () => _showFollowUpSheet(context),
-              ),
               _ControlButton(
                 icon: Icons.check_circle_outline,
                 label: '标记完成',
@@ -2006,6 +2027,29 @@ class _RuntimeControlPanelState extends State<_RuntimeControlPanel> {
   }
 }
 
+class _AddContextEntry extends StatelessWidget {
+  const _AddContextEntry({
+    required this.enabled,
+    required this.onPressed,
+  });
+
+  final bool enabled;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return FilledButton.icon(
+      onPressed: enabled ? onPressed : null,
+      icon: const Icon(Icons.add_comment_outlined),
+      label: const Text('追加指令'),
+      style: FilledButton.styleFrom(
+        minimumSize: const Size.fromHeight(48),
+        alignment: Alignment.centerLeft,
+      ),
+    );
+  }
+}
+
 class _ApprovalPromptCard extends StatelessWidget {
   const _ApprovalPromptCard({
     required this.approval,
@@ -2282,14 +2326,14 @@ class _LogPanelState extends State<_LogPanel> {
       padding: const EdgeInsets.all(20),
       children: [
         _InfoCard(
-          title: '电脑端调试',
+          title: 'Advanced / Debug',
           child: SelectableText(
             'tmux attach -t ${task.host.tmuxSessionName}\n'
             'tmux capture-pane -p -t ${task.host.tmuxSessionName} -S -200',
           ),
         ),
         _InfoCard(
-          title: 'Approval Requests',
+          title: 'Approval history',
           child: task.approvalRequests.isEmpty && task.approval == null
               ? const Text('无')
               : Column(
@@ -2471,7 +2515,13 @@ class _InfoCard extends StatelessWidget {
                   child: Text(title,
                       style: Theme.of(context).textTheme.titleSmall),
                 ),
-                if (trailing != null) trailing!,
+                if (trailing != null)
+                  Flexible(
+                    child: Align(
+                      alignment: Alignment.centerRight,
+                      child: trailing!,
+                    ),
+                  ),
               ],
             ),
             const SizedBox(height: 12),
@@ -2674,6 +2724,219 @@ enum RuntimeControlState {
   stopped,
 }
 
+class _NextAction {
+  const _NextAction({
+    required this.title,
+    required this.description,
+    required this.icon,
+    required this.color,
+  });
+
+  final String title;
+  final String description;
+  final IconData icon;
+  final Color color;
+}
+
+String _detailStatusLabel(TaskStatus status) {
+  return switch (status) {
+    TaskStatus.draft || TaskStatus.pending => 'Waiting to start',
+    TaskStatus.running => 'In progress',
+    TaskStatus.paused => 'Paused',
+    TaskStatus.stopped => 'Stopped',
+    TaskStatus.needApproval => 'Needs your decision',
+    TaskStatus.turnIdle => 'Waiting for your next instruction',
+    TaskStatus.needAttention => 'Needs your attention',
+    TaskStatus.observerDetached => 'Updates paused',
+    TaskStatus.runtimeLost => 'Connection paused',
+    TaskStatus.userCompleted || TaskStatus.completed => 'Ready to review',
+    TaskStatus.userFailed || TaskStatus.failed => 'Needs review',
+  };
+}
+
+Color _detailStatusColor(TaskStatus status) {
+  return switch (status) {
+    TaskStatus.needApproval ||
+    TaskStatus.turnIdle ||
+    TaskStatus.needAttention =>
+      Colors.orange.shade700,
+    TaskStatus.running || TaskStatus.pending => ArminTheme.primary,
+    TaskStatus.paused ||
+    TaskStatus.observerDetached ||
+    TaskStatus.runtimeLost =>
+      Colors.blueGrey.shade700,
+    TaskStatus.failed || TaskStatus.userFailed => Colors.red.shade700,
+    TaskStatus.completed || TaskStatus.userCompleted => Colors.green.shade700,
+    TaskStatus.draft || TaskStatus.stopped => Colors.grey.shade700,
+  };
+}
+
+String _statusTimingText(TaskSession task) {
+  if (task.completedAt != null) {
+    return 'Updated ${_timeLabel(task.completedAt!)}';
+  }
+  if (_isTaskLive(task.status)) {
+    final startedAt = task.startedAt ?? task.createdAt;
+    return '${_elapsedLabel(DateTime.now().difference(startedAt))} active';
+  }
+  return 'Updated ${_timeLabel(task.updatedAt)}';
+}
+
+String _elapsedLabel(Duration duration) {
+  if (duration.inHours > 0) {
+    return '${duration.inHours}h ${duration.inMinutes.remainder(60)}m';
+  }
+  if (duration.inMinutes > 0) {
+    return '${duration.inMinutes}m';
+  }
+  return 'just now';
+}
+
+bool _isTaskLive(TaskStatus status) {
+  return switch (status) {
+    TaskStatus.pending ||
+    TaskStatus.running ||
+    TaskStatus.paused ||
+    TaskStatus.needApproval ||
+    TaskStatus.turnIdle ||
+    TaskStatus.needAttention ||
+    TaskStatus.observerDetached =>
+      true,
+    TaskStatus.draft ||
+    TaskStatus.stopped ||
+    TaskStatus.runtimeLost ||
+    TaskStatus.userCompleted ||
+    TaskStatus.userFailed ||
+    TaskStatus.completed ||
+    TaskStatus.failed =>
+      false,
+  };
+}
+
+String _taskSummaryText(TaskSession task) {
+  final candidates = [
+    task.result?.summary ?? '',
+    task.summary ?? '',
+    task.shortSummary,
+    task.userText,
+  ];
+  for (final candidate in candidates) {
+    final snippet = _cleanSnippet(candidate, maxChars: 180);
+    if (snippet.isNotEmpty) {
+      return snippet;
+    }
+  }
+  return 'Task is waiting for useful progress.';
+}
+
+List<String> _latestProgressUpdates(TaskSession task) {
+  final updates = <String>[];
+  if (task.turns.isNotEmpty) {
+    final latestIndex = task.turns.length - 1;
+    final latestTurn = task.turns.last;
+    final output = const TurnOutputSlicer().outputForTurn(
+      task.turns,
+      latestIndex,
+    );
+    final outputSnippet = _cleanSnippet(output, maxChars: 180);
+    if (outputSnippet.isNotEmpty) {
+      updates.add('Latest output: $outputSnippet');
+    }
+    final inputSnippet = _cleanSnippet(latestTurn.userInput, maxChars: 120);
+    if (inputSnippet.isNotEmpty) {
+      updates.add('Latest instruction: $inputSnippet');
+    }
+  }
+
+  final resultSnippet =
+      _cleanSnippet(task.result?.summary ?? task.summary ?? '');
+  if (resultSnippet.isNotEmpty) {
+    updates.add('Current summary: $resultSnippet');
+  }
+  if (updates.isEmpty) {
+    updates.add(_fallback(_taskSummaryText(task), 'Task has been created.'));
+  }
+  return updates.take(3).toList(growable: false);
+}
+
+String _cleanSnippet(String value, {int maxChars = 160}) {
+  final cleaned = const CodexOutputCleaner().clean(value);
+  return const SemanticSnippetBuilder()
+      .build(
+        cleaned,
+        contentType: SnippetContentType.agentSummary,
+        maxChars: maxChars,
+      )
+      .visibleText
+      .trim();
+}
+
+_NextAction _nextActionForTask(TaskStatus status) {
+  return switch (status) {
+    TaskStatus.needApproval => _NextAction(
+        title: 'Review the decision',
+        description:
+            'Choose whether this task can continue with the proposed action.',
+        icon: Icons.rule_outlined,
+        color: Colors.orange.shade700,
+      ),
+    TaskStatus.turnIdle || TaskStatus.needAttention => _NextAction(
+        title: 'Add context',
+        description: 'Send the next instruction, constraint, or decision.',
+        icon: Icons.add_comment_outlined,
+        color: Colors.orange.shade700,
+      ),
+    TaskStatus.running || TaskStatus.pending => const _NextAction(
+        title: 'No action needed now',
+        description:
+            'The task is still moving. You can leave it running or pause it.',
+        icon: Icons.play_circle_outline,
+        color: ArminTheme.primary,
+      ),
+    TaskStatus.completed || TaskStatus.userCompleted => _NextAction(
+        title: 'Review result',
+        description:
+            'Check the deliverable, then accept it or continue with more context.',
+        icon: Icons.fact_check_outlined,
+        color: Colors.green.shade700,
+      ),
+    TaskStatus.failed || TaskStatus.userFailed => _NextAction(
+        title: 'Review issue',
+        description:
+            'Inspect what happened and decide whether to continue from here.',
+        icon: Icons.error_outline,
+        color: Colors.red.shade700,
+      ),
+    TaskStatus.paused => _NextAction(
+        title: 'Resume or stop',
+        description:
+            'Resume the task when you are ready, or stop it from the controls.',
+        icon: Icons.pause_circle_outline,
+        color: Colors.blueGrey.shade700,
+      ),
+    TaskStatus.observerDetached || TaskStatus.runtimeLost => _NextAction(
+        title: 'Reconnect if needed',
+        description:
+            'Updates are paused. Reconnect or open details before continuing.',
+        icon: Icons.wifi_off_outlined,
+        color: Colors.blueGrey.shade700,
+      ),
+    TaskStatus.draft => _NextAction(
+        title: 'Prepare task',
+        description: 'This task has not started yet.',
+        icon: Icons.edit_note_outlined,
+        color: Colors.grey.shade700,
+      ),
+    TaskStatus.stopped => _NextAction(
+        title: 'View details',
+        description:
+            'This task is stopped. Review the history or start a new run.',
+        icon: Icons.stop_circle_outlined,
+        color: Colors.grey.shade700,
+      ),
+  };
+}
+
 extension RuntimeControlStateLabel on RuntimeControlState {
   String get label {
     return switch (this) {
@@ -2808,41 +3071,6 @@ String _timeLabel(DateTime value) {
   final hour = value.hour.toString().padLeft(2, '0');
   final minute = value.minute.toString().padLeft(2, '0');
   return '$hour:$minute';
-}
-
-String _finishedLabel(TaskSession task) {
-  if (task.status == TaskStatus.turnIdle) {
-    return '等待继续';
-  }
-  if (task.status == TaskStatus.needAttention) {
-    return '需处理';
-  }
-  if (task.status == TaskStatus.observerDetached) {
-    return '监听已断开';
-  }
-  if (task.status == TaskStatus.paused) {
-    return '已暂停';
-  }
-  if (task.status == TaskStatus.runtimeLost) {
-    return task.completedAt == null
-        ? '运行丢失'
-        : '${_timeLabel(task.completedAt!)} 丢失';
-  }
-  if (task.status == TaskStatus.stopped) {
-    return task.completedAt == null
-        ? '已停止'
-        : '${_timeLabel(task.completedAt!)} 停止';
-  }
-  if (task.status == TaskStatus.failed ||
-      task.status == TaskStatus.userFailed) {
-    return task.completedAt == null
-        ? '失败'
-        : '${_timeLabel(task.completedAt!)} 失败';
-  }
-  if (task.completedAt == null) {
-    return '进行中';
-  }
-  return '${_timeLabel(task.completedAt!)} 完成';
 }
 
 String _timelineResultTitle(TaskStatus status) {

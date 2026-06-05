@@ -18,6 +18,7 @@ import '../../tasks/services/semantic_snippet_builder.dart';
 import '../../tasks/services/turn_output_slicer.dart';
 import '../../tasks/services/voice_task_command_processor.dart';
 import '../../tasks/screens/task_draft_screen.dart';
+import '../../tasks/widgets/add_context_sheet.dart';
 
 enum _TaskDetailAction {
   rerun,
@@ -612,7 +613,7 @@ class _TimelinePanel extends StatelessWidget {
         _TimelineItem(
           icon: Icons.mic_none_outlined,
           time: _timeLabel(input.createdAt),
-          title: '语音追加',
+          title: 'Context added',
           subtitle: input.rawSttText,
         ),
       _TimelineItem(
@@ -691,8 +692,8 @@ class _TurnSummaryRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final title = turn.turnIndex == 1
-        ? 'Turn ${turn.turnIndex}：初始任务'
-        : 'Turn ${turn.turnIndex}：追加指令';
+        ? 'Turn ${turn.turnIndex}: Initial task'
+        : 'Turn ${turn.turnIndex}: Context added';
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1415,6 +1416,7 @@ class _RuntimeControlPanelState extends State<_RuntimeControlPanel> {
     final task = widget.task;
     final controlState = _runtimeControlStateFromTask(task.status);
     final nextAction = _nextActionForTask(task.status);
+    final canResolveRuntimeLost = task.status == TaskStatus.runtimeLost;
     return _InfoCard(
       title: 'Next Action',
       trailing: _MiniBadge(
@@ -1512,8 +1514,9 @@ class _RuntimeControlPanelState extends State<_RuntimeControlPanel> {
                 icon: Icons.check_circle_outline,
                 label: '标记完成',
                 tone: ControlTone.neutral,
-                onPressed: controlState == RuntimeControlState.stopped ||
-                        controlState == RuntimeControlState.detached
+                onPressed: (controlState == RuntimeControlState.stopped ||
+                            controlState == RuntimeControlState.detached) &&
+                        !canResolveRuntimeLost
                     ? null
                     : () => _runControlAction(
                           context,
@@ -1525,7 +1528,8 @@ class _RuntimeControlPanelState extends State<_RuntimeControlPanel> {
                 icon: Icons.report_gmailerrorred_outlined,
                 label: '标记失败',
                 tone: ControlTone.danger,
-                onPressed: controlState == RuntimeControlState.stopped
+                onPressed: controlState == RuntimeControlState.stopped &&
+                        !canResolveRuntimeLost
                     ? null
                     : () => _runControlAction(
                           context,
@@ -1692,226 +1696,26 @@ class _RuntimeControlPanelState extends State<_RuntimeControlPanel> {
 
   void _showFollowUpSheet(
     BuildContext context, {
-    String title = '追加指令',
-    String hintText = '继续补充你的要求...',
+    String title = 'Add context to this task',
+    String hintText = 'Add a constraint, decision, or next instruction...',
     ApprovalRequest? approval,
   }) {
-    final state = AppStateScope.read(context);
-    var listening = false;
-    var busy = false;
-    var submitting = false;
-    var partial = '';
-    VoiceTaskCommandResult? voiceCommand;
-    showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      showDragHandle: true,
-      builder: (sheetContext) {
-        return _FollowUpControllerHost(
-          builder: (controller) => StatefulBuilder(
-            builder: (sheetContext, setSheetState) {
-              Future<void> startVoice() async {
-                if (listening || busy) {
-                  return;
-                }
-                final voiceService = state.voiceService;
-                if (!voiceService.isAvailable) {
-                  ScaffoldMessenger.of(sheetContext).showSnackBar(
-                    const SnackBar(content: Text('当前设备不支持语音，请手动输入')),
-                  );
-                  return;
-                }
-                setSheetState(() {
-                  listening = true;
-                  partial = '';
-                });
-                try {
-                  await voiceService.stopSpeaking();
-                  await voiceService.startListening(
-                    onPartial: (value) {
-                      if (!sheetContext.mounted) {
-                        return;
-                      }
-                      setSheetState(() => partial = value);
-                    },
-                  );
-                } catch (error) {
-                  if (!sheetContext.mounted) {
-                    return;
-                  }
-                  setSheetState(() => listening = false);
-                  ScaffoldMessenger.of(sheetContext).showSnackBar(
-                    SnackBar(content: Text('语音输入失败：$error')),
-                  );
-                }
-              }
-
-              Future<void> stopVoice() async {
-                if (!listening) {
-                  return;
-                }
-                final voiceService = state.voiceService;
-                setSheetState(() {
-                  listening = false;
-                  busy = true;
-                });
-                try {
-                  final stopped = await voiceService.stopListening();
-                  final raw = stopped.trim().isNotEmpty
-                      ? stopped.trim()
-                      : partial.trim();
-                  if (raw.isEmpty) {
-                    if (sheetContext.mounted) {
-                      ScaffoldMessenger.of(sheetContext).showSnackBar(
-                        const SnackBar(content: Text('未检测到语音')),
-                      );
-                    }
-                    return;
-                  }
-                  final prefix = controller.text.trim();
-                  controller.text = prefix.isEmpty ? raw : '$prefix\n$raw';
-                  controller.selection = TextSelection.collapsed(
-                    offset: controller.text.length,
-                  );
-                  voiceCommand = prefix.isEmpty
-                      ? _voiceCommandProcessor.interpret(
-                          raw, widget.task.status)
-                      : null;
-                } finally {
-                  if (sheetContext.mounted) {
-                    setSheetState(() => busy = false);
-                  }
-                }
-              }
-
-              final bottomInset = MediaQuery.viewInsetsOf(sheetContext).bottom;
-              final maxHeight = MediaQuery.sizeOf(sheetContext).height * 0.82;
-              return AnimatedPadding(
-                duration: const Duration(milliseconds: 180),
-                curve: Curves.easeOutCubic,
-                padding: EdgeInsets.only(bottom: bottomInset),
-                child: SafeArea(
-                  top: false,
-                  child: ConstrainedBox(
-                    constraints: BoxConstraints(maxHeight: maxHeight),
-                    child: SingleChildScrollView(
-                      keyboardDismissBehavior:
-                          ScrollViewKeyboardDismissBehavior.onDrag,
-                      padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(title,
-                              style:
-                                  Theme.of(sheetContext).textTheme.titleLarge),
-                          if (approval != null) ...[
-                            const SizedBox(height: 8),
-                            _ApprovalSheetDetails(approval: approval),
-                          ],
-                          const SizedBox(height: 12),
-                          TextField(
-                            controller: controller,
-                            keyboardType: TextInputType.multiline,
-                            minLines: 3,
-                            maxLines: 5,
-                            decoration: InputDecoration(hintText: hintText),
-                            onChanged: (_) {
-                              if (voiceCommand != null) {
-                                setSheetState(() => voiceCommand = null);
-                              }
-                            },
-                          ),
-                          if (partial.trim().isNotEmpty) ...[
-                            const SizedBox(height: 8),
-                            Text(
-                              partial,
-                              style: Theme.of(sheetContext).textTheme.bodySmall,
-                            ),
-                          ],
-                          if (voiceCommand?.isSemanticMatch ?? false) ...[
-                            const SizedBox(height: 8),
-                            Text(
-                              '已识别：${voiceCommand!.label}',
-                              style: Theme.of(sheetContext)
-                                  .textTheme
-                                  .bodySmall
-                                  ?.copyWith(
-                                    color: Theme.of(sheetContext)
-                                        .colorScheme
-                                        .primary,
-                                  ),
-                            ),
-                          ],
-                          const SizedBox(height: 12),
-                          Row(
-                            children: [
-                              _VoiceFollowUpButton(
-                                disabled: busy || submitting,
-                                listening: listening,
-                                busy: busy,
-                                onStart: startVoice,
-                                onStop: stopVoice,
-                              ),
-                              const SizedBox(width: 12),
-                              Expanded(
-                                child: FilledButton.icon(
-                                  onPressed: busy || submitting
-                                      ? null
-                                      : () async {
-                                          final instruction =
-                                              controller.text.trim();
-                                          if (instruction.isEmpty) {
-                                            return;
-                                          }
-                                          setSheetState(
-                                              () => submitting = true);
-                                          try {
-                                            final command =
-                                                voiceCommand?.sourceText ==
-                                                        instruction
-                                                    ? voiceCommand
-                                                    : null;
-                                            if (command == null) {
-                                              await state.sendFollowUp(
-                                                  widget.task, instruction);
-                                            } else {
-                                              await _runVoiceCommand(
-                                                  context, command);
-                                            }
-                                          } catch (error) {
-                                            if (sheetContext.mounted) {
-                                              setSheetState(
-                                                  () => submitting = false);
-                                              ScaffoldMessenger.of(sheetContext)
-                                                  .showSnackBar(
-                                                SnackBar(
-                                                  content:
-                                                      Text('指令执行失败：$error'),
-                                                ),
-                                              );
-                                            }
-                                            return;
-                                          }
-                                          if (sheetContext.mounted) {
-                                            Navigator.of(sheetContext).pop();
-                                          }
-                                        },
-                                  icon: const Icon(Icons.send_outlined),
-                                  label: Text(submitting ? '发送中...' : '发送'),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-              );
-            },
-          ),
-        );
+    AddContextSheet.show(
+      context,
+      task: widget.task,
+      title: title,
+      hintText: hintText,
+      approval: approval,
+      interpretVoiceCommand: _voiceCommandProcessor.interpret,
+      onSubmit: (sheetContext, instruction, command) async {
+        if (command == null) {
+          await AppStateScope.read(sheetContext).sendFollowUp(
+            widget.task,
+            instruction,
+          );
+          return;
+        }
+        await _runVoiceCommand(sheetContext, command);
       },
     );
   }
@@ -2261,52 +2065,6 @@ class _TerminalPromptResponseDialogState
       ],
     );
   }
-}
-
-class _ApprovalSheetDetails extends StatelessWidget {
-  const _ApprovalSheetDetails({required this.approval});
-
-  final ApprovalRequest approval;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.orange.shade50,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.orange.shade100),
-      ),
-      child: Text(
-        '${approval.reason}\n${approval.command}\n风险：${approval.risk}',
-        style: Theme.of(context).textTheme.bodySmall,
-      ),
-    );
-  }
-}
-
-class _FollowUpControllerHost extends StatefulWidget {
-  const _FollowUpControllerHost({required this.builder});
-
-  final Widget Function(TextEditingController controller) builder;
-
-  @override
-  State<_FollowUpControllerHost> createState() =>
-      _FollowUpControllerHostState();
-}
-
-class _FollowUpControllerHostState extends State<_FollowUpControllerHost> {
-  final _controller = TextEditingController();
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => widget.builder(_controller);
 }
 
 class _LogPanel extends StatefulWidget {
@@ -2914,11 +2672,18 @@ _NextAction _nextActionForTask(TaskStatus status) {
         icon: Icons.pause_circle_outline,
         color: Colors.blueGrey.shade700,
       ),
-    TaskStatus.observerDetached || TaskStatus.runtimeLost => _NextAction(
+    TaskStatus.observerDetached => _NextAction(
         title: 'Reconnect if needed',
         description:
             'Updates are paused. Reconnect or open details before continuing.',
         icon: Icons.wifi_off_outlined,
+        color: Colors.blueGrey.shade700,
+      ),
+    TaskStatus.runtimeLost => _NextAction(
+        title: 'Resolve task status',
+        description:
+            'The remote session is no longer available. Mark it complete or failed, or rerun it.',
+        icon: Icons.task_alt_outlined,
         color: Colors.blueGrey.shade700,
       ),
     TaskStatus.draft => _NextAction(
@@ -3006,58 +2771,6 @@ class _ControlButton extends StatelessWidget {
       style: OutlinedButton.styleFrom(
         foregroundColor: color,
         side: BorderSide(color: color.withValues(alpha: 0.26)),
-      ),
-    );
-  }
-}
-
-class _VoiceFollowUpButton extends StatelessWidget {
-  const _VoiceFollowUpButton({
-    required this.disabled,
-    required this.listening,
-    required this.busy,
-    required this.onStart,
-    required this.onStop,
-  });
-
-  final bool disabled;
-  final bool listening;
-  final bool busy;
-  final VoidCallback onStart;
-  final VoidCallback onStop;
-
-  @override
-  Widget build(BuildContext context) {
-    final color = listening ? Colors.red : ArminTheme.primary;
-    final enabledColor = disabled ? Colors.grey : color;
-    final label = busy
-        ? '整理语音'
-        : listening
-            ? '松开发送'
-            : '语音追加';
-    return GestureDetector(
-      onTapDown: disabled ? null : (_) => onStart(),
-      onTapUp: disabled ? null : (_) => onStop(),
-      onTapCancel: disabled ? null : onStop,
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          border: Border.all(color: enabledColor.withValues(alpha: 0.26)),
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                listening ? Icons.mic : Icons.mic_none_outlined,
-                color: enabledColor,
-              ),
-              const SizedBox(width: 8),
-              Text(label, style: TextStyle(color: enabledColor)),
-            ],
-          ),
-        ),
       ),
     );
   }

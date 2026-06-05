@@ -559,6 +559,9 @@ changed_after_start=0
 i=0
 while [ "\$i" -lt $maxPolls ]; do
   if ! kill -0 "\$pipe_cat_pid" 2>/dev/null; then
+    if ! $tmux has-session -t $session 2>/dev/null; then
+      echo "Armin could not capture tmux pane because session ${_shellQuote(request.tmuxSessionName)} is not running."
+    fi
     break
   fi
   pane_output="\$($tmux capture-pane -p -t $session -S $monitorStart 2>/dev/null || true)"

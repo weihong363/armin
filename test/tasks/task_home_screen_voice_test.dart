@@ -1,82 +1,114 @@
 import 'package:armin/app_state_scope.dart';
+import 'package:armin/core/models/task_status.dart';
 import 'package:armin/core/services/armin_app_state.dart';
 import 'package:armin/core/storage/in_memory_task_history_store.dart';
-import '../features/agent/services/mock_agent_session_service.dart';
+import 'package:armin/features/agent/services/agent_session_service.dart';
+import 'package:armin/features/hosts/models/host_config.dart';
+import 'package:armin/features/tasks/models/task_session.dart';
 import 'package:armin/features/tasks/screens/task_home_screen.dart';
-import '../features/voice/services/mock_voice_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../features/voice/services/mock_voice_service.dart';
+
 void main() {
-  testWidgets('home microphone shows recognized voice output', (tester) async {
-    final voiceService = MockVoiceService(recognizedText: '修复首页登录失败');
-    await _pumpHome(
-      tester,
-      voiceService: voiceService,
-    );
+  testWidgets('home add context asks for a task before chat or voice',
+      (tester) async {
+    await _pumpHome(tester, voiceService: MockVoiceService());
 
-    await _pressAndReleaseHomeMic(tester);
-
-    expect(find.byKey(const ValueKey('home-voice-panel')), findsOneWidget);
-    expect(find.text('修复首页登录失败'), findsOneWidget);
-    expect(find.text('写入草稿'), findsOneWidget);
-    expect(voiceService.stopSpeakingCount, 1);
-  });
-
-  testWidgets('home voice panel can return to home', (tester) async {
-    await _pumpHome(
-      tester,
-      voiceService: MockVoiceService(recognizedText: '修复首页登录失败'),
-    );
-
-    await _pressAndReleaseHomeMic(tester);
-    await tester.tap(find.byKey(const ValueKey('home-voice-cancel')));
+    await tester.tap(find.byKey(const ValueKey('home-add-context-button')));
     await tester.pumpAndSettle();
 
+    expect(find.text('Create a task before adding context.'), findsOneWidget);
     expect(find.byKey(const ValueKey('home-voice-panel')), findsNothing);
   });
 
-  testWidgets('home voice result opens draft with initial task text',
+  testWidgets('connection paused task is not stuck in needs attention',
+      (tester) async {
+    await _pumpHome(
+      tester,
+      voiceService: MockVoiceService(),
+      initialTasks: [
+        _task(
+          'task-1',
+          'Lost remote session',
+          status: TaskStatus.runtimeLost,
+        ),
+      ],
+    );
+
+    expect(find.text('No task needs you right now.'), findsOneWidget);
+    expect(find.text('Connection paused'), findsOneWidget);
+    expect(find.text('Recently Completed'), findsOneWidget);
+  });
+
+  testWidgets('home add context binds automatically when one task is active',
+      (tester) async {
+    final state = await _pumpHome(
+      tester,
+      voiceService: MockVoiceService(recognizedText: '修复首页登录失败'),
+      initialTasks: [_task('task-1', 'Payment refactor')],
+    );
+
+    await tester.tap(find.byKey(const ValueKey('home-add-context-button')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Add context to this task'), findsOneWidget);
+    expect(
+      find.text('This context will be added to: Payment refactor'),
+      findsOneWidget,
+    );
+    await tester.enterText(find.byType(TextField), 'Keep changes minimal.');
+    await tester.tap(find.text('发送'));
+    await tester.pumpAndSettle();
+
+    final updatedTask = state.tasks.firstWhere((task) => task.id == 'task-1');
+    expect(updatedTask.turns.last.userInput, 'Keep changes minimal.');
+  });
+
+  testWidgets(
+      'home add context selects a target when multiple tasks are active',
+      (tester) async {
+    await _pumpHome(
+      tester,
+      voiceService: MockVoiceService(),
+      initialTasks: [
+        _task('task-1', 'Payment refactor'),
+        _task('task-2', 'Log analysis'),
+      ],
+    );
+
+    await tester.tap(find.byKey(const ValueKey('home-add-context-button')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Select Task'), findsOneWidget);
+    await tester.tap(find.widgetWithText(ListTile, 'Log analysis'));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text('This context will be added to: Log analysis'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('home add context supports hold to talk inside task context',
       (tester) async {
     await _pumpHome(
       tester,
       voiceService: MockVoiceService(recognizedText: '修复首页登录失败'),
+      initialTasks: [_task('task-1', 'Payment refactor')],
     );
 
-    await _pressAndReleaseHomeMic(tester);
-    await tester.tap(find.byKey(const ValueKey('home-voice-use-result')));
+    await tester.tap(find.byKey(const ValueKey('home-add-context-button')));
     await tester.pumpAndSettle();
-
-    final field = tester.widget<TextField>(find.byType(TextField).first);
-    expect(field.controller!.text, '修复首页登录失败');
-  });
-
-  testWidgets('home voice panel disappears when no speech is captured',
-      (tester) async {
-    await _pumpHome(
-      tester,
-      voiceService: MockVoiceService(recognizedText: ''),
+    final gesture = await tester.startGesture(
+      tester.getCenter(find.text('Hold to Talk')),
     );
-
-    await _pressAndReleaseHomeMic(tester);
-
-    expect(find.byKey(const ValueKey('home-voice-panel')), findsNothing);
-  });
-
-  testWidgets('home voice state resets after using recognized draft',
-      (tester) async {
-    await _pumpHome(
-      tester,
-      voiceService: MockVoiceService(recognizedText: '修复首页登录失败'),
-    );
-
-    await _pressAndReleaseHomeMic(tester);
-    await tester.tap(find.byKey(const ValueKey('home-voice-use-result')));
-    await tester.pumpAndSettle();
-    Navigator.of(tester.element(find.byType(TextField).first)).pop();
+    await tester.pump();
+    await gesture.up();
     await tester.pumpAndSettle();
 
-    expect(find.byKey(const ValueKey('home-voice-panel')), findsNothing);
+    expect(find.text('修复首页登录失败'), findsWidgets);
   });
 
   testWidgets('header settings button opens unified settings screen',
@@ -108,13 +140,18 @@ void main() {
   });
 }
 
-Future<void> _pumpHome(
+Future<ArminAppState> _pumpHome(
   WidgetTester tester, {
   required MockVoiceService voiceService,
+  List<TaskSession> initialTasks = const [],
 }) async {
+  final store = InMemoryTaskHistoryStore();
+  for (final task in initialTasks) {
+    await store.saveTask(task);
+  }
   final state = ArminAppState(
-    store: InMemoryTaskHistoryStore(),
-    agentSessionService: MockAgentSessionService(),
+    store: store,
+    agentSessionService: const _NoDelayAgent(),
     voiceService: voiceService,
   );
   await state.load();
@@ -125,12 +162,89 @@ Future<void> _pumpHome(
     ),
   );
   await tester.pump();
+  return state;
 }
 
-Future<void> _pressAndReleaseHomeMic(WidgetTester tester) async {
-  final button = find.byKey(const ValueKey('home-voice-button'));
-  final gesture = await tester.startGesture(tester.getCenter(button));
-  await tester.pump();
-  await gesture.up();
-  await tester.pumpAndSettle();
+class _NoDelayAgent implements AgentSessionService {
+  const _NoDelayAgent();
+
+  @override
+  Future<AgentConnectionTestResult> testConnection(
+    AgentConnectionTestRequest request,
+  ) async {
+    return const AgentConnectionTestResult(success: true, message: 'OK');
+  }
+
+  @override
+  Future<AgentInstructionDiscoveryResult> discoverAgentInstructions(
+    AgentInstructionDiscoveryRequest request,
+  ) async {
+    return const AgentInstructionDiscoveryResult(paths: []);
+  }
+
+  @override
+  Stream<AgentExecutionUpdate> execute(AgentExecutionRequest request) {
+    return const Stream<AgentExecutionUpdate>.empty();
+  }
+
+  @override
+  Future<void> sendFollowUp(AgentControlRequest request) async {}
+
+  @override
+  Future<void> selectTerminalOption(
+    AgentControlRequest request,
+    String optionKey,
+  ) async {}
+
+  @override
+  Future<void> pause(AgentControlRequest request) async {}
+
+  @override
+  Future<void> resume(AgentControlRequest request) async {}
+
+  @override
+  Future<void> stop(AgentControlRequest request) async {}
+
+  @override
+  Future<void> cleanup(AgentControlRequest request) async {}
+
+  @override
+  Future<String> captureLog(AgentControlRequest request) async => '';
+}
+
+TaskSession _task(
+  String id,
+  String title, {
+  TaskStatus status = TaskStatus.turnIdle,
+}) {
+  final now = DateTime(2026, 6, 5, 10);
+  return TaskSession(
+    id: id,
+    host: HostConfig(
+      id: 'host-$id',
+      name: 'Dev',
+      host: '127.0.0.1',
+      port: 22,
+      username: 'ironion',
+      authType: HostAuthType.password,
+      projectPath: '',
+      tmuxSessionName: 'armin-$id',
+      agentCommand: 'codex',
+      createdAt: now,
+      updatedAt: now,
+      password: 'secret',
+    ),
+    title: title,
+    status: status,
+    createdAt: now,
+    updatedAt: now,
+    rawSttText: '',
+    cleanedDraft: title,
+    userText: title,
+    context: '',
+    constraints: const {},
+    finalPrompt: title,
+    secretRecords: const [],
+    rawLog: '',
+  );
 }

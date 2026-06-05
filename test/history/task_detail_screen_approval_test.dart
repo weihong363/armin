@@ -321,7 +321,7 @@ void main() {
     await tester.tap(find.text('追加指令'));
     await tester.pumpAndSettle();
 
-    final button = find.text('语音追加');
+    final button = find.text('Hold to Talk');
     final gesture = await tester.startGesture(tester.getCenter(button));
     await tester.pumpAndSettle();
     await gesture.up();
@@ -338,7 +338,6 @@ void main() {
       const Offset(0, -360),
     );
     await tester.pumpAndSettle();
-    expect(find.text('语音追加'), findsOneWidget);
     expect(find.text('输出 hello world'), findsWidgets);
 
     await _tapDetailTab(tester, '指标');
@@ -433,7 +432,7 @@ void main() {
     await tester.pumpAndSettle();
 
     final gesture =
-        await tester.startGesture(tester.getCenter(find.text('语音追加')));
+        await tester.startGesture(tester.getCenter(find.text('Hold to Talk')));
     await tester.pumpAndSettle();
     await gesture.up();
     await tester.pumpAndSettle();
@@ -469,7 +468,7 @@ void main() {
     await tester.pumpAndSettle();
 
     final gesture =
-        await tester.startGesture(tester.getCenter(find.text('语音追加')));
+        await tester.startGesture(tester.getCenter(find.text('Hold to Talk')));
     await tester.pumpAndSettle();
     await gesture.up();
     await tester.pumpAndSettle();
@@ -503,7 +502,7 @@ void main() {
     await tester.pumpAndSettle();
 
     final gesture =
-        await tester.startGesture(tester.getCenter(find.text('语音追加')));
+        await tester.startGesture(tester.getCenter(find.text('Hold to Talk')));
     await tester.pumpAndSettle();
     await gesture.up();
     await tester.pumpAndSettle();
@@ -1126,15 +1125,15 @@ Summer 是一个桌面宠物。
     );
 
     await tester.scrollUntilVisible(
-      find.text('Turn 2：追加指令'),
+      find.text('Turn 2: Context added'),
       300,
       scrollable: find.byType(Scrollable).last,
     );
     await tester.pumpAndSettle();
 
     expect(
-      tester.getTopLeft(find.text('Turn 2：追加指令')).dy,
-      lessThan(tester.getTopLeft(find.text('Turn 1：初始任务')).dy),
+      tester.getTopLeft(find.text('Turn 2: Context added')).dy,
+      lessThan(tester.getTopLeft(find.text('Turn 1: Initial task')).dy),
     );
     expect(find.text('展开完整输出'), findsNWidgets(2));
     expect(find.textContaining('Summer 是一个桌面宠物'), findsNothing);
@@ -1247,6 +1246,31 @@ Summer 是一个桌面宠物。
 
     expect(agent.cleanedUp, isTrue);
     expect(find.text('已请求清理远端 tmux 会话。'), findsOneWidget);
+  });
+
+  testWidgets('connection paused task can be marked complete', (tester) async {
+    final task = _task().copyWith(status: TaskStatus.runtimeLost);
+    final state = ArminAppState(
+      store: _TaskStore(task),
+      agentSessionService: const _NoopAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await tester.pumpWidget(
+      AppStateScope(
+        state: state,
+        child: const MaterialApp(home: TaskDetailScreen(taskId: 'task-1')),
+      ),
+    );
+
+    expect(find.text('Connection paused'), findsWidgets);
+    expect(find.text('Resolve task status'), findsOneWidget);
+
+    await tester.tap(find.text('标记完成'));
+    await tester.pumpAndSettle();
+
+    expect(state.tasks.single.status, TaskStatus.userCompleted);
   });
 
   testWidgets('detail banner demotes project cli and keeps editable title',

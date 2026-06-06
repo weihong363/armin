@@ -37,9 +37,109 @@ void main() {
       ],
     );
 
-    expect(find.text('No task needs you right now.'), findsOneWidget);
+    expect(
+        find.text('No work needs your attention right now.'), findsOneWidget);
+    expect(find.text('Connection paused'), findsNothing);
+    expect(find.text('Recently completed'), findsNothing);
+  });
+
+  testWidgets('needs attention feed only shows human attention work',
+      (tester) async {
+    await _pumpHome(
+      tester,
+      voiceService: MockVoiceService(),
+      initialTasks: [
+        _task(
+          'task-1',
+          'Running analysis',
+          status: TaskStatus.running,
+        ),
+        _task(
+          'task-2',
+          'Payment refactor',
+          status: TaskStatus.needApproval,
+        ),
+        _task(
+          'task-3',
+          'Login cleanup',
+          status: TaskStatus.turnIdle,
+        ),
+        _task(
+          'task-4',
+          'Failing import',
+          status: TaskStatus.failed,
+        ),
+      ],
+    );
+
+    expect(find.text('Waiting For You'), findsOneWidget);
+    expect(find.text('Needs Attention (3)'), findsNothing);
+    expect(find.text('Payment refactor'), findsWidgets);
+    expect(
+        find.textContaining('This task needs your decision'), findsOneWidget);
+    expect(find.text('Login cleanup'), findsWidgets);
+    expect(find.textContaining('Waiting for your instruction'), findsOneWidget);
+    expect(find.text('Failing import'), findsWidgets);
+    expect(find.textContaining('Review the issue before continuing'),
+        findsOneWidget);
+    expect(find.text('Work is moving.'), findsNothing);
+  });
+
+  testWidgets('waiting section shows moving empty state', (tester) async {
+    await _pumpHome(
+      tester,
+      voiceService: MockVoiceService(),
+      initialTasks: [
+        _task(
+          'task-1',
+          'Running analysis',
+          status: TaskStatus.running,
+        ),
+      ],
+    );
+
+    expect(find.text('Waiting For You'), findsOneWidget);
+    expect(find.text('Needs Attention (0)'), findsNothing);
+    expect(find.text('Everything is moving.'), findsOneWidget);
+    expect(
+        find.text('No work needs your attention right now.'), findsOneWidget);
+    expect(find.text('Work keeps moving after you leave.'), findsOneWidget);
+  });
+
+  testWidgets('work activity feed shows work events without runtime wording',
+      (tester) async {
+    await _pumpHome(
+      tester,
+      voiceService: MockVoiceService(),
+      initialTasks: [
+        _task(
+          'task-1',
+          'Payment refactor',
+          status: TaskStatus.needApproval,
+        ),
+        _task(
+          'task-2',
+          'PRD draft',
+          status: TaskStatus.completed,
+        ),
+        _task(
+          'task-3',
+          'Lost session',
+          status: TaskStatus.runtimeLost,
+        ),
+      ],
+    );
+
+    await tester.tap(find.byKey(const ValueKey('home-activity-feed-button')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Work Activity Feed (1)'), findsOneWidget);
+    expect(find.text('Task needs attention'), findsOneWidget);
+    expect(find.text('Task completed'), findsOneWidget);
     expect(find.text('Connection paused'), findsOneWidget);
-    expect(find.text('Recently Completed'), findsOneWidget);
+    expect(find.textContaining('Runtime lost'), findsNothing);
+    expect(find.textContaining('tmux'), findsNothing);
+    expect(find.textContaining('SSH'), findsNothing);
   });
 
   testWidgets('home add context binds automatically when one task is active',
@@ -125,18 +225,60 @@ void main() {
     expect(find.text('语音与播报'), findsWidgets);
   });
 
-  testWidgets('bottom navigation opens history instead of duplicating settings',
+  testWidgets('bottom navigation keeps two actions and history is secondary',
       (tester) async {
-    await _pumpHome(tester, voiceService: MockVoiceService());
+    await _pumpHome(
+      tester,
+      voiceService: MockVoiceService(),
+      initialTasks: [
+        _task(
+          'task-1',
+          'PRD draft',
+          status: TaskStatus.completed,
+        ),
+      ],
+    );
 
     expect(find.text('主机'), findsNothing);
     expect(find.text('我'), findsNothing);
+    expect(find.text('New Task'), findsOneWidget);
+    expect(
+        find.byKey(const ValueKey('home-add-context-button')), findsOneWidget);
     expect(find.text('History'), findsOneWidget);
     await tester.tap(find.text('History'));
     await tester.pumpAndSettle();
 
     expect(find.text('历史任务'), findsOneWidget);
-    expect(find.text('暂无历史任务'), findsOneWidget);
+    expect(find.text('PRD draft'), findsWidgets);
+  });
+
+  testWidgets('waiting section caps visible tasks and links to full list',
+      (tester) async {
+    await _pumpHome(
+      tester,
+      voiceService: MockVoiceService(),
+      initialTasks: [
+        _task('task-1', 'Old approval', status: TaskStatus.needApproval),
+        _task('task-2', 'Decision needed', status: TaskStatus.needAttention),
+        _task('task-3', 'Continue copy', status: TaskStatus.turnIdle),
+        _task('task-4', 'Paused task', status: TaskStatus.paused),
+        _task('task-5', 'Hidden failure', status: TaskStatus.failed),
+      ],
+    );
+
+    expect(find.text('Waiting For You'), findsOneWidget);
+    expect(find.text('Old approval'), findsOneWidget);
+    expect(find.text('Decision needed'), findsOneWidget);
+    expect(find.text('Continue copy'), findsOneWidget);
+    expect(find.text('Paused task'), findsNothing);
+    expect(find.text('View all 5 waiting tasks'), findsOneWidget);
+
+    await tester.tap(find.text('View all 5 waiting tasks'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Waiting For You'), findsOneWidget);
+    expect(find.text('Paused task'), findsOneWidget);
+    expect(find.text('Hidden failure'), findsOneWidget);
   });
 }
 

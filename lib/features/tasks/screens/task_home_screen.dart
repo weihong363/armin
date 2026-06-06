@@ -6,9 +6,7 @@ import '../../../shared/theme/armin_theme.dart';
 import '../../history/screens/task_detail_screen.dart';
 import '../../history/screens/task_history_screen.dart';
 import '../../settings/screens/settings_screen.dart';
-import '../../agent/services/codex_output_cleaner.dart';
 import '../models/task_session.dart';
-import '../services/semantic_snippet_builder.dart';
 import '../widgets/add_context_sheet.dart';
 import 'task_draft_screen.dart';
 
@@ -24,6 +22,9 @@ class _TaskHomeScreenState extends State<TaskHomeScreen> {
   Widget build(BuildContext context) {
     final state = AppStateScope.of(context);
     final groups = _groupTasks(state.tasks);
+    final attentionEvents = _attentionEventsFor(state.tasks);
+    final activityItems = _activityItemsFor(state.tasks);
+    final completedCount = _completedSummaryCount(state.tasks);
 
     return Scaffold(
       body: SafeArea(
@@ -60,12 +61,25 @@ class _TaskHomeScreenState extends State<TaskHomeScreen> {
                                   ?.copyWith(fontSize: 26),
                             ),
                             Text(
-                              'Your task inbox for AI agents.',
+                              _homeStatusLine(
+                                attentionCount: attentionEvents.length,
+                                workingCount: groups.inProgress.length,
+                                activeCount: attentionEvents.length +
+                                    groups.inProgress.length,
+                              ),
                               style: Theme.of(context).textTheme.bodyMedium,
                             ),
                           ],
                         ),
                       ),
+                      _ActivityIconButton(
+                        count: attentionEvents.length,
+                        onPressed: () => _openActivityFeed(
+                          context,
+                          activityItems,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
                       IconButton.filledTonal(
                         key: const ValueKey('home-settings-button'),
                         tooltip: '设置',
@@ -74,36 +88,36 @@ class _TaskHomeScreenState extends State<TaskHomeScreen> {
                       ),
                     ],
                   ),
-                  const SizedBox(height: 12),
-                  _InboxSummary(
-                    needsAttentionCount: groups.needsAttention.length,
-                    inProgressCount: groups.inProgress.length,
-                  ),
-                  const SizedBox(height: 22),
+                  const SizedBox(height: 18),
                   if (state.tasks.isEmpty)
                     _EmptyInbox(onCreate: () => _openNewTask(context))
                   else ...[
-                    _TaskSection(
-                      title: 'Needs Attention',
-                      emptyText: 'No task needs you right now.',
-                      tasks: groups.needsAttention,
+                    _WaitingForYouSection(
+                      events: attentionEvents,
                       onOpenTask: _openTask,
-                      onAddContext: _showAddContextForTask,
+                      onViewAll: () => _openTaskList(
+                        context,
+                        title: 'Waiting For You',
+                        tasks: attentionEvents
+                            .map((event) => event.task)
+                            .toList(growable: false),
+                      ),
                     ),
-                    _TaskSection(
-                      title: 'In Progress',
-                      emptyText: 'No task is running right now.',
+                    const SizedBox(height: 18),
+                    _RunningSummarySection(
                       tasks: groups.inProgress,
                       onOpenTask: _openTask,
-                      onAddContext: _showAddContextForTask,
+                      onViewRunning: () => _openTaskList(
+                        context,
+                        title: 'Running',
+                        tasks: groups.inProgress,
+                      ),
                     ),
-                    _TaskSection(
-                      title: 'Recently Completed',
-                      emptyText: 'No completed task yet.',
-                      tasks: groups.recentlyCompleted,
-                      onOpenTask: _openTask,
-                      onAddContext: _showAddContextForTask,
-                    ),
+                    if (completedCount > 0)
+                      _CompletedSummaryRow(
+                        count: completedCount,
+                        onViewHistory: () => _openHistory(context),
+                      ),
                   ],
                 ],
               ),
@@ -111,7 +125,6 @@ class _TaskHomeScreenState extends State<TaskHomeScreen> {
       bottomNavigationBar: _HomeBottomActions(
         onNewTask: () => _openNewTask(context),
         onAddContext: () => _addContextFromHome(context),
-        onHistory: () => _openHistory(context),
       ),
     );
   }
@@ -125,6 +138,36 @@ class _TaskHomeScreenState extends State<TaskHomeScreen> {
   void _openHistory(BuildContext context) {
     Navigator.of(context).push(
       MaterialPageRoute<void>(builder: (_) => const TaskHistoryScreen()),
+    );
+  }
+
+  void _openActivityFeed(
+    BuildContext context,
+    List<_ActivityItem> activityItems,
+  ) {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => _WorkActivityFeedScreen(
+          items: activityItems,
+          onOpenTask: _openTask,
+        ),
+      ),
+    );
+  }
+
+  void _openTaskList(
+    BuildContext context, {
+    required String title,
+    required List<TaskSession> tasks,
+  }) {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => _TaskListScreen(
+          title: title,
+          tasks: tasks,
+          onOpenTask: _openTask,
+        ),
+      ),
     );
   }
 
@@ -302,36 +345,391 @@ class _TaskInboxGroups {
   final List<TaskSession> recentlyCompleted;
 }
 
-class _InboxSummary extends StatelessWidget {
-  const _InboxSummary({
-    required this.needsAttentionCount,
-    required this.inProgressCount,
+String _homeStatusLine({
+  required int attentionCount,
+  required int workingCount,
+  required int activeCount,
+}) {
+  if (attentionCount > 0) {
+    final noun = attentionCount == 1 ? 'task' : 'tasks';
+    return '$attentionCount $noun need you';
+  }
+  if (workingCount > 0) {
+    return 'Everything is moving';
+  }
+  if (activeCount == 0) {
+    return 'Create a task and let it run';
+  }
+  return 'No work needs you right now';
+}
+
+class _AttentionEvent {
+  const _AttentionEvent({
+    required this.task,
+    required this.reason,
+    required this.primaryAction,
+    required this.priority,
   });
 
-  final int needsAttentionCount;
-  final int inProgressCount;
+  final TaskSession task;
+  final String reason;
+  final String primaryAction;
+  final int priority;
+}
+
+class _ActivityItem {
+  const _ActivityItem({
+    required this.task,
+    required this.title,
+    required this.description,
+    required this.icon,
+    required this.color,
+  });
+
+  final TaskSession task;
+  final String title;
+  final String description;
+  final IconData icon;
+  final Color color;
+}
+
+List<_AttentionEvent> _attentionEventsFor(List<TaskSession> tasks) {
+  final events = [
+    for (final task in tasks)
+      if (_attentionEventFor(task) != null) _attentionEventFor(task)!,
+  ];
+  events.sort((a, b) {
+    final priority = a.priority.compareTo(b.priority);
+    if (priority != 0) {
+      return priority;
+    }
+    return a.task.updatedAt.compareTo(b.task.updatedAt);
+  });
+  return events;
+}
+
+_AttentionEvent? _attentionEventFor(TaskSession task) {
+  return switch (task.status) {
+    TaskStatus.needApproval => _AttentionEvent(
+        task: task,
+        reason: 'This task needs your decision.',
+        primaryAction: 'Review',
+        priority: 0,
+      ),
+    TaskStatus.turnIdle => _AttentionEvent(
+        task: task,
+        reason: 'Waiting for your instruction.',
+        primaryAction: 'Continue',
+        priority: 2,
+      ),
+    TaskStatus.needAttention => _AttentionEvent(
+        task: task,
+        reason: _needAttentionReason(task),
+        primaryAction: 'Review',
+        priority: 1,
+      ),
+    TaskStatus.failed || TaskStatus.userFailed => _AttentionEvent(
+        task: task,
+        reason: 'Review the issue before continuing.',
+        primaryAction: 'Review Issue',
+        priority: 3,
+      ),
+    TaskStatus.paused => _AttentionEvent(
+        task: task,
+        reason: 'Paused and waiting for you.',
+        primaryAction: 'Resume',
+        priority: 4,
+      ),
+    _ => null,
+  };
+}
+
+String _needAttentionReason(TaskSession task) {
+  if (task.terminalPrompt != null) {
+    return 'Waiting for your choice.';
+  }
+  return 'This task needs your attention.';
+}
+
+List<_ActivityItem> _activityItemsFor(List<TaskSession> tasks) {
+  final items = [
+    for (final task in tasks)
+      if (_activityItemFor(task) != null) _activityItemFor(task)!,
+  ]..sort((a, b) => b.task.updatedAt.compareTo(a.task.updatedAt));
+  return items;
+}
+
+int _completedSummaryCount(List<TaskSession> tasks) {
+  return tasks
+      .where(
+        (task) =>
+            task.status == TaskStatus.completed ||
+            task.status == TaskStatus.userCompleted,
+      )
+      .length;
+}
+
+_ActivityItem? _activityItemFor(TaskSession task) {
+  final attention = _attentionEventFor(task);
+  if (attention != null) {
+    return _ActivityItem(
+      task: task,
+      title: 'Task needs attention',
+      description: attention.reason,
+      icon: Icons.priority_high_rounded,
+      color: Colors.orange.shade800,
+    );
+  }
+  return switch (task.status) {
+    TaskStatus.completed || TaskStatus.userCompleted => _ActivityItem(
+        task: task,
+        title: 'Task completed',
+        description: 'Ready to review.',
+        icon: Icons.task_alt_outlined,
+        color: Colors.green.shade700,
+      ),
+    TaskStatus.running => _ActivityItem(
+        task: task,
+        title: task.turns.length > 1 ? 'Task continued' : 'Task resumed',
+        description: 'Work is moving.',
+        icon: Icons.play_circle_outline,
+        color: ArminTheme.primary,
+      ),
+    TaskStatus.observerDetached => _ActivityItem(
+        task: task,
+        title: 'Updates paused',
+        description: 'Reconnect when you want to follow progress again.',
+        icon: Icons.wifi_off_outlined,
+        color: Colors.blueGrey.shade700,
+      ),
+    TaskStatus.runtimeLost => _ActivityItem(
+        task: task,
+        title: 'Connection paused',
+        description: 'The remote session is no longer available.',
+        icon: Icons.link_off_outlined,
+        color: Colors.blueGrey.shade700,
+      ),
+    TaskStatus.stopped => _ActivityItem(
+        task: task,
+        title: 'Task stopped',
+        description: 'Review details when needed.',
+        icon: Icons.stop_circle_outlined,
+        color: Colors.grey.shade700,
+      ),
+    _ => null,
+  };
+}
+
+class _ActivityIconButton extends StatelessWidget {
+  const _ActivityIconButton({
+    required this.count,
+    required this.onPressed,
+  });
+
+  final int count;
+  final VoidCallback onPressed;
 
   @override
   Widget build(BuildContext context) {
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: const Color(0xFFF1F8F5),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: const Color(0xFFDCECE6)),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-        child: Row(
-          children: [
-            const Icon(Icons.inbox_outlined, color: ArminTheme.primary),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Text(
-                '$needsAttentionCount need attention · $inProgressCount running',
-                style: Theme.of(context).textTheme.bodyMedium,
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        IconButton.filledTonal(
+          key: const ValueKey('home-activity-feed-button'),
+          tooltip: 'Work Activity Feed',
+          icon: const Icon(Icons.notifications_none_outlined),
+          onPressed: onPressed,
+        ),
+        if (count > 0)
+          Positioned(
+            right: -2,
+            top: -2,
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: Colors.orange.shade800,
+                borderRadius: BorderRadius.circular(999),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                child: Text(
+                  '$count',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
               ),
             ),
-          ],
+          ),
+      ],
+    );
+  }
+}
+
+class _WaitingForYouSection extends StatelessWidget {
+  const _WaitingForYouSection({
+    required this.events,
+    required this.onOpenTask,
+    required this.onViewAll,
+  });
+
+  final List<_AttentionEvent> events;
+  final void Function(BuildContext context, String taskId) onOpenTask;
+  final VoidCallback onViewAll;
+
+  @override
+  Widget build(BuildContext context) {
+    return _HomeSection(
+      title: 'Waiting For You',
+      child: events.isEmpty
+          ? const _AttentionEmptyState()
+          : Column(
+              children: [
+                for (final event in events.take(3))
+                  _CompactTaskCard(
+                    title: _taskTitle(event.task),
+                    state: event.reason,
+                    time: _relativeTimeLabel(event.task.updatedAt),
+                    actionLabel: event.primaryAction,
+                    emphasized: true,
+                    onOpen: () => onOpenTask(context, event.task.id),
+                  ),
+                if (events.length > 3)
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton(
+                      onPressed: onViewAll,
+                      child: Text('View all ${events.length} waiting tasks'),
+                    ),
+                  ),
+              ],
+            ),
+    );
+  }
+}
+
+class _AttentionEmptyState extends StatelessWidget {
+  const _AttentionEmptyState();
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Everything is moving.',
+          style: Theme.of(context).textTheme.titleSmall,
+        ),
+        const SizedBox(height: 4),
+        Text(
+          'No work needs your attention right now.',
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+        const SizedBox(height: 4),
+        Text(
+          'Work keeps moving after you leave.',
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: ArminTheme.ink.withValues(alpha: 0.62),
+              ),
+        ),
+      ],
+    );
+  }
+}
+
+class _RunningSummarySection extends StatelessWidget {
+  const _RunningSummarySection({
+    required this.tasks,
+    required this.onOpenTask,
+    required this.onViewRunning,
+  });
+
+  final List<TaskSession> tasks;
+  final void Function(BuildContext context, String taskId) onOpenTask;
+  final VoidCallback onViewRunning;
+
+  @override
+  Widget build(BuildContext context) {
+    if (tasks.isEmpty) {
+      return const SizedBox.shrink();
+    }
+    final noun = tasks.length == 1 ? 'task is' : 'tasks are';
+    return _HomeSection(
+      title: 'Running',
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: ArminTheme.border),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('${tasks.length} $noun running'),
+              const SizedBox(height: 8),
+              for (final task in tasks.take(2))
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 4),
+                  child: InkWell(
+                    onTap: () => onOpenTask(context, task.id),
+                    child: Text(
+                      '- ${_taskTitle(task)}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ),
+                ),
+              TextButton(
+                onPressed: onViewRunning,
+                child: const Text('View running'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _CompletedSummaryRow extends StatelessWidget {
+  const _CompletedSummaryRow({
+    required this.count,
+    required this.onViewHistory,
+  });
+
+  final int count;
+  final VoidCallback onViewHistory;
+
+  @override
+  Widget build(BuildContext context) {
+    final noun = count == 1 ? 'task' : 'tasks';
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 18),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: ArminTheme.border),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+          child: Row(
+            children: [
+              const Expanded(
+                child: Text('Recently completed'),
+              ),
+              Text('$count $noun ready to review'),
+              const SizedBox(width: 10),
+              TextButton(
+                onPressed: onViewHistory,
+                child: const Text('History'),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -342,13 +740,11 @@ class _HomeBottomActions extends StatelessWidget {
   const _HomeBottomActions({
     required this.onNewTask,
     required this.onAddContext,
-    required this.onHistory,
   });
 
   final VoidCallback onNewTask;
   final VoidCallback onAddContext;
-  final VoidCallback onHistory;
-  static const _buttonHeight = 72.0;
+  static const _buttonHeight = 64.0;
 
   @override
   Widget build(BuildContext context) {
@@ -378,37 +774,15 @@ class _HomeBottomActions extends StatelessWidget {
                   ),
                 ),
               ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: SizedBox(
-                  height: _buttonHeight,
-                  child: OutlinedButton(
-                    key: const ValueKey('home-add-context-button'),
-                    style: OutlinedButton.styleFrom(
-                      padding: EdgeInsets.zero,
-                    ),
-                    onPressed: onAddContext,
-                    child: const _BottomActionContent(
-                      icon: Icons.add_comment_outlined,
-                      label: 'Add Context',
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: SizedBox(
-                  height: _buttonHeight,
-                  child: OutlinedButton(
-                    style: OutlinedButton.styleFrom(
-                      padding: EdgeInsets.zero,
-                    ),
-                    onPressed: onHistory,
-                    child: const _BottomActionContent(
-                      icon: Icons.history_outlined,
-                      label: 'History',
-                    ),
-                  ),
+              const SizedBox(width: 10),
+              SizedBox(
+                width: 56,
+                height: _buttonHeight,
+                child: IconButton.outlined(
+                  key: const ValueKey('home-add-context-button'),
+                  tooltip: 'Add context',
+                  onPressed: onAddContext,
+                  icon: const Icon(Icons.add_comment_outlined),
                 ),
               ),
             ],
@@ -448,20 +822,14 @@ class _BottomActionContent extends StatelessWidget {
   }
 }
 
-class _TaskSection extends StatelessWidget {
-  const _TaskSection({
+class _HomeSection extends StatelessWidget {
+  const _HomeSection({
     required this.title,
-    required this.emptyText,
-    required this.tasks,
-    required this.onOpenTask,
-    required this.onAddContext,
+    required this.child,
   });
 
   final String title;
-  final String emptyText;
-  final List<TaskSession> tasks;
-  final void Function(BuildContext context, String taskId) onOpenTask;
-  final void Function(BuildContext context, TaskSession task) onAddContext;
+  final Widget child;
 
   @override
   Widget build(BuildContext context) {
@@ -472,109 +840,84 @@ class _TaskSection extends StatelessWidget {
         children: [
           _SectionHeader(title: title),
           const SizedBox(height: 8),
-          if (tasks.isEmpty)
-            _SectionEmptyText(text: emptyText)
-          else
-            for (final task in tasks.take(4))
-              _InboxTaskCard(
-                task: task,
-                onOpen: () => onOpenTask(context, task.id),
-                onAddContext: () => onAddContext(context, task),
-              ),
+          child,
         ],
       ),
     );
   }
 }
 
-class _InboxTaskCard extends StatelessWidget {
-  const _InboxTaskCard({
-    required this.task,
+class _CompactTaskCard extends StatelessWidget {
+  const _CompactTaskCard({
+    required this.title,
+    required this.state,
+    required this.time,
+    required this.actionLabel,
+    required this.emphasized,
     required this.onOpen,
-    required this.onAddContext,
   });
 
-  final TaskSession task;
+  final String title;
+  final String state;
+  final String time;
+  final String actionLabel;
+  final bool emphasized;
   final VoidCallback onOpen;
-  final VoidCallback onAddContext;
 
   @override
   Widget build(BuildContext context) {
-    final variant = _cardVariantFor(task.status);
-    final statusTone = _statusTone(variant);
     return Card(
-      color: _cardBackground(variant),
+      color: emphasized ? const Color(0xFFFFFAF1) : Colors.white,
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(14),
-        side: BorderSide(color: _cardBorderColor(variant), width: 1.2),
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(
+          color: emphasized ? Colors.orange.shade200 : ArminTheme.border,
+          width: emphasized ? 1.1 : 1,
+        ),
       ),
-      margin: const EdgeInsets.only(bottom: 10),
+      margin: const EdgeInsets.only(bottom: 8),
       child: InkWell(
         onTap: onOpen,
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: BorderRadius.circular(12),
         child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+          padding: const EdgeInsets.fromLTRB(14, 12, 12, 12),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
             children: [
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Expanded(
-                    child: Text(
-                      _taskTitle(task),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                            fontWeight: FontWeight.w800,
+                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                            fontWeight:
+                                emphasized ? FontWeight.w800 : FontWeight.w700,
                           ),
                     ),
-                  ),
-                  Text(
-                    _taskFreshnessLabel(task),
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              _HumanStatusPill(
-                label: _humanStatusLabel(task.status),
-                color: statusTone,
-                emphasized: variant == _TaskCardVariant.needsAttention,
-              ),
-              const SizedBox(height: 10),
-              Text(
-                _latestUsefulUpdate(task),
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: Theme.of(context).textTheme.bodyMedium,
-              ),
-              const SizedBox(height: 10),
-              Text(
-                _nextActionLabel(task.status),
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: ArminTheme.ink.withValues(alpha: 0.72),
-                      fontWeight: FontWeight.w600,
+                    const SizedBox(height: 4),
+                    Text(
+                      time.isEmpty ? state : '$state · $time',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: ArminTheme.ink.withValues(alpha: 0.68),
+                          ),
                     ),
+                  ],
+                ),
               ),
-              const SizedBox(height: 12),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  FilledButton(
-                    style: FilledButton.styleFrom(
-                      backgroundColor: _primaryActionColor(variant),
-                      foregroundColor: Colors.white,
-                    ),
-                    onPressed: onOpen,
-                    child: Text(_primaryActionLabel(task.status)),
-                  ),
-                  OutlinedButton(
-                    onPressed: onAddContext,
-                    child: Text(_secondaryActionLabel(task.status)),
-                  ),
-                ],
+              const SizedBox(width: 12),
+              FilledButton(
+                style: FilledButton.styleFrom(
+                  backgroundColor:
+                      emphasized ? Colors.orange.shade800 : ArminTheme.primary,
+                  foregroundColor: Colors.white,
+                ),
+                onPressed: onOpen,
+                child: Text(actionLabel),
               ),
             ],
           ),
@@ -584,32 +927,157 @@ class _InboxTaskCard extends StatelessWidget {
   }
 }
 
-class _HumanStatusPill extends StatelessWidget {
-  const _HumanStatusPill({
-    required this.label,
-    required this.color,
-    required this.emphasized,
+class _TaskListScreen extends StatelessWidget {
+  const _TaskListScreen({
+    required this.title,
+    required this.tasks,
+    required this.onOpenTask,
   });
 
-  final String label;
-  final Color color;
-  final bool emphasized;
+  final String title;
+  final List<TaskSession> tasks;
+  final void Function(BuildContext context, String taskId) onOpenTask;
 
   @override
   Widget build(BuildContext context) {
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.10),
-        borderRadius: BorderRadius.circular(999),
+    return Scaffold(
+      appBar: AppBar(title: Text(title)),
+      body: SafeArea(
+        child: ListView.separated(
+          padding: const EdgeInsets.all(20),
+          itemCount: tasks.length,
+          separatorBuilder: (_, __) => const SizedBox(height: 10),
+          itemBuilder: (context, index) {
+            final task = tasks[index];
+            return Card(
+              margin: EdgeInsets.zero,
+              child: ListTile(
+                title: Text(
+                  _taskTitle(task),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                subtitle: Text(_humanStatusLabel(task.status)),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => onOpenTask(context, task.id),
+              ),
+            );
+          },
+        ),
       ),
+    );
+  }
+}
+
+class _WorkActivityFeedScreen extends StatelessWidget {
+  const _WorkActivityFeedScreen({
+    required this.items,
+    required this.onOpenTask,
+  });
+
+  final List<_ActivityItem> items;
+  final void Function(BuildContext context, String taskId) onOpenTask;
+
+  @override
+  Widget build(BuildContext context) {
+    final attentionCount =
+        items.where((item) => _attentionEventFor(item.task) != null).length;
+    return Scaffold(
+      appBar: AppBar(
+        title: Text('Work Activity Feed ($attentionCount)'),
+      ),
+      body: SafeArea(
+        child: items.isEmpty
+            ? const _ActivityFeedEmptyState()
+            : ListView.separated(
+                padding: const EdgeInsets.all(20),
+                itemCount: items.length,
+                separatorBuilder: (_, __) => const SizedBox(height: 10),
+                itemBuilder: (context, index) {
+                  final item = items[index];
+                  return _ActivityFeedItem(
+                    item: item,
+                    onOpen: () => onOpenTask(context, item.task.id),
+                  );
+                },
+              ),
+      ),
+    );
+  }
+}
+
+class _ActivityFeedEmptyState extends StatelessWidget {
+  const _ActivityFeedEmptyState();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Center(
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        padding: EdgeInsets.all(24),
         child: Text(
-          label,
-          style: TextStyle(
-            color: color,
-            fontSize: 12,
-            fontWeight: emphasized ? FontWeight.w800 : FontWeight.w700,
+          'Everything is moving.\n\nNo work needs your attention right now.',
+          textAlign: TextAlign.center,
+        ),
+      ),
+    );
+  }
+}
+
+class _ActivityFeedItem extends StatelessWidget {
+  const _ActivityFeedItem({
+    required this.item,
+    required this.onOpen,
+  });
+
+  final _ActivityItem item;
+  final VoidCallback onOpen;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      margin: EdgeInsets.zero,
+      child: InkWell(
+        onTap: onOpen,
+        borderRadius: BorderRadius.circular(14),
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(item.icon, color: item.color),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      item.title,
+                      style: Theme.of(context).textTheme.titleSmall,
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      item.task.displayTitle,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      item.description,
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      _relativeTimeLabel(item.task.updatedAt),
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: ArminTheme.ink.withValues(alpha: 0.56),
+                          ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              const Icon(Icons.chevron_right),
+            ],
           ),
         ),
       ),
@@ -617,132 +1085,19 @@ class _HumanStatusPill extends StatelessWidget {
   }
 }
 
-class _SectionEmptyText extends StatelessWidget {
-  const _SectionEmptyText({required this.text});
-
-  final String text;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: Text(
-        text,
-        style: Theme.of(context).textTheme.bodySmall,
-      ),
-    );
-  }
-}
-
-enum _TaskCardVariant {
-  needsAttention,
-  inProgress,
-  completed,
-}
-
-_TaskCardVariant _cardVariantFor(TaskStatus status) {
-  return switch (_inboxGroupFor(status)) {
-    _TaskInboxGroup.needsAttention => _TaskCardVariant.needsAttention,
-    _TaskInboxGroup.inProgress => _TaskCardVariant.inProgress,
-    _TaskInboxGroup.recentlyCompleted => _TaskCardVariant.completed,
-  };
-}
-
 String _humanStatusLabel(TaskStatus status) {
   return switch (status) {
     TaskStatus.needApproval => 'Needs your decision',
     TaskStatus.needAttention => 'Needs your attention',
-    TaskStatus.turnIdle => 'Waiting for your next instruction',
+    TaskStatus.turnIdle => 'Waiting for your instruction',
     TaskStatus.paused => 'Paused',
     TaskStatus.observerDetached => 'Updates paused',
     TaskStatus.runtimeLost => 'Connection paused',
-    TaskStatus.running => 'Running',
-    TaskStatus.pending || TaskStatus.draft => 'Waiting to start',
+    TaskStatus.running => 'Working',
+    TaskStatus.pending || TaskStatus.draft => 'Queued',
     TaskStatus.completed || TaskStatus.userCompleted => 'Ready to review',
     TaskStatus.failed || TaskStatus.userFailed => 'Needs review',
     TaskStatus.stopped => 'Stopped',
-  };
-}
-
-String _nextActionLabel(TaskStatus status) {
-  return switch (status) {
-    TaskStatus.needApproval ||
-    TaskStatus.needAttention =>
-      'Next: Review strategy',
-    TaskStatus.turnIdle => 'Next: Continue with instruction',
-    TaskStatus.paused => 'Next: Resume or stop',
-    TaskStatus.observerDetached ||
-    TaskStatus.runtimeLost =>
-      'Next: Reconnect if needed',
-    TaskStatus.running => 'No action needed now',
-    TaskStatus.pending || TaskStatus.draft => 'Next: Wait for execution',
-    TaskStatus.completed || TaskStatus.userCompleted => 'Next: Review result',
-    TaskStatus.failed || TaskStatus.userFailed => 'Next: Review issue',
-    TaskStatus.stopped => 'Next: View final output',
-  };
-}
-
-String _primaryActionLabel(TaskStatus status) {
-  return switch (status) {
-    TaskStatus.needApproval ||
-    TaskStatus.needAttention ||
-    TaskStatus.observerDetached ||
-    TaskStatus.runtimeLost =>
-      'Review',
-    TaskStatus.turnIdle || TaskStatus.paused => 'Continue',
-    TaskStatus.completed || TaskStatus.userCompleted => 'View result',
-    TaskStatus.failed ||
-    TaskStatus.userFailed ||
-    TaskStatus.stopped =>
-      'View details',
-    TaskStatus.running || TaskStatus.pending || TaskStatus.draft => 'Open',
-  };
-}
-
-String _secondaryActionLabel(TaskStatus status) {
-  return switch (status) {
-    TaskStatus.completed || TaskStatus.userCompleted => 'Continue',
-    TaskStatus.failed ||
-    TaskStatus.userFailed ||
-    TaskStatus.stopped =>
-      'Continue',
-    TaskStatus.running ||
-    TaskStatus.pending ||
-    TaskStatus.draft =>
-      'Add context',
-    _ => 'Add context',
-  };
-}
-
-Color _statusTone(_TaskCardVariant variant) {
-  return switch (variant) {
-    _TaskCardVariant.needsAttention => Colors.orange.shade800,
-    _TaskCardVariant.inProgress => ArminTheme.primary,
-    _TaskCardVariant.completed => Colors.green.shade700,
-  };
-}
-
-Color _cardBackground(_TaskCardVariant variant) {
-  return switch (variant) {
-    _TaskCardVariant.needsAttention => const Color(0xFFFFFAF1),
-    _TaskCardVariant.inProgress => Colors.white,
-    _TaskCardVariant.completed => const Color(0xFFF8FAF8),
-  };
-}
-
-Color _cardBorderColor(_TaskCardVariant variant) {
-  return switch (variant) {
-    _TaskCardVariant.needsAttention => Colors.orange.shade200,
-    _TaskCardVariant.inProgress => ArminTheme.border,
-    _TaskCardVariant.completed => Colors.green.shade100,
-  };
-}
-
-Color _primaryActionColor(_TaskCardVariant variant) {
-  return switch (variant) {
-    _TaskCardVariant.needsAttention => Colors.orange.shade800,
-    _TaskCardVariant.inProgress => ArminTheme.primary,
-    _TaskCardVariant.completed => Colors.green.shade700,
   };
 }
 
@@ -751,63 +1106,25 @@ String _taskTitle(TaskSession task) {
   if (title.isNotEmpty && title != '未命名任务') {
     return title;
   }
-  return _snippetFrom(task.userText, maxChars: 48, fallback: 'Untitled task');
-}
-
-String _latestUsefulUpdate(TaskSession task) {
-  final latestTurn = _latestTurnOutput(task);
-  final candidates = [
-    task.result?.summary ?? '',
-    task.summary ?? '',
-    latestTurn,
-    task.shortSummary,
-    task.userText,
-  ];
-  for (final candidate in candidates) {
-    final snippet = _snippetFrom(candidate, maxChars: 150);
-    if (snippet.isNotEmpty) {
-      return snippet;
-    }
+  final text = task.userText.trim();
+  if (text.isEmpty) {
+    return 'Untitled task';
   }
-  return 'Task is ready for its next update.';
+  return text.length <= 48 ? text : '${text.substring(0, 48)}...';
 }
 
-String _latestTurnOutput(TaskSession task) {
-  for (final turn in task.turns.reversed) {
-    final cleaned = turn.cleanedOutput.trim();
-    if (cleaned.isNotEmpty) {
-      return cleaned;
-    }
-    final raw = turn.rawOutput.trim();
-    if (raw.isNotEmpty) {
-      return raw;
-    }
+String _relativeTimeLabel(DateTime value) {
+  final elapsed = DateTime.now().difference(value);
+  if (elapsed.inDays > 0) {
+    return '${elapsed.inDays}d ago';
   }
-  return '';
-}
-
-String _snippetFrom(
-  String source, {
-  required int maxChars,
-  String fallback = '',
-}) {
-  final cleaned = const CodexOutputCleaner().clean(source);
-  final text = const SemanticSnippetBuilder()
-      .build(cleaned,
-          contentType: SnippetContentType.agentSummary, maxChars: maxChars)
-      .visibleText
-      .trim();
-  return text.isEmpty ? fallback : text;
-}
-
-String _taskFreshnessLabel(TaskSession task) {
-  return _timeLabel(task.updatedAt);
-}
-
-String _timeLabel(DateTime value) {
-  final hour = value.hour.toString().padLeft(2, '0');
-  final minute = value.minute.toString().padLeft(2, '0');
-  return '$hour:$minute';
+  if (elapsed.inHours > 0) {
+    return '${elapsed.inHours}h ago';
+  }
+  if (elapsed.inMinutes > 0) {
+    return '${elapsed.inMinutes}m ago';
+  }
+  return 'just now';
 }
 
 class _SectionHeader extends StatelessWidget {

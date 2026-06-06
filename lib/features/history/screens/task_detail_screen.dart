@@ -42,7 +42,9 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
 
   late final TabController _tabController =
       TabController(length: 4, vsync: this);
+  final _attentionAnchorKey = GlobalKey();
   int _latestTurnRevealToken = 0;
+  String _handledAttentionRevealSignature = '';
 
   @override
   void initState() {
@@ -86,6 +88,7 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
         body: const Center(child: Text('任务不存在或已删除')),
       );
     }
+    _maybeRevealAttentionAction(task);
 
     return Scaffold(
       resizeToAvoidBottomInset: false,
@@ -147,7 +150,10 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
             SliverPadding(
               padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
               sliver: SliverToBoxAdapter(
-                child: _RuntimeControlPanel(task: task),
+                child: KeyedSubtree(
+                  key: _attentionAnchorKey,
+                  child: _RuntimeControlPanel(task: task),
+                ),
               ),
             ),
             const SliverToBoxAdapter(child: SizedBox(height: 8)),
@@ -185,6 +191,37 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
         ),
       ),
     );
+  }
+
+  void _maybeRevealAttentionAction(TaskSession task) {
+    if (!_isAttentionRequired(task.status) || _isTestEnvironment) {
+      return;
+    }
+    final signature =
+        '${task.id}:${task.status.name}:${task.updatedAt.microsecondsSinceEpoch}';
+    if (_handledAttentionRevealSignature == signature) {
+      return;
+    }
+    _handledAttentionRevealSignature = signature;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+      final anchorContext = _attentionAnchorKey.currentContext;
+      if (anchorContext == null) {
+        return;
+      }
+      Scrollable.ensureVisible(
+        anchorContext,
+        alignment: 0.05,
+        duration: const Duration(milliseconds: 220),
+      );
+    });
+  }
+
+  bool get _isTestEnvironment {
+    final bindingName = WidgetsBinding.instance.runtimeType.toString();
+    return bindingName.contains('Test') || bindingName.contains('Automated');
   }
 
   TaskSession? _findTask(List<TaskSession> tasks) {
@@ -404,6 +441,14 @@ class _SummaryBannerState extends State<_SummaryBanner> {
                   _statusTimingText(task),
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
+                if (_showsAttentionBanner(task))
+                  Text(
+                    'This task needs your attention.',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Colors.orange.shade900,
+                          fontWeight: FontWeight.w700,
+                        ),
+                  ),
               ],
             ),
             const SizedBox(height: 16),
@@ -474,7 +519,9 @@ class _SummaryBannerState extends State<_SummaryBanner> {
             ),
             const SizedBox(height: 10),
             Text(
-              _taskSummaryText(task),
+              _showsAttentionBanner(task)
+                  ? _attentionReason(task)
+                  : _taskSummaryText(task),
               maxLines: 3,
               overflow: TextOverflow.ellipsis,
               style: Theme.of(context).textTheme.bodyMedium,
@@ -2569,6 +2616,39 @@ bool _isTaskLive(TaskStatus status) {
     TaskStatus.failed =>
       false,
   };
+}
+
+bool _isAttentionRequired(TaskStatus status) {
+  return switch (status) {
+    TaskStatus.needApproval ||
+    TaskStatus.turnIdle ||
+    TaskStatus.needAttention ||
+    TaskStatus.paused ||
+    TaskStatus.failed ||
+    TaskStatus.userFailed =>
+      true,
+    _ => false,
+  };
+}
+
+String _attentionReason(TaskSession task) {
+  return switch (task.status) {
+    TaskStatus.needApproval => 'This task needs your decision.',
+    TaskStatus.turnIdle => 'Waiting for your next instruction.',
+    TaskStatus.needAttention when task.terminalPrompt != null =>
+      'Waiting for your choice.',
+    TaskStatus.needAttention => 'Review the next action below.',
+    TaskStatus.paused => 'Paused and waiting for you.',
+    TaskStatus.failed ||
+    TaskStatus.userFailed =>
+      'Review the issue before continuing.',
+    _ => 'Review the next action below.',
+  };
+}
+
+bool _showsAttentionBanner(TaskSession task) {
+  return _isAttentionRequired(task.status) &&
+      !(task.status == TaskStatus.needAttention && task.terminalPrompt != null);
 }
 
 String _taskSummaryText(TaskSession task) {

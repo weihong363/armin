@@ -159,6 +159,30 @@ void main() {
     expect(find.text('Allow once'), findsNothing);
   });
 
+  testWidgets('attention task highlights attention banner and next action',
+      (tester) async {
+    final task = _task().copyWith(status: TaskStatus.turnIdle);
+    final state = ArminAppState(
+      store: _TaskStore(task),
+      agentSessionService: const _NoopAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await tester.pumpWidget(
+      AppStateScope(
+        state: state,
+        child: const MaterialApp(home: TaskDetailScreen(taskId: 'task-1')),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('This task needs your attention.'), findsOneWidget);
+    expect(find.text('Waiting for your next instruction.'), findsOneWidget);
+    expect(find.text('Next Action'), findsOneWidget);
+    expect(find.text('Add context'), findsWidgets);
+  });
+
   testWidgets('terminal prompt supports manual response options',
       (tester) async {
     final task = _task().copyWith(

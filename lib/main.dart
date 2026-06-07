@@ -5,5 +5,5 @@ import 'core/services/armin_app_state.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  runApp(ArminApp(state: ArminAppState.phase2()));
+  runApp(ArminApp(state: ArminAppState.run()));
 }

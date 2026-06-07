@@ -21,9 +21,10 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Armin'), findsOneWidget);
-    expect(find.text('当前任务'), findsOneWidget);
-    expect(find.text('最近任务'), findsOneWidget);
-    expect(find.text('新任务'), findsOneWidget);
+    expect(find.text('创建任务，让它去跑'), findsOneWidget);
+    expect(find.text('还没有活跃任务'), findsOneWidget);
+    expect(find.text('创建第一个任务'), findsOneWidget);
+    expect(find.text('新建任务'), findsOneWidget);
   });
 
   testWidgets('Armin reloads state when app resumes', (tester) async {

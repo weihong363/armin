@@ -1,5 +1,6 @@
 import '../../hosts/models/host_config.dart';
 import '../../tasks/services/agent_instruction_discovery.dart';
+import '../models/agent_approval_config.dart';
 import '../parsers/approval_request.dart';
 import '../parsers/task_result.dart';
 import '../parsers/terminal_prompt.dart';
@@ -25,6 +26,7 @@ class AgentExecutionRequest {
     this.privateKeyPem,
     this.privateKeyPassphrase,
     this.attachOnly = false,
+    this.approvalConfig,
   });
 
   final String prompt;
@@ -42,6 +44,7 @@ class AgentExecutionRequest {
   final String? privateKeyPem;
   final String? privateKeyPassphrase;
   final bool attachOnly;
+  final AgentApprovalConfig? approvalConfig;
 }
 
 class AgentExecutionUpdate {

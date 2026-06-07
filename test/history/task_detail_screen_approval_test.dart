@@ -20,6 +20,32 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:armin/features/tasks/widgets/task_card.dart';
 
+Future<void> _tapDetailTab(WidgetTester tester, String label) async {
+  final mappedLabel = switch (label) {
+    '结果' => '产出',
+    '日志' || '指标' => '高级',
+    '时间线' => '动态',
+    _ => label,
+  };
+  final tab = find.text(mappedLabel);
+  for (var attempt = 0; attempt < 3 && tab.evaluate().isEmpty; attempt++) {
+    await tester.drag(find.byType(NestedScrollView), const Offset(0, -360));
+    await tester.pumpAndSettle();
+  }
+  await tester.ensureVisible(tab);
+  await tester.pumpAndSettle();
+  await tester.tap(tab);
+  await tester.pumpAndSettle();
+}
+
+Future<void> _tapAddContext(WidgetTester tester) async {
+  final button = find.widgetWithText(FilledButton, '继续');
+  await tester.ensureVisible(button.last);
+  await tester.pumpAndSettle();
+  await tester.tap(button.last);
+  await tester.pumpAndSettle();
+}
+
 void main() {
   testWidgets('resolved approval hides decision buttons', (tester) async {
     tester.view.physicalSize = const Size(430, 1600);
@@ -53,8 +79,7 @@ void main() {
       ),
     );
 
-    await tester.tap(find.text('日志'));
-    await tester.pumpAndSettle();
+    await _tapDetailTab(tester, '日志');
     await tester.pumpAndSettle();
 
     expect(find.text('已允许'), findsOneWidget);
@@ -80,8 +105,7 @@ void main() {
       ),
     );
 
-    await tester.tap(find.text('日志'));
-    await tester.pumpAndSettle();
+    await _tapDetailTab(tester, '日志');
 
     expect(find.text('重新监听'), findsOneWidget);
     expect(find.text('断开监听'), findsOneWidget);
@@ -149,6 +173,35 @@ void main() {
     expect(agent.selectedTerminalOption, '1');
     expect(state.tasks.single.status, TaskStatus.running);
     expect(find.text('Allow once'), findsNothing);
+  });
+
+  testWidgets('attention task highlights attention banner and next action',
+      (tester) async {
+    final task = _task().copyWith(status: TaskStatus.turnIdle);
+    final state = ArminAppState(
+      store: _TaskStore(task),
+      agentSessionService: const _NoopAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await tester.pumpWidget(
+      AppStateScope(
+        state: state,
+        child: const MaterialApp(home: TaskDetailScreen(taskId: 'task-1')),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('当前状况'), findsOneWidget);
+    expect(
+      find.text(
+          '此任务正在等待你的下一步指令才能继续。'),
+      findsAtLeastNWidgets(1),
+    );
+    expect(find.text('这个任务需要什么'), findsOneWidget);
+    expect(find.text('需要你的指令'), findsOneWidget);
+    expect(find.text('继续'), findsOneWidget);
   });
 
   testWidgets('terminal prompt supports manual response options',
@@ -237,6 +290,10 @@ void main() {
   testWidgets(
       'approval requests surface manual and voice actions in runtime controls',
       (tester) async {
+    tester.view.physicalSize = const Size(800, 1000);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
     final task = _task().copyWith(
       status: TaskStatus.needApproval,
       approval: const ApprovalRequest(
@@ -265,6 +322,7 @@ void main() {
     expect(find.text('拒绝'), findsOneWidget);
     expect(find.text('语音处理'), findsOneWidget);
 
+    await tester.ensureVisible(find.text('语音处理'));
     await tester.tap(find.text('语音处理'));
     await tester.pumpAndSettle();
 
@@ -305,13 +363,9 @@ void main() {
         ),
       ),
     );
-    await tester.tap(find.text('追加指令'));
-    await tester.pumpAndSettle();
+    await _tapAddContext(tester);
 
-    final button = find.text('语音追加');
-    final gesture = await tester.startGesture(tester.getCenter(button));
-    await tester.pumpAndSettle();
-    await gesture.up();
+    await tester.tap(find.text('按住说话'));
     await tester.pumpAndSettle();
 
     await tester.tap(find.text('发送'));
@@ -325,12 +379,10 @@ void main() {
       const Offset(0, -360),
     );
     await tester.pumpAndSettle();
-    expect(find.text('语音追加'), findsOneWidget);
     expect(find.text('输出 hello world'), findsWidgets);
 
-    await tester.tap(find.text('指标'));
-    await tester.pumpAndSettle();
-    expect(find.text('指标展示已暂时关闭'), findsOneWidget);
+    await _tapDetailTab(tester, '指标');
+    expect(find.text('指标渲染已暂停'), findsOneWidget);
     expect(find.text('指标时间线'), findsNothing);
   });
 
@@ -351,7 +403,9 @@ void main() {
         child: const MaterialApp(home: TaskDetailScreen(taskId: 'task-1')),
       ),
     );
-    await tester.tap(find.text('追加指令'));
+    await _tapAddContext(tester);
+
+    await tester.tap(find.text('手动输入'));
     await tester.pumpAndSettle();
 
     await tester.enterText(find.byType(TextField).last, '继续检查输出');
@@ -384,14 +438,16 @@ void main() {
         child: const MaterialApp(home: TaskDetailScreen(taskId: 'task-1')),
       ),
     );
-    await tester.tap(find.text('追加指令'));
+    await _tapAddContext(tester);
+
+    await tester.tap(find.text('手动输入'));
     await tester.pumpAndSettle();
     await tester.enterText(find.byType(TextField).last, '继续检查输出');
     await tester.tap(find.text('发送'));
     await tester.pump();
 
     expect(agent.lastFollowUp, '继续检查输出');
-    expect(find.text('发送中...'), findsOneWidget);
+    expect(find.byType(CircularProgressIndicator), findsOneWidget);
 
     agent.completeFollowUp();
     await tester.pumpAndSettle();
@@ -417,13 +473,9 @@ void main() {
         child: const MaterialApp(home: TaskDetailScreen(taskId: 'task-1')),
       ),
     );
-    await tester.tap(find.text('追加指令'));
-    await tester.pumpAndSettle();
+    await _tapAddContext(tester);
 
-    final gesture =
-        await tester.startGesture(tester.getCenter(find.text('语音追加')));
-    await tester.pumpAndSettle();
-    await gesture.up();
+    await tester.tap(find.text('按住说话'));
     await tester.pumpAndSettle();
 
     expect(find.text('已识别：停止当前任务'), findsOneWidget);
@@ -453,13 +505,9 @@ void main() {
         child: const MaterialApp(home: TaskDetailScreen(taskId: 'task-1')),
       ),
     );
-    await tester.tap(find.text('追加指令'));
-    await tester.pumpAndSettle();
+    await _tapAddContext(tester);
 
-    final gesture =
-        await tester.startGesture(tester.getCenter(find.text('语音追加')));
-    await tester.pumpAndSettle();
-    await gesture.up();
+    await tester.tap(find.text('按住说话'));
     await tester.pumpAndSettle();
     expect(find.textContaining('追加约束'), findsOneWidget);
 
@@ -487,17 +535,11 @@ void main() {
         child: const MaterialApp(home: TaskDetailScreen(taskId: 'task-1')),
       ),
     );
-    await tester.tap(find.text('追加指令'));
-    await tester.pumpAndSettle();
 
-    final gesture =
-        await tester.startGesture(tester.getCenter(find.text('语音追加')));
+    final resumeButton = find.widgetWithText(FilledButton, '恢复');
+    await tester.ensureVisible(resumeButton);
     await tester.pumpAndSettle();
-    await gesture.up();
-    await tester.pumpAndSettle();
-
-    expect(find.text('已识别：恢复当前任务'), findsOneWidget);
-    await tester.tap(find.text('发送'));
+    await tester.tap(resumeButton);
     await tester.pumpAndSettle();
 
     expect(agent.resumed, isTrue);
@@ -555,8 +597,7 @@ Summer 是一个海滩风格宠物。
         ),
       ),
     );
-    await tester.tap(find.text('结果'));
-    await tester.pumpAndSettle();
+    await _tapDetailTab(tester, '结果');
 
     final speakButton = find.byTooltip('朗读这段输出').first;
     await tester.scrollUntilVisible(
@@ -608,8 +649,7 @@ Summer 是一个海滩风格宠物。
         ),
       ),
     );
-    await tester.tap(find.text('结果'));
-    await tester.pumpAndSettle();
+    await _tapDetailTab(tester, '结果');
 
     final speakButton = find.byTooltip('朗读这段输出').first;
     await tester.scrollUntilVisible(
@@ -695,8 +735,7 @@ Summer：一位迷人的美国沙滩女孩 Codex 宠物。
         child: const MaterialApp(home: TaskDetailScreen(taskId: 'task-1')),
       ),
     );
-    await tester.tap(find.text('结果'));
-    await tester.pumpAndSettle();
+    await _tapDetailTab(tester, '结果');
 
     expect(find.textContaining('Summer：一位迷人的美国沙滩女孩'), findsOneWidget);
     expect(find.textContaining('Signed in Browser Login'), findsNothing);
@@ -769,19 +808,18 @@ Summer：海滩风格 Codex 宠物。
         child: const MaterialApp(home: TaskDetailScreen(taskId: 'task-1')),
       ),
     );
-    await tester.tap(find.text('结果'));
-    await tester.pumpAndSettle();
+    await _tapDetailTab(tester, '结果');
 
-    expect(find.text('Turn 1'), findsOneWidget);
-    expect(find.text('Turn 2'), findsOneWidget);
-    expect(find.text('Turn 3'), findsOneWidget);
+    expect(find.text('摘要 1'), findsOneWidget);
+    expect(find.text('摘要 2'), findsOneWidget);
+    expect(find.text('摘要'), findsOneWidget);
     expect(
-      tester.getTopLeft(find.text('Turn 3')).dy,
-      lessThan(tester.getTopLeft(find.text('Turn 2')).dy),
+      tester.getTopLeft(find.text('摘要')).dy,
+      lessThan(tester.getTopLeft(find.text('摘要 2')).dy),
     );
     expect(
-      tester.getTopLeft(find.text('Turn 2')).dy,
-      lessThan(tester.getTopLeft(find.text('Turn 1')).dy),
+      tester.getTopLeft(find.text('摘要 2')).dy,
+      lessThan(tester.getTopLeft(find.text('摘要 1')).dy),
     );
     expect(find.textContaining('实际宠物：momo、Summer'), findsOneWidget);
     expect(find.textContaining('Summer：海滩风格 Codex 宠物'), findsOneWidget);
@@ -840,10 +878,9 @@ Allow this command to run? Redirection detected.
         child: const MaterialApp(home: TaskDetailScreen(taskId: 'task-1')),
       ),
     );
-    await tester.tap(find.text('结果'));
-    await tester.pumpAndSettle();
+    await _tapDetailTab(tester, '结果');
 
-    expect(find.text('Turn 1'), findsNothing);
+    expect(find.text('摘要 1'), findsNothing);
     expect(find.text('暂无结果'), findsOneWidget);
   });
 
@@ -882,8 +919,7 @@ Allow this command to run? Redirection detected.
         ),
       ),
     );
-    await tester.tap(find.text('结果'));
-    await tester.pumpAndSettle();
+    await _tapDetailTab(tester, '结果');
 
     expect(find.textContaining('hello'), findsWidgets);
     expect(find.textContaining('world'), findsNothing);
@@ -983,18 +1019,16 @@ Allow this command to run? Redirection detected.
         ),
       ),
     );
-    await tester.tap(find.text('结果'));
-    await tester.pumpAndSettle();
+    await _tapDetailTab(tester, '结果');
 
     final resultList =
         find.byKey(const PageStorageKey<String>('task-detail-result-list'));
     await tester.drag(resultList, const Offset(0, -720));
     await tester.pumpAndSettle();
 
-    await tester.tap(find.text('指标'));
-    await tester.pumpAndSettle();
-    expect(find.text('Turn 4').hitTestable(), findsNothing);
-    expect(find.text('指标展示已暂时关闭'), findsOneWidget);
+    await _tapDetailTab(tester, '指标');
+    expect(find.text('摘要').hitTestable(), findsNothing);
+    expect(find.text('指标渲染已暂停'), findsOneWidget);
     expect(find.text('指标时间线'), findsNothing);
 
     tester.binding.handleAppLifecycleStateChanged(
@@ -1002,12 +1036,12 @@ Allow this command to run? Redirection detected.
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('结果'), findsOneWidget);
-    expect(find.text('Turn 4').hitTestable(), findsOneWidget);
-    expect(find.text('Turn 3').hitTestable(), findsOneWidget);
+    expect(find.text('产出'), findsOneWidget);
+    expect(find.text('摘要').hitTestable(), findsOneWidget);
+    expect(find.text('摘要 3').hitTestable(), findsOneWidget);
   });
 
-  testWidgets('result tab can scroll back to runtime controls', (tester) async {
+  testWidgets('deliverable tab stays focused on task output', (tester) async {
     tester.view.physicalSize = const Size(430, 820);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -1043,19 +1077,14 @@ Allow this command to run? Redirection detected.
         child: const MaterialApp(home: TaskDetailScreen(taskId: 'task-1')),
       ),
     );
-    await tester.tap(find.text('结果'));
-    await tester.pumpAndSettle();
+    await _tapDetailTab(tester, '结果');
 
     final resultList =
         find.byKey(const PageStorageKey<String>('task-detail-result-list'));
     await tester.drag(resultList, const Offset(0, -520));
     await tester.pumpAndSettle();
-    expect(find.text('运行控制').hitTestable(), findsNothing);
-
-    await tester.drag(resultList, const Offset(0, 520));
-    await tester.pumpAndSettle();
-
-    expect(find.text('运行控制').hitTestable(), findsOneWidget);
+    expect(find.text('这个任务需要什么').hitTestable(), findsNothing);
+    expect(find.text('结果 / 产出'), findsOneWidget);
   });
 
   testWidgets('timeline lists latest turns first and expands scoped output',
@@ -1123,20 +1152,20 @@ Summer 是一个桌面宠物。
     );
 
     await tester.scrollUntilVisible(
-      find.text('Turn 2：追加指令'),
+      find.text('上下文更新输出 2'),
       300,
       scrollable: find.byType(Scrollable).last,
     );
     await tester.pumpAndSettle();
 
     expect(
-      tester.getTopLeft(find.text('Turn 2：追加指令')).dy,
-      lessThan(tester.getTopLeft(find.text('Turn 1：初始任务')).dy),
+      tester.getTopLeft(find.text('上下文更新输出 2')).dy,
+      lessThan(tester.getTopLeft(find.text('初始任务输出')).dy),
     );
-    expect(find.text('展开完整输出'), findsNWidgets(2));
+    expect(find.text('显示原始输出'), findsNWidgets(2));
     expect(find.textContaining('Summer 是一个桌面宠物'), findsNothing);
 
-    await tester.tap(find.text('展开完整输出').first);
+    await tester.tap(find.text('显示原始输出').first);
     await tester.pumpAndSettle();
 
     expect(find.textContaining('Summer 是一个桌面宠物'), findsOneWidget);
@@ -1166,7 +1195,7 @@ Summer 是一个桌面宠物。
       ),
     );
 
-    expect(find.text('11:42 失败'), findsOneWidget);
+    expect(find.text('更新于 11:42'), findsOneWidget);
     expect(find.text('11:42 完成'), findsNothing);
   });
 
@@ -1246,7 +1275,32 @@ Summer 是一个桌面宠物。
     expect(find.text('已请求清理远端 tmux 会话。'), findsOneWidget);
   });
 
-  testWidgets('detail banner shows project cli and editable title',
+  testWidgets('connection paused task can be marked complete', (tester) async {
+    final task = _task().copyWith(status: TaskStatus.runtimeLost);
+    final state = ArminAppState(
+      store: _TaskStore(task),
+      agentSessionService: const _NoopAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await tester.pumpWidget(
+      AppStateScope(
+        state: state,
+        child: const MaterialApp(home: TaskDetailScreen(taskId: 'task-1')),
+      ),
+    );
+
+    expect(find.text('连接已暂停'), findsWidgets);
+    expect(find.text('连接已暂停'), findsWidgets);
+
+    await tester.tap(find.text('标记完成'));
+    await tester.pumpAndSettle();
+
+    expect(state.tasks.single.status, TaskStatus.userCompleted);
+  });
+
+  testWidgets('detail banner demotes project cli and keeps editable title',
       (tester) async {
     final task = _task().copyWith(
       title: '旧标题',
@@ -1284,11 +1338,9 @@ Summer 是一个桌面宠物。
     );
 
     expect(find.text('Prompt'), findsNothing);
-    expect(find.text('项目名：'), findsOneWidget);
-    expect(find.text('Armin'), findsOneWidget);
-    expect(find.text('CLI：'), findsOneWidget);
-    expect(find.text('qoder'), findsOneWidget);
-    expect(find.textContaining('初始提示词内容'), findsNothing);
+    expect(find.text('项目名：'), findsNothing);
+    expect(find.text('CLI：'), findsNothing);
+    expect(find.text('当前状况'), findsOneWidget);
     expect(find.byKey(const Key('task-title-field')), findsNothing);
 
     await tester.tap(find.byTooltip('编辑标题'));

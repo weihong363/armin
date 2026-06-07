@@ -30,7 +30,7 @@ void main() {
 
   testWidgets('press and hold voice input fills empty task description',
       (tester) async {
-    final voiceService = MockVoiceService(recognizedText: '修复登录失败');
+    final voiceService = MockVoiceService(recognizedText: '请帮忙检查登录页面的问题');
     await _pumpDraftScreen(
       tester,
       voiceService: voiceService,
@@ -38,7 +38,7 @@ void main() {
 
     await _pressAndReleaseVoiceButton(tester);
 
-    expect(_taskDescription(tester), '修复登录失败');
+    expect(_taskDescription(tester), '请帮忙检查登录页面的问题');
     expect(voiceService.stopSpeakingCount, 1);
   });
 
@@ -46,12 +46,12 @@ void main() {
       (tester) async {
     await _pumpDraftScreen(
       tester,
-      voiceService: _PartialFallbackVoiceService(partialText: '修复语音草稿写入'),
+      voiceService: _PartialFallbackVoiceService(partialText: '语音草稿写入功能存在问题'),
     );
 
     await _pressAndReleaseVoiceButton(tester);
 
-    expect(_taskDescription(tester), '修复语音草稿写入');
+    expect(_taskDescription(tester), '语音草稿写入功能存在问题');
   });
 
   testWidgets('voice partial fallback appends to existing task description',
@@ -132,8 +132,9 @@ Future<void> _pumpDraftScreen(
 Future<void> _pressAndReleaseVoiceButton(WidgetTester tester) async {
   final button = find.byKey(const ValueKey('voice-hold-button'));
   final gesture = await tester.startGesture(tester.getCenter(button));
-  await tester.pump();
+  await tester.pumpAndSettle();
   await gesture.up();
+  await tester.pump();
   await tester.pumpAndSettle();
 }
 

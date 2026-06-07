@@ -134,8 +134,8 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
         idleThreshold: _runtimePolicy.idleThreshold,
         reconnectThreshold: _runtimePolicy.reconnectThreshold,
       );
-      late final StreamSubscription<Uint8List> stdoutSub;
-      late final StreamSubscription<Uint8List> stderrSub;
+      late final StreamSubscription<String> stdoutSub;
+      late final StreamSubscription<String> stderrSub;
       late final StreamController<AgentExecutionUpdate> controller;
 
       controller = StreamController<AgentExecutionUpdate>(
@@ -146,16 +146,20 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
         },
       );
 
-      stdoutSub = session.stdout.listen((chunk) {
-        final text = utf8.decode(chunk, allowMalformed: true);
-        output.write(text);
-        controller.add(_buildStreamingUpdate(text, output, observer));
-      });
-      stderrSub = session.stderr.listen((chunk) {
-        final text = utf8.decode(chunk, allowMalformed: true);
-        output.write(text);
-        controller.add(_buildStreamingUpdate(text, output, observer));
-      });
+      stdoutSub = session.stdout
+        .cast<List<int>>()
+        .transform(utf8.decoder)
+        .listen((text) {
+      output.write(text);
+      controller.add(_buildStreamingUpdate(text, output, observer));
+    });
+    stderrSub = session.stderr
+        .cast<List<int>>()
+        .transform(utf8.decoder)
+        .listen((text) {
+      output.write(text);
+      controller.add(_buildStreamingUpdate(text, output, observer));
+    });
 
       unawaited(
         Future.wait([stdoutSub.asFuture<void>(), stderrSub.asFuture<void>()])
@@ -559,6 +563,9 @@ changed_after_start=0
 i=0
 while [ "\$i" -lt $maxPolls ]; do
   if ! kill -0 "\$pipe_cat_pid" 2>/dev/null; then
+    if ! $tmux has-session -t $session 2>/dev/null; then
+      echo "Armin could not capture tmux pane because session ${_shellQuote(request.tmuxSessionName)} is not running."
+    fi
     break
   fi
   pane_output="\$($tmux capture-pane -p -t $session -S $monitorStart 2>/dev/null || true)"
@@ -808,8 +815,11 @@ fi
 
   String _interactiveAgentLaunchCommand(AgentExecutionRequest request) {
     final profile = _agentRuntimeProfile(request.agentCommand);
-    return '${_agentLaunchCommand(request)} ${profile.workspaceFlag} '
+    final base = '${_agentLaunchCommand(request)} ${profile.workspaceFlag} '
         '${_pathToken(request.projectPath)}';
+    final flags = request.approvalConfig?.launchFlags ?? const [];
+    if (flags.isEmpty) return base;
+    return '$base ${flags.join(' ')}';
   }
 
   _AgentRuntimeProfile _agentRuntimeProfile(String agentCommand) {

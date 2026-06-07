@@ -95,6 +95,7 @@ class TaskSpeechPolicy {
     }
     final speechText = await _speechTextFor(
       current,
+      previous: previous,
       outputSummaryProvider: outputSummaryProvider,
     );
     if (speechText.isEmpty) {
@@ -121,8 +122,14 @@ class TaskSpeechPolicy {
 
   Future<String> _speechTextFor(
     TaskSession task, {
+    TaskSession? previous,
     required OutputSummaryProvider outputSummaryProvider,
   }) async {
+    if (task.status == TaskStatus.needApproval) {
+      final approvalText = _approvalSpeechSource(task);
+      return _decorate(task.status, approvalText).trim();
+    }
+
     final latestTurnText = await _latestTurnSpeechText(
       task,
       outputSummaryProvider: outputSummaryProvider,
@@ -132,6 +139,9 @@ class TaskSpeechPolicy {
     }
 
     final source = _summarySource(task);
+    if (_isStaleSummaryFallback(task, previous, source)) {
+      return _decorate(task.status, '').trim();
+    }
     final summary = await outputSummaryProvider.summarize(
       OutputSummaryRequest(
         cleanedOutput: source,
@@ -197,6 +207,43 @@ class TaskSpeechPolicy {
       return shortSummary;
     }
     return task.approval?.reason.trim() ?? '';
+  }
+
+  bool _isStaleSummaryFallback(
+    TaskSession current,
+    TaskSession? previous,
+    String source,
+  ) {
+    if (previous == null ||
+        source.trim().isEmpty ||
+        current.turns.isEmpty ||
+        previous.turns.isEmpty ||
+        _latestTurnIndex(current) <= _latestTurnIndex(previous)) {
+      return false;
+    }
+    final normalizedSource = _normalize(source);
+    if (normalizedSource == _normalize(_summarySource(previous))) {
+      return true;
+    }
+    return previous.turns.any((turn) {
+      return normalizedSource == _normalize(turn.cleanedOutput) ||
+          normalizedSource == _normalize(turn.rawOutput);
+    });
+  }
+
+  String _approvalSpeechSource(TaskSession task) {
+    final currentApproval = task.approval;
+    if (currentApproval != null && currentApproval.reason.trim().isNotEmpty) {
+      return currentApproval.reason.trim();
+    }
+    for (final approval in task.approvalRequests.reversed) {
+      final status = approval.status.trim().toLowerCase();
+      if ((status.isEmpty || status == 'pending') &&
+          approval.reason.trim().isNotEmpty) {
+        return approval.reason.trim();
+      }
+    }
+    return '';
   }
 
   String _decorate(TaskStatus status, String text) {

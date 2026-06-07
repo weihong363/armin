@@ -56,7 +56,11 @@ class TaskStatusMachine {
       TaskStatus.runtimeLost,
     },
     TaskStatus.stopped: {},
-    TaskStatus.runtimeLost: {},
+    TaskStatus.runtimeLost: {
+      TaskStatus.stopped,
+      TaskStatus.userCompleted,
+      TaskStatus.userFailed,
+    },
     TaskStatus.userCompleted: {},
     TaskStatus.userFailed: {},
     TaskStatus.completed: {},

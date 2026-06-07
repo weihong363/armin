@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_tts/flutter_tts.dart';
+import 'package:speech_to_text/speech_recognition_error.dart';
 import 'package:speech_to_text/speech_recognition_result.dart';
 import 'package:speech_to_text/speech_to_text.dart';
 
@@ -28,6 +29,12 @@ class DeviceVoiceService implements VoiceService {
   bool? _available;
   bool _isListening = false;
   String _latestWords = '';
+  String _committedWords = '';
+  String _currentSessionWords = '';
+  int _restartCount = 0;
+  static const int _maxRestarts = 5;
+  bool _autoRestartScheduled = false;
+  void Function(String partial)? _activeOnPartial;
   final Set<String> _selectedVoiceLanguages = {};
 
   @override
@@ -42,19 +49,62 @@ class DeviceVoiceService implements VoiceService {
     }
 
     _latestWords = '';
+    _committedWords = '';
+    _currentSessionWords = '';
+    _restartCount = 0;
+    _autoRestartScheduled = false;
     _isListening = true;
-    await _speechToText.listen(
+    _startListeningSession(onPartial);
+  }
+
+  /// Starts a single recognition session. When the session ends on its own
+  /// (e.g. Android silence timeout), it auto-restarts up to [_maxRestarts]
+  /// times as long as the user is still holding the button.
+  void _startListeningSession(void Function(String partial)? onPartial) {
+    _activeOnPartial = onPartial;
+    unawaited(_speechToText
+        .listen(
       localeId: _localeId,
+      pauseFor: const Duration(seconds: 5),
+      listenFor: const Duration(minutes: 5),
       listenOptions: SpeechListenOptions(
         listenMode: ListenMode.dictation,
         partialResults: true,
-        cancelOnError: true,
+        cancelOnError: false,
+        autoPunctuation: true,
       ),
       onResult: (SpeechRecognitionResult result) {
-        _latestWords = result.recognizedWords;
+        _currentSessionWords = result.recognizedWords.trim();
+        _latestWords = _joinTranscriptSegments(
+          _committedWords,
+          _currentSessionWords,
+        );
         onPartial?.call(_latestWords);
       },
-    );
+    )
+        .then((_) {
+      _commitCurrentSession();
+    }));
+  }
+
+  /// Auto-restart trigger called from [_onSpeechStatus] or [_onSpeechError]
+  /// when the platform session has truly ended.  [listen]'s .then() fires at
+  /// session *start* (not end), so it is NOT a restart trigger.
+  void _maybeAutoRestart() {
+    if (!_isListening ||
+        _restartCount >= _maxRestarts ||
+        _autoRestartScheduled) {
+      return;
+    }
+    _autoRestartScheduled = true;
+    _restartCount++;
+    unawaited(Future<void>.delayed(const Duration(milliseconds: 300))
+        .then((_) {
+      _autoRestartScheduled = false;
+      if (_isListening) {
+        _startListeningSession(_activeOnPartial);
+      }
+    }));
   }
 
   @override
@@ -63,8 +113,13 @@ class DeviceVoiceService implements VoiceService {
       return _latestWords.trim();
     }
 
-    await _speechToText.stop();
     _isListening = false;
+    try {
+      await _speechToText.stop();
+    } catch (_) {
+      // Platform may have already auto-stopped after timeout or silence.
+    }
+    _commitCurrentSession();
     return _latestWords.trim();
   }
 
@@ -205,6 +260,49 @@ class DeviceVoiceService implements VoiceService {
     String languageCode,
   ) {
     return _preferredVoice(voices, languageCode);
+  }
+
+  @visibleForTesting
+  static String joinTranscriptSegmentsForTest(String previous, String next) {
+    return _joinTranscriptSegments(previous, next);
+  }
+
+  void _commitCurrentSession() {
+    final current = _currentSessionWords.trim();
+    if (current.isEmpty) {
+      return;
+    }
+    _committedWords = _joinTranscriptSegments(_committedWords, current);
+    _latestWords = _committedWords;
+    _currentSessionWords = '';
+  }
+
+  static String _joinTranscriptSegments(String previous, String next) {
+    final left = previous.trim();
+    final right = next.trim();
+    if (left.isEmpty) {
+      return right;
+    }
+    if (right.isEmpty) {
+      return left;
+    }
+    if (_startsWithPunctuation(right) || _endsWithPunctuation(left)) {
+      return '$left$right';
+    }
+    final separator = _containsCjk(left) || _containsCjk(right) ? '。' : '. ';
+    return '$left$separator$right';
+  }
+
+  static bool _startsWithPunctuation(String text) {
+    return RegExp(r'^[。！？；：，、,.!?;:]').hasMatch(text);
+  }
+
+  static bool _endsWithPunctuation(String text) {
+    return RegExp(r'[。！？；：，、,.!?;:]$').hasMatch(text);
+  }
+
+  static bool _containsCjk(String text) {
+    return RegExp(r'[\u4e00-\u9fff]').hasMatch(text);
   }
 
   static String _cleanSpeechLine(String line) {
@@ -641,7 +739,10 @@ class DeviceVoiceService implements VoiceService {
       return;
     }
 
-    final available = await _speechToText.initialize();
+    final available = await _speechToText.initialize(
+      onStatus: _onSpeechStatus,
+      onError: _onSpeechError,
+    );
     _available = available;
     if (available) {
       return;
@@ -655,6 +756,18 @@ class DeviceVoiceService implements VoiceService {
     }
 
     throw const VoiceUnavailableException('当前设备不支持语音，请手动输入');
+  }
+
+  void _onSpeechStatus(String status) {
+    if (status != 'done' && status != 'notListening') return;
+    _commitCurrentSession();
+    _maybeAutoRestart();
+  }
+
+  void _onSpeechError(SpeechRecognitionError error) {
+    if (!error.permanent) return;
+    _commitCurrentSession();
+    _maybeAutoRestart();
   }
 
   Future<void> _speakConnectedSummary(String cleaned) async {

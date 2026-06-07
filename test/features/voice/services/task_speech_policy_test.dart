@@ -165,6 +165,86 @@ runbook-copilot 是面向工程团队的 RAG 事故排障助手，用于根据�
     expect(decision.turnIndex, 2);
   });
 
+  test('auto speech does not fallback to stale previous turn summary',
+      () async {
+    final previous = _task(status: TaskStatus.turnIdle).copyWith(
+      summary: 'Turn 1 result',
+      turns: [
+        _turnWithInput(1, '输出旧结果').copyWith(
+          cleanedOutput: 'Turn 1 result',
+          rawOutput: 'Turn 1 result',
+        ),
+      ],
+    );
+    final current = previous.copyWith(
+      status: TaskStatus.turnIdle,
+      summary: 'Turn 1 result',
+      turns: [
+        ...previous.turns,
+        _turnWithInput(2, '继续').copyWith(
+          cleanedOutput: '',
+          rawOutput: '',
+        ),
+      ],
+    );
+    final provider = _CapturingSummaryProvider(
+      const OutputSummary(
+        displaySummary: 'Turn 1 result',
+        speechSummary: 'Turn 1 result',
+      ),
+    );
+
+    final decision = await policy.decide(
+      previous: previous,
+      current: current,
+      settings: settings,
+      outputSummaryProvider: provider,
+    );
+
+    expect(decision.shouldSpeak, isTrue);
+    expect(decision.text, '本轮输出已暂停，可以继续补充指令');
+    expect(decision.text, isNot(contains('Turn 1 result')));
+    expect(provider.lastRequest, isNull);
+    expect(decision.turnIndex, 2);
+  });
+
+  test('auto speech can fallback to a new summary for the latest turn',
+      () async {
+    final previous = _task(status: TaskStatus.turnIdle).copyWith(
+      summary: '第一轮结果',
+      turns: [_turnWithInput(1, '输出旧结果')],
+    );
+    final current = previous.copyWith(
+      status: TaskStatus.turnIdle,
+      summary: '第二轮结果',
+      turns: [
+        ...previous.turns,
+        _turnWithInput(2, '继续').copyWith(
+          cleanedOutput: '',
+          rawOutput: '',
+        ),
+      ],
+    );
+    final provider = _CapturingSummaryProvider(
+      const OutputSummary(
+        displaySummary: '第二轮结果',
+        speechSummary: '第二轮结果',
+      ),
+    );
+
+    final decision = await policy.decide(
+      previous: previous,
+      current: current,
+      settings: settings,
+      outputSummaryProvider: provider,
+    );
+
+    expect(provider.lastRequest?.cleanedOutput, '第二轮结果');
+    expect(decision.text, contains('第二轮结果'));
+    expect(decision.text, isNot(contains('第一轮结果')));
+    expect(decision.turnIndex, 2);
+  });
+
   test('auto speech prefers display summary over provider speech summary',
       () async {
     final previous = _task(status: TaskStatus.running);
@@ -280,6 +360,52 @@ runbook-copilot 是面向工程团队的 RAG 事故排障助手，用于根据�
     expect(decision.turnIndex, isNull);
   });
 
+  test('need approval on a later turn does not speak previous turn result',
+      () async {
+    final previous = _task(status: TaskStatus.running);
+    final current = previous.copyWith(
+      status: TaskStatus.needApproval,
+      summary: 'Turn 1 old result should not be spoken',
+      approval: const ApprovalRequest(
+        reason: 'Turn 2 needs permission to inspect build output.',
+        command: 'cat build.log',
+        risk: 'low',
+      ),
+      turns: [
+        _turnWithInput(1, '输出旧结果').copyWith(
+          rawOutput: 'Turn 1 old result',
+          cleanedOutput: 'Turn 1 old result',
+        ),
+        _turnWithInput(2, '继续检查').copyWith(
+          rawOutput: '',
+          cleanedOutput: '',
+        ),
+      ],
+    );
+    final provider = _CapturingSummaryProvider(
+      const OutputSummary(
+        displaySummary: 'provider should not be used',
+        speechSummary: 'provider should not be used',
+      ),
+    );
+
+    final decision = await policy.decide(
+      previous: previous,
+      current: current,
+      settings: settings,
+      outputSummaryProvider: provider,
+    );
+
+    expect(decision.shouldSpeak, isTrue);
+    expect(decision.kind, TaskSpeechKind.approval);
+    expect(decision.text, contains('Turn 2 needs permission'));
+    expect(decision.text, isNot(contains('Turn 1 old result')));
+    expect(decision.text, isNot(contains('provider should not be used')));
+    expect(provider.lastRequest, isNull);
+    expect(decision.turnId, 'turn-task-1-2');
+    expect(decision.turnIndex, 2);
+  });
+
   test('need approval speech can be disabled separately', () async {
     final previous = _task(status: TaskStatus.running);
     final current = previous.copyWith(
@@ -331,7 +457,7 @@ runbook-copilot 是面向工程团队的 RAG 事故排障助手，用于根据�
     );
   });
 
-  test('same text in a new turn gets a new speech hash', () async {
+  test('stale text in a new turn is not replayed as latest speech', () async {
     final previous = _task(status: TaskStatus.turnIdle).copyWith(
       summary: 'hello',
       turns: [_turn(1)],
@@ -352,7 +478,8 @@ runbook-copilot 是面向工程团队的 RAG 事故排障助手，用于根据�
       settings: settings,
     );
 
-    expect(first.text, second.text);
+    expect(first.text, contains('hello'));
+    expect(second.text, isNot(contains('hello')));
     expect(first.hash, isNot(second.hash));
   });
 

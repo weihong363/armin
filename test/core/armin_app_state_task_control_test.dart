@@ -679,6 +679,56 @@ world
     expect(voice.spokenSummaries.single, isNot(contains('rm -rf')));
   });
 
+  test('approval speech on turn two does not replay turn one result', () async {
+    final now = DateTime(2026, 5, 18);
+    final task = _task(status: TaskStatus.running).copyWith(
+      summary: 'Turn 1 old result should not be spoken',
+      turns: [
+        NativeOutputTurn(
+          id: 'turn-task-1-1',
+          taskId: 'task-1',
+          turnIndex: 1,
+          userInput: '输出旧结果',
+          rawOutput: 'Turn 1 old result',
+          cleanedOutput: 'Turn 1 old result',
+          startedAt: now,
+          lastOutputAt: now,
+          status: NativeOutputTurnStatus.turnIdle,
+        ),
+        NativeOutputTurn(
+          id: 'turn-task-1-2',
+          taskId: 'task-1',
+          turnIndex: 2,
+          userInput: '继续检查',
+          rawOutput: '',
+          cleanedOutput: '',
+          startedAt: now.add(const Duration(seconds: 1)),
+          lastOutputAt: now.add(const Duration(seconds: 1)),
+          status: NativeOutputTurnStatus.running,
+        ),
+      ],
+    );
+    final store = _TaskStore(task);
+    final voice = _CapturingVoiceService();
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: _ApprovalAgent(),
+      voiceService: voice,
+    );
+    await state.load();
+
+    state.startTaskExecution(
+      task,
+      const AgentExecutionRequest(prompt: 'Task'),
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    expect(store.task!.status, TaskStatus.needApproval);
+    expect(store.task!.turns.last.turnIndex, 2);
+    expect(voice.spokenSummaries.single, contains('删除临时构建产物'));
+    expect(voice.spokenSummaries.single, isNot(contains('Turn 1 old result')));
+  });
+
   test('speech settings can disable attention speech', () async {
     final task = _task(status: TaskStatus.running);
     final store = _TaskStore(task);

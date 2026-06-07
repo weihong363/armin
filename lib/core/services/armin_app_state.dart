@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import '../../features/agent/services/agent_session_service.dart';
+import '../../features/agent/services/agent_runtime_config.dart';
 import '../../features/agent/parsers/task_result.dart';
 import '../../features/agent/parsers/terminal_prompt.dart';
 import '../../features/agent/services/ssh_agent_session_service.dart';
@@ -41,7 +42,7 @@ class ArminAppState extends ChangeNotifier {
     _configureOutputSummaryProvider();
   }
 
-  ArminAppState.phase2({
+  ArminAppState.run({
     TaskHistoryStore? store,
     AgentSessionService? agentSessionService,
     VoiceService? voiceService,
@@ -70,6 +71,7 @@ class ArminAppState extends ChangeNotifier {
   bool ready = false;
   final Map<String, StreamSubscription<AgentExecutionUpdate>>
       _runningExecutions = {};
+  final Map<String, Timer> _autoDetachTimers = {};
   final Map<String, String> _lastSpokenHashes = {};
 
   Future<void> load() async {
@@ -518,6 +520,7 @@ class ArminAppState extends ChangeNotifier {
           return;
         }
         _runningExecutions.remove(task.id);
+        _cancelAutoDetachTimer(task.id);
         final latest = _latestTask(task.id) ?? task;
         if (_isTerminal(latest.status)) {
           return;
@@ -538,6 +541,7 @@ class ArminAppState extends ChangeNotifier {
           return;
         }
         _runningExecutions.remove(task.id);
+        _cancelAutoDetachTimer(task.id);
         final latest = _latestTask(task.id) ?? task;
         if (_isTerminal(latest.status)) {
           final finalTask = await _captureAndSaveFinalLog(latest);
@@ -546,14 +550,43 @@ class ArminAppState extends ChangeNotifier {
       },
     );
     _runningExecutions[initialTask.id] = subscription;
+    _scheduleAutoDetach(initialTask.id);
+  }
+
+  void _scheduleAutoDetach(String taskId) {
+    _cancelAutoDetachTimer(taskId);
+    if (AgentRuntimeConfig.autoDetachDuration <= Duration.zero) {
+      return;
+    }
+    _autoDetachTimers[taskId] = Timer(
+      AgentRuntimeConfig.autoDetachDuration,
+      () {
+        final task = _latestTask(taskId);
+        if (task == null || _runningExecutions[taskId] == null) {
+          return;
+        }
+        unawaited(_autoDetachTask(task));
+      },
+    );
+  }
+
+  void _cancelAutoDetachTimer(String taskId) {
+    _autoDetachTimers.remove(taskId)?.cancel();
+  }
+
+  Future<void> _autoDetachTask(TaskSession task) async {
+    await disconnectTask(task, markFailed: false, recordDetached: true,
+        reason: 'auto_detach');
   }
 
   Future<void> disconnectTask(
     TaskSession task, {
     bool markFailed = false,
     bool recordDetached = true,
+    String reason = 'user',
   }) async {
     final subscription = _runningExecutions.remove(task.id);
+    _cancelAutoDetachTimer(task.id);
     if (subscription != null) {
       unawaited(subscription.cancel());
     }
@@ -561,13 +594,17 @@ class ArminAppState extends ChangeNotifier {
       if (!recordDetached) {
         return;
       }
+      final isAutoDetach = reason == 'auto_detach';
       await _saveControlledTask(
         task,
         status: TaskStatus.observerDetached,
-        logMessage:
-            'Observer detached by user. Remote tmux session may still be running.',
-        shortSummary: '已断开手机监听，远端 Agent 可能仍在运行',
-        eventType: 'observer_detached',
+        logMessage: isAutoDetach
+            ? 'Observer auto-detached to save phone resources. Remote tmux session continues.'
+            : 'Observer detached by user. Remote tmux session may still be running.',
+        shortSummary: isAutoDetach
+            ? '已自动断开监听以节省手机性能，远端任务仍在运行。可随时重新监听查看进度。'
+            : '已断开手机监听，远端 Agent 可能仍在运行',
+        eventType: isAutoDetach ? 'observer_auto_detached' : 'observer_detached',
       );
       return;
     }

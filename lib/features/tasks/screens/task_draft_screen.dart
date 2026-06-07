@@ -4,11 +4,12 @@ import '../../../app_state_scope.dart';
 import '../../../core/models/task_status.dart';
 import '../../../shared/theme/armin_theme.dart';
 import '../../agent/services/agent_session_service.dart';
+import '../../agent/models/agent_approval_config.dart';
 import '../../hosts/models/host_config.dart';
 import '../../history/screens/task_detail_screen.dart';
 import '../../projects/models/project_path_config.dart';
-import '../../projects/screens/project_path_list_screen.dart';
 import '../../voice/services/voice_service.dart';
+import '../../voice/models/normalization_result.dart';
 import '../models/metric_event.dart';
 import '../models/native_output_turn.dart';
 import '../models/prompt_record.dart';
@@ -18,6 +19,8 @@ import '../models/task_draft.dart';
 import '../models/task_session.dart';
 import '../models/voice_input.dart';
 import '../services/agent_instruction_discovery.dart';
+import '../../voice/services/transcript_normalizer.dart';
+import '../../voice/widgets/normalization_confirmation_sheet.dart';
 import '../services/constraint_extractor.dart';
 import '../services/prompt_template_builder.dart';
 import '../services/secret_redactor.dart';
@@ -51,6 +54,7 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
   final _secretNameController = TextEditingController();
   final _secretValueController = TextEditingController();
   final _secretUsageController = TextEditingController();
+  final _normalizer = const TranscriptNormalizer();
   final _cleaner = SpeechDraftCleaner();
   final _extractor = const ConstraintExtractor();
   final _promptBuilder = PromptTemplateBuilder();
@@ -61,6 +65,8 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
     TaskConstraint.noGitCommit,
     TaskConstraint.confirmHighRisk,
   };
+  bool _showAdvanced = false;
+  _ExecutionMode _executionMode = _ExecutionMode.balanced;
 
   String _rawStt = '';
   String _cleanedDraft = '';
@@ -106,231 +112,103 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('新建任务'),
-        actions: [
-          IconButton(
-            tooltip: 'Prompt',
-            icon: const Icon(Icons.description_outlined),
-            onPressed: () => _showPromptPreview(context),
-          ),
-        ],
       ),
       body: ListView(
         padding: const EdgeInsets.fromLTRB(20, 12, 20, 188),
         children: [
-          if (_rawStt.isNotEmpty || _partialStt.isNotEmpty) ...[
-            _SurfaceCard(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    _voiceStatus == _VoiceInteractionStatus.listening
-                        ? '实时语音转写'
-                        : '原始语音转写',
-                    style: Theme.of(context).textTheme.titleSmall,
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    _partialStt.isNotEmpty ? _partialStt : _rawStt,
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                ],
-              ),
-            ),
-          ],
-          const SizedBox(height: 16),
-          Text('任务草稿', style: Theme.of(context).textTheme.titleSmall),
-          const SizedBox(height: 8),
-          TextField(
-            controller: _taskController,
-            minLines: 6,
-            maxLines: 10,
-            decoration: const InputDecoration(
-              hintText: '描述你要交给 Agent 的任务...',
-              alignLabelWithHint: true,
-              counterText: '36/1000',
-            ),
+          _TaskComposerHero(
+            taskController: _taskController,
             onChanged: (_) => _refreshPreview(),
+            rawStt: _rawStt,
+            partialStt: _partialStt,
+            voiceStatus: _voiceStatus,
+            onStartVoice: _startListening,
+            onStopVoice: _stopListening,
           ),
-          const SizedBox(height: 12),
-          DropdownButtonFormField<String>(
+          const SizedBox(height: 20),
+          _SectionTitle(title: '运行环境'),
+          const SizedBox(height: 8),
+          _ExecutionTarget(
             key: const ValueKey('host-selector'),
-            initialValue: selectedHost?.id,
-            isExpanded: true,
-            decoration: const InputDecoration(
-              labelText: '执行主机',
-            ),
-            items: [
-              for (final host in state.hosts)
-                DropdownMenuItem(
-                  value: host.id,
-                  child: Text(
-                    '${host.name} · ${host.username}@${host.address}:${host.port}',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-            ],
-            onChanged: (value) {
+            host: selectedHost,
+            projectPath: selectedProjectPath,
+            onHostChanged: (value) {
               setState(() {
                 _selectedHostId = value;
                 _agentInstructionDetectionKey = null;
               });
             },
+            onProjectChanged: (value) {
+              setState(() {
+                _selectedProjectPathId = value;
+                _agentInstructionDetectionKey = null;
+              });
+              _refreshPreview();
+            },
+            hosts: state.hosts,
+            projectPaths: state.projectPaths,
           ),
-          if (state.hosts.isEmpty) ...[
-            const SizedBox(height: 8),
-            Text(
-              '请先添加主机连接，然后在这里选择执行主机。',
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
-          ],
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              Expanded(
-                child: DropdownButtonFormField<String>(
-                  key: const ValueKey('project-path-selector'),
-                  initialValue: selectedProjectPath?.id,
-                  isExpanded: true,
-                  decoration: const InputDecoration(
-                    labelText: '项目目录',
-                  ),
-                  items: [
-                    for (final projectPath in state.projectPaths)
-                      DropdownMenuItem(
-                        value: projectPath.id,
-                        child: Text(
-                          '${projectPath.name} · ${projectPath.path}',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                  ],
-                  onChanged: (value) {
-                    setState(() {
-                      _selectedProjectPathId = value;
-                      _agentInstructionDetectionKey = null;
-                    });
-                    _refreshPreview();
-                  },
-                ),
-              ),
-              const SizedBox(width: 8),
-              IconButton.filledTonal(
-                tooltip: '项目目录设置',
-                icon: const Icon(Icons.folder_open_outlined),
-                onPressed: () {
-                  Navigator.of(context).push(
-                    MaterialPageRoute<void>(
-                      builder: (_) => const ProjectPathListScreen(),
-                    ),
-                  );
-                },
-              ),
-            ],
-          ),
-          if (state.projectPaths.isEmpty) ...[
-            const SizedBox(height: 8),
-            Text(
-              '请先添加项目目录，然后在这里选择执行目录。',
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
-          ],
-          const SizedBox(height: 8),
           _AgentInstructionNotice(
             message: _isDiscoveringAgentInstructions
-                ? 'Checking AGENTS.md...'
+                ? '正在检测 AGENTS.md...'
                 : _agentInstructionMessage,
             warning: _agentInstructionWarning,
           ),
-          const SizedBox(height: 12),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              ActionChip(
-                avatar: const Icon(Icons.report_outlined),
-                label: const Text('添加错误日志'),
-                onPressed: () => _appendContext('错误日志：\n'),
-              ),
-              ActionChip(
-                avatar: const Icon(Icons.folder_outlined),
-                label: const Text('添加文件路径'),
-                onPressed: () => _appendContext('相关路径：'),
-              ),
-              ActionChip(
-                avatar: const Icon(Icons.terminal_outlined),
-                label: const Text('添加命令输出'),
-                onPressed: () => _appendContext('命令输出：\n'),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          TextField(
-            controller: _contextController,
-            minLines: 4,
-            maxLines: 8,
-            decoration: const InputDecoration(
-              labelText: '补充上下文',
-              alignLabelWithHint: true,
-            ),
-            onChanged: (_) => _refreshPreview(),
-          ),
-          const SizedBox(height: 16),
-          Text('执行约束', style: Theme.of(context).textTheme.titleSmall),
+          const SizedBox(height: 20),
+          _SectionTitle(title: '执行模式'),
           const SizedBox(height: 8),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              for (final constraint in TaskConstraint.values)
-                FilterChip(
-                  label: Text(constraint.label),
-                  selected: _constraints.contains(constraint),
-                  onSelected: (selected) {
-                    setState(() {
-                      if (selected) {
-                        _constraints.add(constraint);
-                      } else {
-                        _constraints.remove(constraint);
-                      }
-                      _promptPreview = _buildPrompt();
-                    });
-                  },
+          _ExecutionModeSelector(
+            mode: _executionMode,
+            onChanged: (mode) {
+              setState(() {
+                _executionMode = mode;
+                _syncConstraintsFromMode();
+                _promptPreview = _buildPrompt();
+              });
+            },
+          ),
+          const SizedBox(height: 20),
+          InkWell(
+            onTap: () => setState(() => _showAdvanced = !_showAdvanced),
+            child: Row(
+              children: [
+                Expanded(
+                  child: _SectionTitle(title: '高级选项'),
                 ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          Text('敏感信息', style: Theme.of(context).textTheme.titleSmall),
-          const SizedBox(height: 8),
-          TextField(
-            controller: _secretNameController,
-            decoration: const InputDecoration(labelText: 'Secret 名称'),
-          ),
-          const SizedBox(height: 8),
-          TextField(
-            controller: _secretValueController,
-            obscureText: true,
-            decoration: const InputDecoration(labelText: 'Secret 值'),
-          ),
-          const SizedBox(height: 8),
-          TextField(
-            controller: _secretUsageController,
-            decoration: const InputDecoration(labelText: '用途'),
-          ),
-          const SizedBox(height: 8),
-          OutlinedButton.icon(
-            icon: const Icon(Icons.add),
-            label: const Text('添加 Secret'),
-            onPressed: _addSecret,
-          ),
-          for (final secret in _secrets)
-            ListTile(
-              contentPadding: EdgeInsets.zero,
-              leading: const Icon(Icons.lock_outline),
-              title: Text(secret.placeholder),
-              subtitle: Text(secret.usage),
+                Icon(
+                  _showAdvanced ? Icons.expand_less : Icons.expand_more,
+                  color: ArminTheme.ink.withValues(alpha: 0.54),
+                ),
+              ],
             ),
+          ),
+          AnimatedCrossFade(
+            duration: const Duration(milliseconds: 180),
+            firstChild: const SizedBox.shrink(),
+            secondChild: _AdvancedOptions(
+              contextController: _contextController,
+              onContextChanged: (_) => _refreshPreview(),
+              constraints: _constraints,
+              onConstraintToggle: (constraint) {
+                setState(() {
+                  if (_constraints.contains(constraint)) {
+                    _constraints.remove(constraint);
+                  } else {
+                    _constraints.add(constraint);
+                  }
+                  _promptPreview = _buildPrompt();
+                });
+              },
+              secretNameController: _secretNameController,
+              secretValueController: _secretValueController,
+              secretUsageController: _secretUsageController,
+              secrets: _secrets,
+              onAddSecret: _addSecret,
+              onAppendContext: _appendContext,
+            ),
+            crossFadeState:
+                _showAdvanced ? CrossFadeState.showSecond : CrossFadeState.showFirst,
+          ),
         ],
       ),
       bottomNavigationBar: SafeArea(
@@ -341,32 +219,22 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
           ),
           child: Padding(
             padding: const EdgeInsets.fromLTRB(20, 10, 20, 16),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
+            child: Row(
               children: [
-                _VoiceDock(
-                  status: _voiceStatus,
-                  onStart: _startListening,
-                  onStop: _stopListening,
+                Expanded(
+                  child: TextButton.icon(
+                    icon: const Icon(Icons.description_outlined, size: 18),
+                    label: const Text('预览'),
+                    onPressed: () => _showPromptPreview(context),
+                  ),
                 ),
-                const SizedBox(height: 10),
-                Row(
-                  children: [
-                    Expanded(
-                      child: OutlinedButton(
-                        onPressed: () => _showPromptPreview(context),
-                        child: const Text('预览 Prompt'),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: FilledButton.icon(
-                        icon: const Icon(Icons.send_outlined),
-                        label: Text(_isSending ? '发送中...' : '发送给 Agent'),
-                        onPressed: _isSending ? null : _send,
-                      ),
-                    ),
-                  ],
+                const SizedBox(width: 12),
+                Expanded(
+                  child: FilledButton.icon(
+                    icon: const Icon(Icons.send_outlined),
+                    label: Text(_isSending ? '发送中...' : '发送任务'),
+                    onPressed: _isSending ? null : _send,
+                  ),
                 ),
               ],
             ),
@@ -444,7 +312,22 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
         return;
       }
 
-      _applyRecognizedSpeech(raw);
+      // ---- Voice Transcript Normalization Layer ----
+      final result = _normalizer.normalize(raw);
+
+      if (result.confidence >= NormalizationResult.highConfidence) {
+        // 高置信度：静默应用修正结果
+        _applyRecognizedSpeech(result.correctedText, raw);
+      } else {
+        // 中低置信度：展示确认界面
+        setState(() {
+          _voiceStatus = _VoiceInteractionStatus.idle;
+          _partialStt = '';
+        });
+        if (mounted) {
+          _showNormalizationConfirmation(raw, result);
+        }
+      }
     } catch (e) {
       if (!mounted) {
         return;
@@ -457,12 +340,36 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
     }
   }
 
-  void _applyRecognizedSpeech(String raw) {
-    final cleaned = _cleaner.clean(raw);
-    final extracted = _extractor.extract(raw);
+  void _showNormalizationConfirmation(
+    String rawText,
+    NormalizationResult result,
+  ) {
+    NormalizationConfirmationSheet.show(
+      context,
+      result: result,
+      onConfirm: () {
+        _applyRecognizedSpeech(result.correctedText, rawText);
+      },
+      onEdit: () {
+        // 直接将修正文本填入输入框
+        _applyRecognizedSpeech(result.correctedText, rawText);
+      },
+      onRetry: () {
+        // 重新开始录音
+        _startListening();
+      },
+      onCancel: () {
+        // 不做任何操作，保留原始状态
+      },
+    );
+  }
+
+  void _applyRecognizedSpeech(String text, [String? rawStt]) {
+    final cleaned = _cleaner.clean(text);
+    final extracted = _extractor.extract(text);
 
     setState(() {
-      _rawStt = raw;
+      _rawStt = rawStt ?? text;
       _cleanedDraft = _appendText(_taskController.text, cleaned);
       _taskController.text = _cleanedDraft;
       _taskController.selection = TextSelection.collapsed(
@@ -530,7 +437,7 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
           name: name,
           value: value,
           usage: _secretUsageController.text.trim().isEmpty
-              ? 'Only for this task'
+              ? '仅用于本次任务'
               : _secretUsageController.text.trim(),
         ),
       );
@@ -568,7 +475,7 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'Prompt Preview',
+                  '提示词预览',
                   style: Theme.of(context).textTheme.titleLarge,
                 ),
                 const SizedBox(height: 12),
@@ -594,7 +501,7 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
     final taskText = _taskController.text.trim();
     if (taskText.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Task description is required.')),
+        const SnackBar(content: Text('请输入任务描述。')),
       );
       return;
     }
@@ -730,6 +637,10 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
         pathPrepend: host.pathPrepend,
         shellWrapper: host.shellWrapper,
         password: host.password,
+        approvalConfig: AgentApprovalConfig(
+          agentType: AgentTypeDetection.detect(host.agentCommand),
+          mode: _executionMode.toApprovalMode(),
+        ),
       ),
     );
 
@@ -881,6 +792,26 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
       return trimmed;
     }
     return '${trimmed.substring(0, 32)}...';
+  }
+
+  void _syncConstraintsFromMode() {
+    _constraints.clear();
+    switch (_executionMode) {
+      case _ExecutionMode.safe:
+        _constraints.addAll({
+          TaskConstraint.analyzeOnly,
+          TaskConstraint.noGitCommit,
+          TaskConstraint.confirmHighRisk,
+        });
+      case _ExecutionMode.balanced:
+        _constraints.addAll({
+          TaskConstraint.minimalChange,
+          TaskConstraint.noGitCommit,
+          TaskConstraint.confirmHighRisk,
+        });
+      case _ExecutionMode.aggressive:
+        _constraints.add(TaskConstraint.allowChanges);
+    }
   }
 }
 
@@ -1121,6 +1052,536 @@ class _SurfaceCard extends StatelessWidget {
         padding: const EdgeInsets.all(16),
         child: child,
       ),
+    );
+  }
+}
+
+class _CompactVoiceButton extends StatelessWidget {
+  const _CompactVoiceButton({
+    super.key,
+    required this.onStart,
+    required this.onStop,
+  });
+  final VoidCallback onStart;
+  final VoidCallback onStop;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTapDown: (_) => onStart(),
+      onTapUp: (_) => onStop(),
+      onTapCancel: onStop,
+      child: Container(
+        width: 44,
+        height: 44,
+        decoration: BoxDecoration(
+          color: ArminTheme.mint,
+          shape: BoxShape.circle,
+          border: Border.all(
+            color: ArminTheme.primary.withValues(alpha: 0.28),
+          ),
+        ),
+        child: const Icon(Icons.mic_outlined, size: 22, color: ArminTheme.primary),
+      ),
+    );
+  }
+}
+
+// ──────────────────── New Task Composer Widgets ────────────────────
+
+enum _ExecutionMode {
+  safe,
+  balanced,
+  aggressive,
+}
+
+extension _ExecutionModeApproval on _ExecutionMode {
+  AgentApprovalMode toApprovalMode() {
+    return switch (this) {
+      _ExecutionMode.safe => AgentApprovalMode.safe,
+      _ExecutionMode.balanced => AgentApprovalMode.balanced,
+      _ExecutionMode.aggressive => AgentApprovalMode.aggressive,
+    };
+  }
+}
+
+extension _ExecutionModeLabel on _ExecutionMode {
+  String get label {
+    return switch (this) {
+      _ExecutionMode.safe => '安全',
+      _ExecutionMode.balanced => '平衡',
+      _ExecutionMode.aggressive => '激进',
+    };
+  }
+
+  String get description {
+    return switch (this) {
+      _ExecutionMode.safe =>
+          '只读 · 不做修改',
+      _ExecutionMode.balanced =>
+          '可修改代码 · 先请示',
+      _ExecutionMode.aggressive =>
+          '完全授权 · 不中断',
+    };
+  }
+
+  IconData get icon {
+    return switch (this) {
+      _ExecutionMode.safe => Icons.shield_outlined,
+      _ExecutionMode.balanced => Icons.tune_outlined,
+      _ExecutionMode.aggressive => Icons.flash_on_outlined,
+    };
+  }
+}
+
+class _SectionTitle extends StatelessWidget {
+  const _SectionTitle({required this.title});
+  final String title;
+
+  @override
+  Widget build(BuildContext context) {
+    return Text(title, style: Theme.of(context).textTheme.titleSmall);
+  }
+}
+
+class _TaskComposerHero extends StatelessWidget {
+  const _TaskComposerHero({
+    required this.taskController,
+    required this.onChanged,
+    required this.rawStt,
+    required this.partialStt,
+    required this.voiceStatus,
+    required this.onStartVoice,
+    required this.onStopVoice,
+  });
+
+  final TextEditingController taskController;
+  final ValueChanged<String> onChanged;
+  final String rawStt;
+  final String partialStt;
+  final _VoiceInteractionStatus voiceStatus;
+  final VoidCallback onStartVoice;
+  final VoidCallback onStopVoice;
+
+  @override
+  Widget build(BuildContext context) {
+    final voiceActive = voiceStatus == _VoiceInteractionStatus.listening;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          '任务编辑器',
+          style: Theme.of(context).textTheme.titleSmall,
+        ),
+        const SizedBox(height: 8),
+        Stack(
+          children: [
+            TextField(
+              controller: taskController,
+              minLines: 3,
+              maxLines: 8,
+              decoration: const InputDecoration(
+                hintText: '需要做什么？',
+                alignLabelWithHint: true,
+              ),
+              onChanged: onChanged,
+            ),
+            Positioned(
+              right: 6,
+              bottom: 6,
+              child: _CompactVoiceButton(
+                key: const ValueKey('voice-hold-button'),
+                onStart: onStartVoice,
+                onStop: onStopVoice,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Text(
+          '帮我看下这个项目有哪些问题 · 修一下登录界面的 bug · 生成一份项目总结',
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: ArminTheme.ink.withValues(alpha: 0.42),
+              ),
+          maxLines: voiceActive ? 1 : 2,
+        ),
+        if (rawStt.isNotEmpty || partialStt.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          _SurfaceCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  voiceStatus == _VoiceInteractionStatus.listening
+                      ? '正在听...'
+                      : '识别结果',
+                  style: Theme.of(context).textTheme.titleSmall,
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  partialStt.isNotEmpty ? partialStt : rawStt,
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ],
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+class _ExecutionTarget extends StatelessWidget {
+  const _ExecutionTarget({
+    super.key,
+    required this.host,
+    required this.projectPath,
+    required this.onHostChanged,
+    required this.onProjectChanged,
+    required this.hosts,
+    required this.projectPaths,
+  });
+
+  final HostConfig? host;
+  final ProjectPathConfig? projectPath;
+  final ValueChanged<String?> onHostChanged;
+  final ValueChanged<String?> onProjectChanged;
+  final List<HostConfig> hosts;
+  final List<ProjectPathConfig> projectPaths;
+
+  @override
+  Widget build(BuildContext context) {
+    final projectLabel =
+        projectPath != null ? projectPath!.name : '选择项目';
+    final hostSub = host != null
+        ? '${host!.name} \u00b7 ${host!.username}@${host!.host}'
+        : null;
+
+    return InkWell(
+      onTap: () => _showExecutionTargetSheet(context),
+      borderRadius: BorderRadius.circular(12),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          border: Border.all(color: ArminTheme.border),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Row(
+            children: [
+              const Icon(Icons.folder_outlined, size: 20),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      projectLabel,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.titleSmall,
+                    ),
+                    if (hostSub != null) ...[
+                      const SizedBox(height: 2),
+                      Text(
+                        hostSub,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              color: ArminTheme.ink.withValues(alpha: 0.54),
+                            ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text('点击切换',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: ArminTheme.ink.withValues(alpha: 0.48),
+                      )),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _showExecutionTargetSheet(BuildContext context) {
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('主机',
+                    style: Theme.of(sheetContext).textTheme.titleSmall),
+                const SizedBox(height: 8),
+                DropdownButtonFormField<String>(
+                  initialValue: host?.id,
+                  isExpanded: true,
+                  decoration: const InputDecoration(
+                      labelText: '执行主机'),
+                  items: [
+                    for (final h in hosts)
+                      DropdownMenuItem(
+                        value: h.id,
+                        child: Text(
+                            '${h.name} \u00b7 ${h.username}@${h.host}:${h.port}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis),
+                      ),
+                  ],
+                  onChanged: (value) {
+                    onHostChanged(value);
+                    Navigator.of(sheetContext).pop();
+                  },
+                ),
+                const SizedBox(height: 16),
+                Text('项目',
+                    style: Theme.of(sheetContext).textTheme.titleSmall),
+                const SizedBox(height: 8),
+                DropdownButtonFormField<String>(
+                  initialValue: projectPath?.id,
+                  isExpanded: true,
+                  decoration: const InputDecoration(
+                      labelText: '项目目录'),
+                  items: [
+                    for (final p in projectPaths)
+                      DropdownMenuItem(
+                        value: p.id,
+                        child: Text('${p.name} \u00b7 ${p.path}',
+                            maxLines: 1, overflow: TextOverflow.ellipsis),
+                      ),
+                  ],
+                  onChanged: (value) {
+                    onProjectChanged(value);
+                    Navigator.of(sheetContext).pop();
+                  },
+                ),
+                const SizedBox(height: 8),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _ExecutionModeSelector extends StatelessWidget {
+  const _ExecutionModeSelector({
+    required this.mode,
+    required this.onChanged,
+  });
+
+  final _ExecutionMode mode;
+  final ValueChanged<_ExecutionMode> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Row(
+          children: [
+            for (final m in _ExecutionMode.values) ...[
+              if (m != _ExecutionMode.values.first)
+                const SizedBox(width: 8),
+              Expanded(
+                child: _ModeCard(
+                  mode: m,
+                  isSelected: mode == m,
+                  onTap: () => onChanged(m),
+                ),
+              ),
+            ],
+          ],
+        ),
+        const SizedBox(height: 8),
+        Text(
+          mode.description,
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: ArminTheme.ink.withValues(alpha: 0.62),
+              ),
+        ),
+      ],
+    );
+  }
+}
+
+class _ModeCard extends StatelessWidget {
+  const _ModeCard({
+    required this.mode,
+    required this.isSelected,
+    required this.onTap,
+  });
+
+  final _ExecutionMode mode;
+  final bool isSelected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color:
+              isSelected ? ArminTheme.primary.withValues(alpha: 0.08) : null,
+          border: Border.all(
+            color: isSelected ? ArminTheme.primary : ArminTheme.border,
+          ),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+          child: Column(
+            children: [
+              Icon(mode.icon,
+                  size: 22,
+                  color: isSelected
+                      ? ArminTheme.primary
+                      : ArminTheme.ink.withValues(alpha: 0.54)),
+              const SizedBox(height: 4),
+              Text(mode.label,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color:
+                            isSelected ? ArminTheme.primary : ArminTheme.ink,
+                        fontWeight:
+                            isSelected ? FontWeight.w600 : null,
+                      )),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _AdvancedOptions extends StatelessWidget {
+  const _AdvancedOptions({
+    required this.contextController,
+    required this.onContextChanged,
+    required this.constraints,
+    required this.onConstraintToggle,
+    required this.secretNameController,
+    required this.secretValueController,
+    required this.secretUsageController,
+    required this.secrets,
+    required this.onAddSecret,
+    required this.onAppendContext,
+  });
+
+  final TextEditingController contextController;
+  final ValueChanged<String> onContextChanged;
+  final Set<TaskConstraint> constraints;
+  final ValueChanged<TaskConstraint> onConstraintToggle;
+  final TextEditingController secretNameController;
+  final TextEditingController secretValueController;
+  final TextEditingController secretUsageController;
+  final List<SecretEntry> secrets;
+  final VoidCallback onAddSecret;
+  final void Function(String value) onAppendContext;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SizedBox(height: 12),
+        _SectionTitle(title: '附加上下文'),
+        const SizedBox(height: 4),
+        Text(
+          '可选附加上下文、错误日志或文件路径',
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: ArminTheme.ink.withValues(alpha: 0.54),
+              ),
+        ),
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            ActionChip(
+              avatar: const Icon(Icons.report_outlined, size: 18),
+              label: const Text('错误日志'),
+              onPressed: () => onAppendContext('错误日志：\n'),
+            ),
+            ActionChip(
+              avatar: const Icon(Icons.folder_outlined, size: 18),
+              label: const Text('文件路径'),
+              onPressed: () => onAppendContext('文件路径：'),
+            ),
+            ActionChip(
+              avatar: const Icon(Icons.terminal_outlined, size: 18),
+              label: const Text('命令输出'),
+              onPressed: () => onAppendContext('命令输出：\n'),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        TextField(
+          controller: contextController,
+          minLines: 3,
+          maxLines: 6,
+          decoration: const InputDecoration(
+            hintText: '粘贴错误日志、文件路径或有用的上下文...',
+            alignLabelWithHint: true,
+          ),
+          onChanged: onContextChanged,
+        ),
+        const SizedBox(height: 16),
+        _SectionTitle(title: '精细约束'),
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            for (final constraint in TaskConstraint.values)
+              FilterChip(
+                label: Text(constraint.label),
+                selected: constraints.contains(constraint),
+                onSelected: (selected) => onConstraintToggle(constraint),
+              ),
+          ],
+        ),
+        const SizedBox(height: 16),
+        _SectionTitle(title: '敏感信息'),
+        const SizedBox(height: 8),
+        TextField(
+          controller: secretNameController,
+          decoration: const InputDecoration(labelText: '密钥名称'),
+        ),
+        const SizedBox(height: 8),
+        TextField(
+          controller: secretValueController,
+          obscureText: true,
+          decoration: const InputDecoration(labelText: '密钥值'),
+        ),
+        const SizedBox(height: 8),
+        TextField(
+          controller: secretUsageController,
+          decoration: const InputDecoration(labelText: '用途'),
+        ),
+        const SizedBox(height: 8),
+        OutlinedButton.icon(
+          icon: const Icon(Icons.add),
+          label: const Text('添加密钥'),
+          onPressed: onAddSecret,
+        ),
+        for (final secret in secrets)
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.lock_outline),
+            title: Text(secret.placeholder),
+            subtitle: Text(secret.usage),
+          ),
+      ],
     );
   }
 }

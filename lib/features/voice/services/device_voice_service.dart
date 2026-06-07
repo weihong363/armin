@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_tts/flutter_tts.dart';
+import 'package:speech_to_text/speech_recognition_error.dart';
 import 'package:speech_to_text/speech_recognition_result.dart';
 import 'package:speech_to_text/speech_to_text.dart';
 
@@ -32,6 +33,8 @@ class DeviceVoiceService implements VoiceService {
   String _currentSessionWords = '';
   int _restartCount = 0;
   static const int _maxRestarts = 5;
+  bool _autoRestartScheduled = false;
+  void Function(String partial)? _activeOnPartial;
   final Set<String> _selectedVoiceLanguages = {};
 
   @override
@@ -49,6 +52,7 @@ class DeviceVoiceService implements VoiceService {
     _committedWords = '';
     _currentSessionWords = '';
     _restartCount = 0;
+    _autoRestartScheduled = false;
     _isListening = true;
     _startListeningSession(onPartial);
   }
@@ -57,11 +61,10 @@ class DeviceVoiceService implements VoiceService {
   /// (e.g. Android silence timeout), it auto-restarts up to [_maxRestarts]
   /// times as long as the user is still holding the button.
   void _startListeningSession(void Function(String partial)? onPartial) {
+    _activeOnPartial = onPartial;
     unawaited(_speechToText
         .listen(
       localeId: _localeId,
-      // Direct parameters control the Dart-side timer that triggers
-      // SpeechRecognizer.stopListening() after the given durations.
       pauseFor: const Duration(seconds: 5),
       listenFor: const Duration(minutes: 5),
       listenOptions: SpeechListenOptions(
@@ -79,16 +82,27 @@ class DeviceVoiceService implements VoiceService {
         onPartial?.call(_latestWords);
       },
     )
-        .then((_) async {
-      // The listen session ended without the user releasing the button
-      // (e.g. Android silence timeout). Restart automatically.
+        .then((_) {
       _commitCurrentSession();
-      if (_isListening && _restartCount < _maxRestarts) {
-        _restartCount++;
-        await Future<void>.delayed(const Duration(milliseconds: 200));
-        if (_isListening) {
-          _startListeningSession(onPartial);
-        }
+    }));
+  }
+
+  /// Auto-restart trigger called from [_onSpeechStatus] or [_onSpeechError]
+  /// when the platform session has truly ended.  [listen]'s .then() fires at
+  /// session *start* (not end), so it is NOT a restart trigger.
+  void _maybeAutoRestart() {
+    if (!_isListening ||
+        _restartCount >= _maxRestarts ||
+        _autoRestartScheduled) {
+      return;
+    }
+    _autoRestartScheduled = true;
+    _restartCount++;
+    unawaited(Future<void>.delayed(const Duration(milliseconds: 300))
+        .then((_) {
+      _autoRestartScheduled = false;
+      if (_isListening) {
+        _startListeningSession(_activeOnPartial);
       }
     }));
   }
@@ -725,7 +739,10 @@ class DeviceVoiceService implements VoiceService {
       return;
     }
 
-    final available = await _speechToText.initialize();
+    final available = await _speechToText.initialize(
+      onStatus: _onSpeechStatus,
+      onError: _onSpeechError,
+    );
     _available = available;
     if (available) {
       return;
@@ -739,6 +756,18 @@ class DeviceVoiceService implements VoiceService {
     }
 
     throw const VoiceUnavailableException('当前设备不支持语音，请手动输入');
+  }
+
+  void _onSpeechStatus(String status) {
+    if (status != 'done' && status != 'notListening') return;
+    _commitCurrentSession();
+    _maybeAutoRestart();
+  }
+
+  void _onSpeechError(SpeechRecognitionError error) {
+    if (!error.permanent) return;
+    _commitCurrentSession();
+    _maybeAutoRestart();
   }
 
   Future<void> _speakConnectedSummary(String cleaned) async {

@@ -28,6 +28,8 @@ class DeviceVoiceService implements VoiceService {
   bool? _available;
   bool _isListening = false;
   String _latestWords = '';
+  int _restartCount = 0;
+  static const int _maxRestarts = 5;
   final Set<String> _selectedVoiceLanguages = {};
 
   @override
@@ -42,30 +44,58 @@ class DeviceVoiceService implements VoiceService {
     }
 
     _latestWords = '';
+    _restartCount = 0;
     _isListening = true;
-    await _speechToText.listen(
+    _startListeningSession(onPartial);
+  }
+
+  /// Starts a single recognition session. When the session ends on its own
+  /// (e.g. Android silence timeout), it auto-restarts up to [_maxRestarts]
+  /// times as long as the user is still holding the button.
+  void _startListeningSession(void Function(String partial)? onPartial) {
+    unawaited(_speechToText.listen(
       localeId: _localeId,
+      // Direct parameters control the Dart-side timer that triggers
+      // SpeechRecognizer.stopListening() after the given durations.
+      pauseFor: const Duration(seconds: 5),
+      listenFor: const Duration(minutes: 5),
       listenOptions: SpeechListenOptions(
         listenMode: ListenMode.dictation,
         partialResults: true,
-        cancelOnError: true,
+        cancelOnError: false,
+        autoPunctuation: true,
       ),
       onResult: (SpeechRecognitionResult result) {
         _latestWords = result.recognizedWords;
         onPartial?.call(_latestWords);
       },
-    );
+    ).then((_) async {
+      // The listen session ended without the user releasing the button
+      // (e.g. Android silence timeout). Restart automatically.
+      if (_isListening && _restartCount < _maxRestarts) {
+        _restartCount++;
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+        if (_isListening) {
+          _startListeningSession(onPartial);
+        }
+      }
+    }));
   }
 
   @override
   Future<String> stopListening() async {
+    final savedWords = _latestWords.trim();
     if (!_isListening) {
-      return _latestWords.trim();
+      return savedWords;
     }
 
-    await _speechToText.stop();
+    try {
+      await _speechToText.stop();
+    } catch (_) {
+      // Platform may have already auto-stopped after timeout or silence.
+    }
     _isListening = false;
-    return _latestWords.trim();
+    return savedWords;
   }
 
   @override

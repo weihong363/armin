@@ -97,7 +97,7 @@ class _TaskHomeScreenState extends State<TaskHomeScreen> {
                       onOpenTask: _openTask,
                       onViewAll: () => _openTaskList(
                         context,
-                        title: 'Waiting For You',
+                        title: '等待你处理',
                         tasks: attentionEvents
                             .map((event) => event.task)
                             .toList(growable: false),
@@ -175,7 +175,7 @@ class _TaskHomeScreenState extends State<TaskHomeScreen> {
     final activeTasks = _activeContextTasks(AppStateScope.read(context).tasks);
     if (activeTasks.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Create a task before adding context.')),
+        const SnackBar(content: Text('请先创建任务再添加上下文。')),
       );
       return;
     }
@@ -202,12 +202,12 @@ class _TaskHomeScreenState extends State<TaskHomeScreen> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                'Select Task',
+                '选择任务',
                 style: Theme.of(sheetContext).textTheme.titleLarge,
               ),
               const SizedBox(height: 8),
               Text(
-                'Choose where this context should be added.',
+                '选择要将上下文添加到哪个任务',
                 style: Theme.of(sheetContext).textTheme.bodyMedium,
               ),
               const SizedBox(height: 12),
@@ -238,7 +238,7 @@ class _TaskHomeScreenState extends State<TaskHomeScreen> {
         await AppStateScope.read(sheetContext).sendFollowUp(task, instruction);
         if (sheetContext.mounted) {
           ScaffoldMessenger.of(sheetContext).showSnackBar(
-            SnackBar(content: Text('Context added to ${task.displayTitle}.')),
+            SnackBar(content: Text('上下文已添加到 ${task.displayTitle}。')),
           );
         }
       },
@@ -351,16 +351,15 @@ String _homeStatusLine({
   required int activeCount,
 }) {
   if (attentionCount > 0) {
-    final noun = attentionCount == 1 ? 'task' : 'tasks';
-    return '$attentionCount $noun need you';
+    return '$attentionCount 项任务需要你';
   }
   if (workingCount > 0) {
-    return 'Everything is moving';
+    return '一切都在推进中';
   }
   if (activeCount == 0) {
-    return 'Create a task and let it run';
+    return '创建任务，让它去跑';
   }
-  return 'No work needs you right now';
+  return '当前没有需要你处理的事项';
 }
 
 class _AttentionEvent {
@@ -412,14 +411,14 @@ _AttentionEvent? _attentionEventFor(TaskSession task) {
   return switch (task.status) {
     TaskStatus.needApproval => _AttentionEvent(
         task: task,
-        reason: 'This task needs your decision.',
-        primaryAction: 'Review',
+        reason: '这个任务需要你做决定',
+        primaryAction: '查看',
         priority: 0,
       ),
     TaskStatus.turnIdle => _AttentionEvent(
         task: task,
-        reason: 'Waiting for your instruction.',
-        primaryAction: 'Continue',
+        reason: '等待你的指示',
+        primaryAction: '继续',
         priority: 2,
       ),
     TaskStatus.needAttention => _AttentionEvent(
@@ -430,14 +429,14 @@ _AttentionEvent? _attentionEventFor(TaskSession task) {
       ),
     TaskStatus.failed || TaskStatus.userFailed => _AttentionEvent(
         task: task,
-        reason: 'Review the issue before continuing.',
-        primaryAction: 'Review Issue',
+        reason: '继续之前请先检查问题',
+        primaryAction: '检查问题',
         priority: 3,
       ),
     TaskStatus.paused => _AttentionEvent(
         task: task,
-        reason: 'Paused and waiting for you.',
-        primaryAction: 'Resume',
+        reason: '已暂停，等待你处理',
+        primaryAction: '恢复',
         priority: 4,
       ),
     _ => null,
@@ -446,9 +445,9 @@ _AttentionEvent? _attentionEventFor(TaskSession task) {
 
 String _needAttentionReason(TaskSession task) {
   if (task.terminalPrompt != null) {
-    return 'Waiting for your choice.';
+    return '等待你的选择';
   }
-  return 'This task needs your attention.';
+  return '这个任务需要你关注';
 }
 
 List<_ActivityItem> _activityItemsFor(List<TaskSession> tasks) {
@@ -474,7 +473,7 @@ _ActivityItem? _activityItemFor(TaskSession task) {
   if (attention != null) {
     return _ActivityItem(
       task: task,
-      title: 'Task needs attention',
+      title: '任务需要关注',
       description: attention.reason,
       icon: Icons.priority_high_rounded,
       color: Colors.orange.shade800,
@@ -483,36 +482,36 @@ _ActivityItem? _activityItemFor(TaskSession task) {
   return switch (task.status) {
     TaskStatus.completed || TaskStatus.userCompleted => _ActivityItem(
         task: task,
-        title: 'Task completed',
-        description: 'Ready to review.',
+        title: '任务已完成',
+        description: '可以查看了',
         icon: Icons.task_alt_outlined,
         color: Colors.green.shade700,
       ),
     TaskStatus.running => _ActivityItem(
         task: task,
-        title: task.turns.length > 1 ? 'Task continued' : 'Task resumed',
-        description: 'Work is moving.',
+        title: task.turns.length > 1 ? '任务继续' : '任务已恢复',
+        description: '工作正在推进',
         icon: Icons.play_circle_outline,
         color: ArminTheme.primary,
       ),
     TaskStatus.observerDetached => _ActivityItem(
         task: task,
-        title: 'Updates paused',
-        description: 'Reconnect when you want to follow progress again.',
+        title: '更新已暂停',
+        description: '重新连接以继续追踪进度',
         icon: Icons.wifi_off_outlined,
         color: Colors.blueGrey.shade700,
       ),
     TaskStatus.runtimeLost => _ActivityItem(
         task: task,
-        title: 'Connection paused',
-        description: 'The remote session is no longer available.',
+        title: '连接已暂停',
+        description: '远端会话已不可用',
         icon: Icons.link_off_outlined,
         color: Colors.blueGrey.shade700,
       ),
     TaskStatus.stopped => _ActivityItem(
         task: task,
-        title: 'Task stopped',
-        description: 'Review details when needed.',
+        title: '任务已停止',
+        description: '需要时可查看详情',
         icon: Icons.stop_circle_outlined,
         color: Colors.grey.shade700,
       ),
@@ -536,7 +535,7 @@ class _ActivityIconButton extends StatelessWidget {
       children: [
         IconButton.filledTonal(
           key: const ValueKey('home-activity-feed-button'),
-          tooltip: 'Work Activity Feed',
+          tooltip: '工作动态',
           icon: const Icon(Icons.notifications_none_outlined),
           onPressed: onPressed,
         ),
@@ -581,7 +580,7 @@ class _WaitingForYouSection extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return _HomeSection(
-      title: 'Waiting For You',
+      title: '等待你处理',
       child: events.isEmpty
           ? const _AttentionEmptyState()
           : Column(
@@ -600,7 +599,7 @@ class _WaitingForYouSection extends StatelessWidget {
                     alignment: Alignment.centerLeft,
                     child: TextButton(
                       onPressed: onViewAll,
-                      child: Text('View all ${events.length} waiting tasks'),
+                      child: Text('查看全部 ${events.length} 项等待任务'),
                     ),
                   ),
               ],
@@ -618,17 +617,17 @@ class _AttentionEmptyState extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
-          'Everything is moving.',
+          '一切都在推进中',
           style: Theme.of(context).textTheme.titleSmall,
         ),
         const SizedBox(height: 4),
         Text(
-          'No work needs your attention right now.',
+          '当前没有需要你关注的事项',
           style: Theme.of(context).textTheme.bodySmall,
         ),
         const SizedBox(height: 4),
         Text(
-          'Work keeps moving after you leave.',
+          '工作会在你离开后继续推进',
           style: Theme.of(context).textTheme.bodySmall?.copyWith(
                 color: ArminTheme.ink.withValues(alpha: 0.62),
               ),
@@ -654,9 +653,9 @@ class _RunningSummarySection extends StatelessWidget {
     if (tasks.isEmpty) {
       return const SizedBox.shrink();
     }
-    final noun = tasks.length == 1 ? 'task is' : 'tasks are';
+    final noun = tasks.length == 1 ? '项任务正在运行' : '项任务正在运行';
     return _HomeSection(
-      title: 'Running',
+      title: '运行中',
       child: DecoratedBox(
         decoration: BoxDecoration(
           color: Colors.white,
@@ -668,7 +667,7 @@ class _RunningSummarySection extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('${tasks.length} $noun running'),
+              Text('${tasks.length} $noun'),
               const SizedBox(height: 8),
               for (final task in tasks.take(2))
                 Padding(
@@ -685,7 +684,7 @@ class _RunningSummarySection extends StatelessWidget {
                 ),
               TextButton(
                 onPressed: onViewRunning,
-                child: const Text('View running'),
+                child: const Text('查看运行中'),
               ),
             ],
           ),
@@ -706,7 +705,7 @@ class _CompletedSummaryRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final noun = count == 1 ? 'task' : 'tasks';
+    final noun = count == 1 ? '项任务' : '项任务';
     return Padding(
       padding: const EdgeInsets.only(bottom: 18),
       child: DecoratedBox(
@@ -720,13 +719,13 @@ class _CompletedSummaryRow extends StatelessWidget {
           child: Row(
             children: [
               const Expanded(
-                child: Text('Recently completed'),
+                child: Text('最近完成'),
               ),
-              Text('$count $noun ready to review'),
+              Text('$count $noun 可查看'),
               const SizedBox(width: 10),
               TextButton(
                 onPressed: onViewHistory,
-                child: const Text('History'),
+                child: const Text('历史'),
               ),
             ],
           ),
@@ -769,7 +768,7 @@ class _HomeBottomActions extends StatelessWidget {
                     onPressed: onNewTask,
                     child: const _BottomActionContent(
                       icon: Icons.add_task_outlined,
-                      label: 'New Task',
+                      label: '新建任务',
                     ),
                   ),
                 ),
@@ -780,7 +779,7 @@ class _HomeBottomActions extends StatelessWidget {
                 height: _buttonHeight,
                 child: IconButton.outlined(
                   key: const ValueKey('home-add-context-button'),
-                  tooltip: 'Add context',
+                  tooltip: '添加上下文',
                   onPressed: onAddContext,
                   icon: const Icon(Icons.add_comment_outlined),
                 ),
@@ -984,7 +983,7 @@ class _WorkActivityFeedScreen extends StatelessWidget {
         items.where((item) => _attentionEventFor(item.task) != null).length;
     return Scaffold(
       appBar: AppBar(
-        title: Text('Work Activity Feed ($attentionCount)'),
+        title: Text('工作动态 ($attentionCount)'),
       ),
       body: SafeArea(
         child: items.isEmpty
@@ -1015,7 +1014,7 @@ class _ActivityFeedEmptyState extends StatelessWidget {
       child: Padding(
         padding: EdgeInsets.all(24),
         child: Text(
-          'Everything is moving.\n\nNo work needs your attention right now.',
+              '一切都在推进中\n\n当前没有需要你关注的事项',
           textAlign: TextAlign.center,
         ),
       ),
@@ -1087,17 +1086,17 @@ class _ActivityFeedItem extends StatelessWidget {
 
 String _humanStatusLabel(TaskStatus status) {
   return switch (status) {
-    TaskStatus.needApproval => 'Needs your decision',
-    TaskStatus.needAttention => 'Needs your attention',
-    TaskStatus.turnIdle => 'Waiting for your instruction',
-    TaskStatus.paused => 'Paused',
-    TaskStatus.observerDetached => 'Updates paused',
-    TaskStatus.runtimeLost => 'Connection paused',
-    TaskStatus.running => 'Working',
-    TaskStatus.pending || TaskStatus.draft => 'Queued',
-    TaskStatus.completed || TaskStatus.userCompleted => 'Ready to review',
-    TaskStatus.failed || TaskStatus.userFailed => 'Needs review',
-    TaskStatus.stopped => 'Stopped',
+    TaskStatus.needApproval => '需要你做决定',
+    TaskStatus.needAttention => '需要你关注',
+    TaskStatus.turnIdle => '等待你的指示',
+    TaskStatus.paused => '已暂停',
+    TaskStatus.observerDetached => '更新已暂停',
+    TaskStatus.runtimeLost => '连接已暂停',
+    TaskStatus.running => '工作中',
+    TaskStatus.pending || TaskStatus.draft => '排队中',
+    TaskStatus.completed || TaskStatus.userCompleted => '可查看',
+    TaskStatus.failed || TaskStatus.userFailed => '需要查看',
+    TaskStatus.stopped => '已停止',
   };
 }
 
@@ -1108,7 +1107,7 @@ String _taskTitle(TaskSession task) {
   }
   final text = task.userText.trim();
   if (text.isEmpty) {
-    return 'Untitled task';
+    return '未命名任务';
   }
   return text.length <= 48 ? text : '${text.substring(0, 48)}...';
 }
@@ -1116,15 +1115,15 @@ String _taskTitle(TaskSession task) {
 String _relativeTimeLabel(DateTime value) {
   final elapsed = DateTime.now().difference(value);
   if (elapsed.inDays > 0) {
-    return '${elapsed.inDays}d ago';
+    return '${elapsed.inDays} 天前';
   }
   if (elapsed.inHours > 0) {
-    return '${elapsed.inHours}h ago';
+    return '${elapsed.inHours} 小时前';
   }
   if (elapsed.inMinutes > 0) {
-    return '${elapsed.inMinutes}m ago';
+    return '${elapsed.inMinutes} 分钟前';
   }
-  return 'just now';
+  return '刚刚';
 }
 
 class _SectionHeader extends StatelessWidget {
@@ -1158,16 +1157,16 @@ class _EmptyInbox extends StatelessWidget {
               const Icon(Icons.task_alt_outlined, color: ArminTheme.primary),
               const SizedBox(height: 12),
               Text(
-                'No active tasks yet.',
+                '还没有活跃任务',
                 style: Theme.of(context).textTheme.titleMedium,
               ),
               const SizedBox(height: 8),
               Text(
-                'Create a task, send it to your local or China-friendly Agent, then come back when it needs your input.',
+                '创建任务，发送到本地或可访问的 Agent，任务需要你时再回来处理',
                 style: Theme.of(context).textTheme.bodyMedium,
               ),
               const SizedBox(height: 14),
-              const Text('Create first task'),
+              const Text('创建第一个任务'),
             ],
           ),
         ),

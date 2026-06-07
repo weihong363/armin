@@ -6,6 +6,7 @@ import '../../../app_state_scope.dart';
 import '../../../core/models/task_status.dart';
 import '../../../shared/theme/armin_theme.dart';
 import '../../agent/parsers/approval_request.dart';
+import '../../agent/parsers/task_result.dart';
 import '../../agent/parsers/terminal_prompt.dart';
 import '../../agent/services/codex_output_cleaner.dart';
 import '../../voice/services/device_voice_service.dart';
@@ -159,12 +160,6 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
                 ),
               ),
             ),
-            SliverPadding(
-              padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
-              sliver: SliverToBoxAdapter(
-                child: _AddContextPanel(task: task),
-              ),
-            ),
             const SliverToBoxAdapter(child: SizedBox(height: 8)),
             SliverPersistentHeader(
               pinned: true,
@@ -175,9 +170,9 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
                   labelColor: ArminTheme.ink,
                   indicatorColor: ArminTheme.primary,
                   tabs: const [
-                    Tab(text: 'Activity'),
-                    Tab(text: 'Deliverable'),
-                    Tab(text: 'Advanced'),
+                    Tab(text: '动态'),
+                    Tab(text: '产出'),
+                    Tab(text: '高级'),
                   ],
                 ),
               ),
@@ -584,7 +579,7 @@ class _CurrentSituationCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return _InfoCard(
-      title: 'Current Situation',
+      title: '当前状况',
       child: Text(
         _currentSituationText(task),
         maxLines: 3,
@@ -612,20 +607,20 @@ class _TimelinePanel extends StatelessWidget {
       _TimelineItem(
         icon: Icons.add_task_outlined,
         time: _timeLabel(task.createdAt),
-        title: 'Task created',
+        title: '任务已创建',
         subtitle: _cleanSnippet(task.userText, maxChars: 120),
       ),
       _TimelineItem(
         icon: Icons.send_outlined,
         time: _timeLabel(task.updatedAt),
-        title: 'Task sent to execution',
-        subtitle: 'Work started from the task brief.',
+        title: '工作已开始',
+        subtitle: '从任务简述开始工作',
       ),
       for (final input in _followUpVoiceInputs(task))
         _TimelineItem(
           icon: Icons.add_comment_outlined,
           time: _timeLabel(input.createdAt),
-          title: 'Context added',
+          title: '上下文已添加',
           subtitle: _cleanSnippet(input.rawSttText, maxChars: 120),
         ),
       _TimelineItem(
@@ -650,7 +645,7 @@ class _TimelinePanel extends StatelessWidget {
           return visibleItems[index];
         }
         return _InfoCard(
-          title: 'Task output history',
+          title: '任务输出历史',
           child: _TurnSummaryList(task: task),
         );
       },
@@ -707,8 +702,8 @@ class _TurnSummaryRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final title = turn.turnIndex == 1
-        ? 'Initial task output'
-        : 'Context update output ${turn.turnIndex}';
+        ? '初始任务输出'
+        : '上下文更新输出 ${turn.turnIndex}';
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -786,7 +781,7 @@ class _LazyTurnOutputExpansionState extends State<_LazyTurnOutputExpansion> {
     return ExpansionTile(
       tilePadding: EdgeInsets.zero,
       childrenPadding: const EdgeInsets.only(top: 4),
-      title: const Text('Show raw output'),
+      title: const Text('显示原始输出'),
       onExpansionChanged: (expanded) {
         setState(() {
           _expanded = expanded;
@@ -983,7 +978,7 @@ class _ResultPanelState extends State<_ResultPanel> {
       children: [
         SizedBox(key: _topAnchorKey, height: 0),
         _InfoCard(
-          title: 'Result / Deliverable',
+          title: '结果 / 产出',
           trailing: Text(
             '点击播放/暂停 · 长按终止',
             style: Theme.of(context).textTheme.bodySmall?.copyWith(
@@ -1019,17 +1014,36 @@ class _ResultPanelState extends State<_ResultPanel> {
             },
           ),
         ),
-        _InfoCard(
-          title: 'Deliverable details',
-          child: _ResultDetailsSection(
-            changedFiles: result?.changedFiles ?? const [],
-            validation: result?.validation ?? const [],
-            risks: result?.risks ?? const [],
-            nextActions: result?.nextActions ?? const [],
+        if (_hasAnyDetails(result))
+          _InfoCard(
+            title: '产出详情',
+            child: _ResultDetailsSection(
+              changedFiles: result?.changedFiles ?? const [],
+              validation: result?.validation ?? const [],
+              risks: result?.risks ?? const [],
+              nextActions: result?.nextActions ?? const [],
+            ),
           ),
-        ),
       ],
     );
+  }
+
+  bool _hasAnyDetails(TaskResult? result) {
+    if (result == null) return false;
+    return _sectionHasContent(result.changedFiles) ||
+        _sectionHasContent(result.validation) ||
+        _sectionHasContent(result.risks) ||
+        _sectionHasContent(result.nextActions);
+  }
+
+  bool _sectionHasContent(List<String> values) {
+    return values.any((v) {
+      final trimmed = v.trim();
+      return trimmed.isNotEmpty &&
+          trimmed != '-' &&
+          trimmed != '\u65e0' &&
+          trimmed != 'None';
+    });
   }
 
   Future<List<_TurnOutputSummary>> _outputSummaries(TaskSession task) async {
@@ -1090,7 +1104,7 @@ class _ResultPanelState extends State<_ResultPanel> {
         ? const []
         : [
             _TurnOutputSummary(
-              title: 'Result',
+              title: '结果',
               text: text,
               speechText: legacy.speechSummary.trim().isNotEmpty
                   ? legacy.speechSummary.trim()
@@ -1170,9 +1184,9 @@ class _ResultPanelState extends State<_ResultPanel> {
 
 String _deliverableTitle(int turnIndex, bool isLatest) {
   if (isLatest) {
-    return 'Latest task output';
+    return '摘要';
   }
-  return 'Task output $turnIndex';
+  return '摘要 $turnIndex';
 }
 
 class _ResultDetailsSection extends StatefulWidget {
@@ -1197,6 +1211,13 @@ class _ResultDetailsSectionState extends State<_ResultDetailsSection> {
 
   @override
   Widget build(BuildContext context) {
+    final allEmpty = _sectionIsEmpty(widget.changedFiles) &&
+        _sectionIsEmpty(widget.validation) &&
+        _sectionIsEmpty(widget.risks) &&
+        _sectionIsEmpty(widget.nextActions);
+    if (allEmpty) {
+      return const SizedBox.shrink();
+    }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1233,6 +1254,14 @@ class _ResultDetailsSectionState extends State<_ResultDetailsSection> {
         ),
       ],
     );
+  }
+
+  bool _sectionIsEmpty(List<String> values) {
+    return values.isEmpty ||
+        values.every((v) {
+          final trimmed = v.trim();
+          return trimmed.isEmpty || trimmed == '-' || trimmed == '无' || trimmed == 'None';
+        });
   }
 }
 
@@ -1331,7 +1360,7 @@ class _OutputSegmentCardState extends State<_OutputSegmentCard> {
                       size: 18,
                     ),
                     label: Text(
-                      _outputExpanded ? 'Hide raw output' : 'Show raw output',
+                      _outputExpanded ? '隐藏原始输出' : '显示原始输出',
                     ),
                   ),
                 ),
@@ -1401,8 +1430,18 @@ class _DetailList extends StatelessWidget {
   final String title;
   final List<String> values;
 
+  static bool _isEmpty(String value) {
+    final trimmed = value.trim();
+    return trimmed.isEmpty || trimmed == '-' || trimmed == '无' || trimmed == 'None';
+  }
+
+  bool get _allEmpty => values.every(_isEmpty);
+
   @override
   Widget build(BuildContext context) {
+    if (_allEmpty) {
+      return const SizedBox.shrink();
+    }
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
       child: Align(
@@ -1412,7 +1451,7 @@ class _DetailList extends StatelessWidget {
           children: [
             Text(title, style: Theme.of(context).textTheme.titleSmall),
             const SizedBox(height: 6),
-            _BulletList(values: values.isEmpty ? const ['无'] : values),
+            _BulletList(values: values),
           ],
         ),
       ),
@@ -1442,7 +1481,7 @@ class _TaskNeedsPanelState extends State<_TaskNeedsPanel> {
     final task = widget.task;
     final nextAction = _nextActionForTask(task.status);
     return _InfoCard(
-      title: 'What this task needs',
+      title: '这个任务需要什么',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -1627,8 +1666,8 @@ class _TaskNeedsPanelState extends State<_TaskNeedsPanel> {
 
   void _showFollowUpSheet(
     BuildContext context, {
-    String title = 'Add context to this task',
-    String hintText = 'Add a constraint, decision, or next instruction...',
+    String title = '继续任务',
+    String hintText = '接下来需要做什么？',
     ApprovalRequest? approval,
   }) {
     AddContextSheet.show(
@@ -1776,7 +1815,7 @@ class _AddContextEntry extends StatelessWidget {
     return FilledButton.icon(
       onPressed: enabled ? onPressed : null,
       icon: const Icon(Icons.add_comment_outlined),
-      label: const Text('Add context to this task'),
+      label: const Text('向此任务添加上下文'),
       style: FilledButton.styleFrom(
         minimumSize: const Size.fromHeight(48),
         alignment: Alignment.centerLeft,
@@ -1803,12 +1842,12 @@ class _AddContextPanelState extends State<_AddContextPanel> {
             RuntimeControlState.stopped ||
         widget.task.status == TaskStatus.runtimeLost;
     return _InfoCard(
-      title: 'Add Context',
+      title: '添加上下文',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            'Add context to this task',
+            '向此任务添加上下文',
             style: Theme.of(context).textTheme.bodyMedium,
           ),
           const SizedBox(height: 12),
@@ -1825,8 +1864,8 @@ class _AddContextPanelState extends State<_AddContextPanel> {
     AddContextSheet.show(
       context,
       task: widget.task,
-      title: 'Add context to this task',
-      hintText: 'Add a constraint, decision, or next instruction...',
+      title: '向此任务添加上下文',
+      hintText: '添加约束、决定或后续指令...',
       interpretVoiceCommand: _voiceCommandProcessor.interpret,
       onSubmit: (sheetContext, instruction, command) async {
         if (command == null) {
@@ -2172,7 +2211,7 @@ class _AdvancedDebugPanelState extends State<_AdvancedDebugPanel> {
       padding: const EdgeInsets.all(20),
       children: [
         _InfoCard(
-          title: 'Advanced controls',
+          title: '高级控制',
           child: Wrap(
             spacing: 10,
             runSpacing: 10,
@@ -2259,14 +2298,14 @@ class _AdvancedDebugPanelState extends State<_AdvancedDebugPanel> {
           ),
         ),
         _InfoCard(
-          title: 'Debug commands',
+          title: '调试命令',
           child: SelectableText(
             'tmux attach -t ${task.host.tmuxSessionName}\n'
             'tmux capture-pane -p -t ${task.host.tmuxSessionName} -S -200',
           ),
         ),
         _InfoCard(
-          title: 'Approval history',
+          title: '审批历史',
           child: task.approvalRequests.isEmpty && task.approval == null
               ? const Text('无')
               : Column(
@@ -2353,17 +2392,17 @@ class _AdvancedDebugPanelState extends State<_AdvancedDebugPanel> {
                 ),
         ),
         _InfoCard(
-          title: 'Metrics',
+          title: '指标',
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                'Metrics rendering is paused',
+                '指标渲染已暂停',
                 style: Theme.of(context).textTheme.titleSmall,
               ),
               const SizedBox(height: 6),
               Text(
-                'The task still records necessary runtime metrics, but this page does not render metric nodes by default.',
+                '任务仍在记录必要的运行指标，但此页面默认不渲染指标节点。',
                 style: Theme.of(context).textTheme.bodyMedium,
               ),
             ],
@@ -2658,17 +2697,17 @@ class _NextAction {
 
 String _detailStatusLabel(TaskStatus status) {
   return switch (status) {
-    TaskStatus.draft || TaskStatus.pending => 'Waiting to start',
-    TaskStatus.running => 'In progress',
-    TaskStatus.paused => 'Paused',
-    TaskStatus.stopped => 'Stopped',
-    TaskStatus.needApproval => 'Needs your decision',
-    TaskStatus.turnIdle => 'Waiting for your next instruction',
-    TaskStatus.needAttention => 'Needs your attention',
-    TaskStatus.observerDetached => 'Updates paused',
-    TaskStatus.runtimeLost => 'Connection paused',
-    TaskStatus.userCompleted || TaskStatus.completed => 'Ready to review',
-    TaskStatus.userFailed || TaskStatus.failed => 'Needs review',
+    TaskStatus.draft || TaskStatus.pending => '等待开始',
+    TaskStatus.running => '进行中',
+    TaskStatus.paused => '已暂停',
+    TaskStatus.stopped => '已停止',
+    TaskStatus.needApproval => '需要你决定',
+    TaskStatus.turnIdle => '等待你的下一步指令',
+    TaskStatus.needAttention => '需要你关注',
+    TaskStatus.observerDetached => '更新已暂停',
+    TaskStatus.runtimeLost => '连接已暂停',
+    TaskStatus.userCompleted || TaskStatus.completed => '可查看',
+    TaskStatus.userFailed || TaskStatus.failed => '需要查看',
   };
 }
 
@@ -2691,13 +2730,13 @@ Color _detailStatusColor(TaskStatus status) {
 
 String _statusTimingText(TaskSession task) {
   if (task.completedAt != null) {
-    return 'Updated ${_timeLabel(task.completedAt!)}';
+    return '更新于 ${_timeLabel(task.completedAt!)}';
   }
   if (_isTaskLive(task.status)) {
     final startedAt = task.startedAt ?? task.createdAt;
-    return '${_elapsedLabel(DateTime.now().difference(startedAt))} active';
+    return '${_elapsedLabel(DateTime.now().difference(startedAt))} 持续中';
   }
-  return 'Updated ${_timeLabel(task.updatedAt)}';
+  return '更新于 ${_timeLabel(task.updatedAt)}';
 }
 
 String _elapsedLabel(Duration duration) {
@@ -2707,7 +2746,7 @@ String _elapsedLabel(Duration duration) {
   if (duration.inMinutes > 0) {
     return '${duration.inMinutes}m';
   }
-  return 'just now';
+  return '刚刚';
 }
 
 bool _isTaskLive(TaskStatus status) {
@@ -2757,101 +2796,126 @@ String _cleanSnippet(String value, {int maxChars = 160}) {
 }
 
 String _currentSituationText(TaskSession task) {
+  final hasOutput = _hasMeaningfulOutput(task);
   return switch (task.status) {
-    TaskStatus.needApproval =>
-      'This task is waiting for your decision before it can continue.',
-    TaskStatus.turnIdle =>
-      'This task is waiting for your next instruction before it can continue.',
-    TaskStatus.needAttention when task.terminalPrompt != null =>
-      'This task is waiting for your choice before it can continue.',
-    TaskStatus.needAttention =>
-      'This task needs your attention before work can move forward.',
+    TaskStatus.turnIdle => hasOutput
+        ? '最新结果已就绪。\n'
+            '等待你的下一步指令。'
+        : '此任务正在等待你的下一步指令才能继续。',
+    TaskStatus.needAttention when task.terminalPrompt != null => hasOutput
+        ? '最新结果已就绪。\n'
+            '从下方选项中选择如何继续。'
+        : '此任务正在等待你的选择才能继续。',
+    TaskStatus.needAttention => hasOutput
+        ? '最新结果已就绪。\n'
+            '给出你的下一步指令、约束或决定。'
+        : '此任务需要你的关注才能继续推进。',
+    TaskStatus.needApproval => hasOutput
+        ? '任务发现了需要你决定的事项。\n'
+            '批准或拒绝以继续。'
+        : '此任务正在等待你的决定才能继续。',
     TaskStatus.failed ||
     TaskStatus.userFailed =>
-      'The task hit an issue and needs review before continuing.',
-    TaskStatus.paused => 'This task is paused until you resume it.',
+      '此任务遇到了问题，需要查看后才能继续。',
+    TaskStatus.paused =>
+      '此任务已暂停。\n准备好后恢复它。',
     TaskStatus.running ||
     TaskStatus.pending =>
-      'This task is moving. No action is needed right now.',
+      '此任务仍在工作中。\n当前不需要任何操作。',
     TaskStatus.completed ||
     TaskStatus.userCompleted =>
-      'The task has completed and is ready for review.',
+      '最新结果已就绪，可供查看。',
     TaskStatus.runtimeLost =>
-      'The remote session is no longer available. You can resolve the task status.',
+      '更新已暂停。\n如需继续观察此任务，请重新连接。',
     TaskStatus.observerDetached =>
-      'Updates are paused. The task may still be moving remotely.',
+      '更新已暂停。\n任务可能仍在远端运行。',
     TaskStatus.stopped =>
-      'This task has stopped. Review the output or start a new run if needed.',
-    TaskStatus.draft => 'This task has not started yet.',
+      '此任务已停止。\n查看输出，或根据需要启动新运行。',
+    TaskStatus.draft => '此任务尚未启动。',
   };
+}
+
+bool _hasMeaningfulOutput(TaskSession task) {
+  if (task.shortSummary != null &&
+      const CodexOutputCleaner().clean(task.shortSummary).trim().isNotEmpty) {
+    return true;
+  }
+  if (task.result?.summary != null &&
+      const CodexOutputCleaner().clean(task.result!.summary!).trim().isNotEmpty) {
+    return true;
+  }
+  if (task.turns.isNotEmpty) {
+    return true;
+  }
+  return false;
 }
 
 _NextAction _nextActionForTask(TaskStatus status) {
   return switch (status) {
     TaskStatus.needApproval => _NextAction(
-        title: 'Needs your decision',
+        title: '需要你决定',
         description:
-            'Choose whether this task can continue with the proposed action.',
+            '选择此任务是否可以继续执行提议的操作。',
         icon: Icons.rule_outlined,
         color: Colors.orange.shade700,
       ),
     TaskStatus.turnIdle || TaskStatus.needAttention => _NextAction(
-        title: 'Needs your instruction',
-        description: 'Send the next instruction, constraint, or decision.',
+        title: '需要你的指令',
+        description: '发送下一步指令、约束或决定。',
         icon: Icons.add_comment_outlined,
         color: Colors.orange.shade700,
       ),
     TaskStatus.running || TaskStatus.pending => const _NextAction(
-        title: 'No action needed now',
+        title: '当前无需操作',
         description:
-            'The task is still moving. You can leave it running or pause it.',
+            '任务仍在推进。你可以让它继续运行或暂停它。',
         icon: Icons.play_circle_outline,
         color: ArminTheme.primary,
       ),
     TaskStatus.completed || TaskStatus.userCompleted => _NextAction(
-        title: 'Ready to review',
+        title: '可查看',
         description:
-            'Check the deliverable, then accept it or continue with more context.',
+            '检查交付成果，然后接受或继续添加上下文。',
         icon: Icons.fact_check_outlined,
         color: Colors.green.shade700,
       ),
     TaskStatus.failed || TaskStatus.userFailed => _NextAction(
-        title: 'Needs review',
+        title: '需要查看',
         description:
-            'Inspect what happened and decide whether to continue from here.',
+            '检查发生的情况，并决定是否从此处继续。',
         icon: Icons.error_outline,
         color: Colors.red.shade700,
       ),
     TaskStatus.paused => _NextAction(
-        title: 'Paused',
-        description: 'Resume the task when you are ready.',
+        title: '已暂停',
+        description: '准备好后恢复此任务。',
         icon: Icons.pause_circle_outline,
         color: Colors.blueGrey.shade700,
       ),
     TaskStatus.observerDetached => _NextAction(
-        title: 'Reconnect if needed',
+        title: '需要时重新连接',
         description:
-            'Updates are paused. Reconnect or open details before continuing.',
+            '更新已暂停。继续前请重新连接或查看详情。',
         icon: Icons.wifi_off_outlined,
         color: Colors.blueGrey.shade700,
       ),
     TaskStatus.runtimeLost => _NextAction(
-        title: 'Connection paused',
+        title: '连接已暂停',
         description:
-            'The remote session is no longer available. Resolve the task status when ready.',
+            '远端会话不再可用。准备好后处理任务状态。',
         icon: Icons.task_alt_outlined,
         color: Colors.blueGrey.shade700,
       ),
     TaskStatus.draft => _NextAction(
-        title: 'Prepare task',
-        description: 'This task has not started yet.',
+        title: '准备任务',
+        description: '此任务尚未启动。',
         icon: Icons.edit_note_outlined,
         color: Colors.grey.shade700,
       ),
     TaskStatus.stopped => _NextAction(
-        title: 'View details',
+        title: '查看详情',
         description:
-            'This task is stopped. Review the history or start a new run.',
+            '此任务已停止。查看历史记录或启动新运行。',
         icon: Icons.stop_circle_outlined,
         color: Colors.grey.shade700,
       ),
@@ -2861,34 +2925,34 @@ _NextAction _nextActionForTask(TaskStatus status) {
 _PrimaryTaskAction? _primaryTaskActionFor(TaskStatus status) {
   return switch (status) {
     TaskStatus.needApproval => const _PrimaryTaskAction(
-        label: 'Review',
+        label: '查看',
         icon: Icons.rule_outlined,
         kind: _PrimaryTaskActionKind.addContext,
       ),
     TaskStatus.turnIdle || TaskStatus.needAttention => const _PrimaryTaskAction(
-        label: 'Continue',
+        label: '继续',
         icon: Icons.add_comment_outlined,
         kind: _PrimaryTaskActionKind.addContext,
       ),
     TaskStatus.failed || TaskStatus.userFailed => const _PrimaryTaskAction(
-        label: 'Review issue',
+        label: '查看问题',
         icon: Icons.error_outline,
         kind: _PrimaryTaskActionKind.viewResult,
       ),
     TaskStatus.completed ||
     TaskStatus.userCompleted =>
       const _PrimaryTaskAction(
-        label: 'View result',
+        label: '查看结果',
         icon: Icons.fact_check_outlined,
         kind: _PrimaryTaskActionKind.viewResult,
       ),
     TaskStatus.paused => const _PrimaryTaskAction(
-        label: 'Resume',
+        label: '恢复',
         icon: Icons.play_arrow_outlined,
         kind: _PrimaryTaskActionKind.resume,
       ),
     TaskStatus.runtimeLost => const _PrimaryTaskAction(
-        label: 'Mark completed',
+        label: '标记完成',
         icon: Icons.check_circle_outline,
         kind: _PrimaryTaskActionKind.markCompleted,
       ),
@@ -2987,17 +3051,17 @@ String _timeLabel(DateTime value) {
 
 String _timelineResultTitle(TaskStatus status) {
   return switch (status) {
-    TaskStatus.needApproval => 'Waiting for your decision',
-    TaskStatus.turnIdle => 'Waiting for next instruction',
-    TaskStatus.needAttention => 'Waiting for your input',
-    TaskStatus.observerDetached => 'Updates paused',
-    TaskStatus.runtimeLost => 'Connection paused',
-    TaskStatus.failed || TaskStatus.userFailed => 'Needs review',
-    TaskStatus.completed || TaskStatus.userCompleted => 'Result updated',
-    TaskStatus.running || TaskStatus.pending => 'Work in progress',
-    TaskStatus.paused => 'Paused',
-    TaskStatus.stopped => 'Stopped',
-    TaskStatus.draft => 'Draft created',
+    TaskStatus.needApproval => '需要你决定',
+    TaskStatus.turnIdle => '等待你的下一步',
+    TaskStatus.needAttention => '等待你的输入',
+    TaskStatus.observerDetached => '更新已暂停',
+    TaskStatus.runtimeLost => '连接已暂停',
+    TaskStatus.failed || TaskStatus.userFailed => '发现问题',
+    TaskStatus.completed || TaskStatus.userCompleted => '工作已完成',
+    TaskStatus.running || TaskStatus.pending => '工作进行中',
+    TaskStatus.paused => '任务已暂停',
+    TaskStatus.stopped => '已停止',
+    TaskStatus.draft => '草稿已创建',
   };
 }
 

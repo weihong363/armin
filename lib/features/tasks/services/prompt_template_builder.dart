@@ -36,6 +36,6 @@ class PromptTemplateBuilder {
       secretsText: secretsText,
     );
 
-    return _governor.apply(chunkedPrompt);
+    return _governor.apply(chunkedPrompt, constraints: constraints);
   }
 }

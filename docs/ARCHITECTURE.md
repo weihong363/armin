@@ -14,7 +14,7 @@ Armin 是一个 Flutter 应用，采用本地优先的状态管理，并围绕�
 
 ## 本地存储
 
-测试可注入 `InMemoryTaskHistoryStore` 和 mock 服务。应用运行时通过 `ArminAppState.phase2()` 使用 `JsonTaskHistoryStore`、`DeviceVoiceService` 与 `SSHAgentSessionService`，并通过 `path_provider` 将 host、project path 和 task history 写入应用文档目录下的 `armin_history.json`。
+测试可注入 `InMemoryTaskHistoryStore` 和 mock 服务。应用运行时通过 `ArminAppState.run()` 使用 `JsonTaskHistoryStore`、`DeviceVoiceService` 与 `SSHAgentSessionService`，并通过 `path_provider` 将 host、project path 和 task history 写入应用文档目录下的 `armin_history.json`。
 
 正常任务历史绝不能存储明文敏感值。Phase 2 只支持 SSH password 认证；`HostConfig.toJson()` 排除 password，`SecurePasswordStore` 通过 `flutter_secure_storage` 将密码存入平台安全存储，加载后仅在运行内存中传递给 SSH 请求。`privateKeyPath` 是兼容字段，不是默认执行路径。
 

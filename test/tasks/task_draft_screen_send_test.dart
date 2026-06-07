@@ -32,7 +32,7 @@ void main() {
     await _pumpScreen(tester, store: store, agent: agent);
 
     await tester.enterText(find.byType(TextField).first, '执行真实任务');
-    await tester.tap(find.text('发送给 Agent'));
+    await tester.tap(find.text('发送任务'));
     await tester.pumpAndSettle();
 
     expect(agent.lastRequest, isNull);
@@ -50,7 +50,7 @@ void main() {
     await _pumpScreen(tester, store: store, agent: agent);
 
     await tester.enterText(find.byType(TextField).first, '执行真实任务');
-    await tester.tap(find.text('发送给 Agent'));
+    await tester.tap(find.text('发送任务'));
     await tester.pumpAndSettle();
 
     expect(agent.lastRequest, isNull);
@@ -64,7 +64,7 @@ void main() {
     await _pumpScreen(tester, store: store, agent: agent);
 
     await tester.enterText(find.byType(TextField).first, '执行真实任务');
-    await tester.tap(find.text('发送给 Agent'));
+    await tester.tap(find.text('发送任务'));
     await tester.pumpAndSettle();
 
     expect(agent.lastRequest?.password, 'secret-password');
@@ -96,7 +96,7 @@ void main() {
     await tester.pumpAndSettle();
 
     await tester.enterText(find.byType(TextField).first, '执行真实任务');
-    await tester.tap(find.text('发送给 Agent'));
+    await tester.tap(find.text('发送任务'));
     await tester.pumpAndSettle();
 
     expect(agent.lastRequest?.hostId, 'host-2');
@@ -136,7 +136,7 @@ void main() {
       ),
     );
 
-    await tester.tap(find.text('发送给 Agent'));
+    await tester.tap(find.text('发送任务'));
     await tester.pumpAndSettle();
 
     expect(agent.lastRequest?.hostId, 'host-2');
@@ -150,7 +150,7 @@ void main() {
     await _pumpScreen(tester, store: store, agent: agent);
 
     await tester.enterText(find.byType(TextField).first, '输出 hello');
-    await tester.tap(find.text('发送给 Agent'));
+    await tester.tap(find.text('发送任务'));
     await tester.pumpAndSettle();
 
     expect(store.savedTasks.first.turns, hasLength(1));
@@ -173,7 +173,7 @@ void main() {
     );
 
     await tester.enterText(find.byType(TextField).first, '执行真实任务');
-    await tester.tap(find.text('发送给 Agent'));
+    await tester.tap(find.text('发送任务'));
     await tester.pumpAndSettle();
 
     expect(agent.lastDiscoveryRequest?.projectPath, '/tmp/armin-task');
@@ -205,7 +205,7 @@ void main() {
     await _pumpScreen(tester, store: store, agent: agent);
 
     await tester.enterText(find.byType(TextField).first, '执行真实任务');
-    await tester.tap(find.text('发送给 Agent'));
+    await tester.tap(find.text('发送任务'));
     await tester.pumpAndSettle();
 
     expect(agent.lastRequest?.projectPath, '~/workspace/momo');
@@ -242,7 +242,7 @@ void main() {
     await _pumpScreen(tester, store: store, agent: agent);
 
     await tester.enterText(find.byType(TextField).first, '执行真实任务');
-    await tester.tap(find.text('发送给 Agent'));
+    await tester.tap(find.text('发送任务'));
     await tester.pumpAndSettle();
 
     expect(find.text('任务详情'), findsOneWidget);
@@ -264,7 +264,7 @@ void main() {
     await _pumpScreen(tester, store: store, agent: agent);
 
     await tester.enterText(find.byType(TextField).first, '执行真实任务');
-    await tester.tap(find.text('发送给 Agent'));
+    await tester.tap(find.text('发送任务'));
     await tester.pumpAndSettle();
 
     expect(store.savedTasks, isNotEmpty);
@@ -280,7 +280,7 @@ void main() {
     await _pumpScreen(tester, store: store, agent: agent);
 
     await tester.enterText(find.byType(TextField).first, '执行真实任务');
-    await tester.tap(find.text('发送给 Agent'));
+    await tester.tap(find.text('发送任务'));
     await tester.pumpAndSettle();
 
     expect(store.savedTasks, isNotEmpty);

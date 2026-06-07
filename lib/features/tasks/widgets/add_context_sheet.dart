@@ -32,8 +32,8 @@ class AddContextSheet extends StatelessWidget {
   static Future<void> show(
     BuildContext context, {
     required TaskSession task,
-    String title = 'Add context to this task',
-    String hintText = 'Add a constraint, decision, or next instruction...',
+    String title = '继续任务',
+    String hintText = '接下来需要做什么？',
     ApprovalRequest? approval,
     VoiceTaskCommandResult? Function(String text, TaskStatus status)?
         interpretVoiceCommand,
@@ -108,6 +108,10 @@ class _AddContextSheetBodyState extends State<_AddContextSheetBody> {
   bool _submitting = false;
   String _partial = '';
   VoiceTaskCommandResult? _voiceCommand;
+  String _recognizedText = '';
+  bool _showTextInput = false;
+
+  bool get _hasRecognizedText => _recognizedText.trim().isNotEmpty;
 
   @override
   Widget build(BuildContext context) {
@@ -138,58 +142,262 @@ class _AddContextSheetBodyState extends State<_AddContextSheetBody> {
                   const SizedBox(height: 8),
                   _ApprovalSheetDetails(approval: widget.approval!),
                 ],
-                const SizedBox(height: 12),
-                TextField(
-                  controller: widget.controller,
-                  keyboardType: TextInputType.multiline,
-                  minLines: 3,
-                  maxLines: 5,
-                  decoration: InputDecoration(hintText: widget.hintText),
-                  onChanged: (_) {
-                    if (_voiceCommand != null) {
-                      setState(() => _voiceCommand = null);
-                    }
-                  },
-                ),
-                if (_partial.trim().isNotEmpty) ...[
-                  const SizedBox(height: 8),
-                  Text(_partial, style: Theme.of(context).textTheme.bodySmall),
-                ],
-                if (_voiceCommand?.isSemanticMatch ?? false) ...[
-                  const SizedBox(height: 8),
+                const SizedBox(height: 16),
+                if (!_showTextInput) ...[
                   Text(
-                    '已识别：${_voiceCommand!.label}',
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: Theme.of(context).colorScheme.primary,
-                        ),
+                    widget.hintText,
+                    style: Theme.of(context).textTheme.bodyLarge,
                   ),
+                  const SizedBox(height: 12),
                 ],
-                const SizedBox(height: 12),
-                Row(
-                  children: [
-                    _VoiceContextButton(
-                      disabled: _busy || _submitting,
-                      listening: _listening,
-                      busy: _busy,
-                      onStart: _startVoice,
-                      onStop: _stopVoice,
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: FilledButton.icon(
-                        onPressed: _busy || _submitting ? null : _submitContext,
-                        icon: const Icon(Icons.send_outlined),
-                        label: Text(_submitting ? '发送中...' : '发送'),
-                      ),
-                    ),
-                  ],
-                ),
+                _buildInputArea(context),
               ],
             ),
           ),
         ),
       ),
     );
+  }
+
+  Widget _buildInputArea(BuildContext context) {
+    if (_submitting) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.symmetric(vertical: 32),
+          child: CircularProgressIndicator(),
+        ),
+      );
+    }
+
+    if (_showTextInput) {
+      return _buildTextInput(context);
+    }
+
+    if (_listening || _busy) {
+      return _buildListeningState(context);
+    }
+
+    if (_hasRecognizedText) {
+      return _buildRecognizedState(context);
+    }
+
+    return _buildInitialState(context);
+  }
+
+  Widget _buildInitialState(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        _VoiceContextButton(
+          disabled: _busy || _submitting,
+          listening: _listening,
+          busy: _busy,
+          onStart: _startVoice,
+          onStop: _stopVoice,
+        ),
+        const SizedBox(height: 16),
+        Center(
+          child: TextButton(
+            onPressed: () => setState(() => _showTextInput = true),
+            child: const Text('手动输入'),
+          ),
+        ),
+        Center(
+          child: TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('取消'),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildListeningState(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (_partial.trim().isNotEmpty) ...[
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.surfaceContainerHighest,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Text(
+              _partial,
+              style: Theme.of(context).textTheme.bodyLarge,
+            ),
+          ),
+          const SizedBox(height: 16),
+        ],
+        _VoiceContextButton(
+          disabled: false,
+          listening: _listening,
+          busy: _busy,
+          onStart: () {},
+          onStop: _busy ? () {} : _stopVoice,
+        ),
+        const SizedBox(height: 16),
+        Center(
+          child: TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('取消'),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildRecognizedState(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: Theme.of(context).colorScheme.surfaceContainerHighest,
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Text(
+            _recognizedText,
+            style: Theme.of(context).textTheme.bodyLarge,
+          ),
+        ),
+        if (_voiceCommand?.isSemanticMatch ?? false) ...[
+          const SizedBox(height: 8),
+          Text(
+            '已识别：${_voiceCommand!.label}',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: Theme.of(context).colorScheme.primary,
+                ),
+          ),
+        ],
+        const SizedBox(height: 16),
+        Row(
+          children: [
+            Expanded(
+              child: OutlinedButton(
+                onPressed: () {
+                  setState(() {
+                    _recognizedText = '';
+                    _voiceCommand = null;
+                  });
+                },
+                child: const Text('重试'),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: FilledButton.icon(
+                onPressed: _submitVoiceResult,
+                icon: const Icon(Icons.send_outlined),
+                label: const Text('发送'),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        Center(
+          child: TextButton(
+            onPressed: () => setState(() => _showTextInput = true),
+            child: const Text('手动输入'),
+          ),
+        ),
+        Center(
+          child: TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('取消'),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildTextInput(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        TextField(
+          controller: widget.controller,
+          autofocus: true,
+          keyboardType: TextInputType.multiline,
+          minLines: 3,
+          maxLines: 5,
+          decoration: InputDecoration(hintText: '输入指令...'),
+        ),
+        if (_partial.trim().isNotEmpty) ...[
+          const SizedBox(height: 8),
+          Text(_partial, style: Theme.of(context).textTheme.bodySmall),
+        ],
+        if (_voiceCommand?.isSemanticMatch ?? false) ...[
+          const SizedBox(height: 8),
+          Text(
+            '已识别：${_voiceCommand!.label}',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: Theme.of(context).colorScheme.primary,
+                ),
+          ),
+        ],
+        const SizedBox(height: 16),
+        Row(
+          children: [
+            Expanded(
+              child: OutlinedButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: const Text('取消'),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: FilledButton.icon(
+                onPressed: _submitting ? null : _submitTextContext,
+                icon: const Icon(Icons.send_outlined),
+                label: Text(_submitting ? '发送中...' : '发送'),
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Future<void> _submitVoiceResult() async {
+    if (_recognizedText.trim().isEmpty) {
+      return;
+    }
+    widget.controller.text = _recognizedText;
+    await _doSubmit(_recognizedText);
+  }
+
+  Future<void> _submitTextContext() async {
+    final instruction = widget.controller.text.trim();
+    if (instruction.isEmpty) {
+      return;
+    }
+    await _doSubmit(instruction);
+  }
+
+  Future<void> _doSubmit(String instruction) async {
+    setState(() => _submitting = true);
+    try {
+      final command =
+          _voiceCommand?.sourceText == instruction ? _voiceCommand : null;
+      await widget.onSubmit(context, instruction, command);
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() => _submitting = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('发送失败：$error')),
+      );
+      return;
+    }
+    if (mounted) {
+      Navigator.of(context).pop();
+    }
   }
 
   Future<void> _startVoice() async {
@@ -241,49 +449,25 @@ class _AddContextSheetBodyState extends State<_AddContextSheetBody> {
       final raw = stopped.trim().isNotEmpty ? stopped.trim() : _partial.trim();
       if (raw.isEmpty) {
         if (mounted) {
+          setState(() => _busy = false);
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('未检测到语音')),
           );
         }
         return;
       }
-      final prefix = widget.controller.text.trim();
-      widget.controller.text = prefix.isEmpty ? raw : '$prefix\n$raw';
-      widget.controller.selection = TextSelection.collapsed(
-        offset: widget.controller.text.length,
-      );
-      _voiceCommand = prefix.isEmpty
-          ? widget.interpretVoiceCommand?.call(raw, widget.task.status)
-          : null;
-    } finally {
+      _voiceCommand =
+          widget.interpretVoiceCommand?.call(raw, widget.task.status);
+      if (mounted) {
+        setState(() {
+          _busy = false;
+          _recognizedText = raw;
+        });
+      }
+    } catch (error) {
       if (mounted) {
         setState(() => _busy = false);
       }
-    }
-  }
-
-  Future<void> _submitContext() async {
-    final instruction = widget.controller.text.trim();
-    if (instruction.isEmpty) {
-      return;
-    }
-    setState(() => _submitting = true);
-    try {
-      final command =
-          _voiceCommand?.sourceText == instruction ? _voiceCommand : null;
-      await widget.onSubmit(context, instruction, command);
-    } catch (error) {
-      if (!mounted) {
-        return;
-      }
-      setState(() => _submitting = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('上下文发送失败：$error')),
-      );
-      return;
-    }
-    if (mounted) {
-      Navigator.of(context).pop();
     }
   }
 }
@@ -296,7 +480,7 @@ class _TargetTaskLabel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Text(
-      'This context will be added to: ${task.displayTitle}',
+      '此上下文将添加到：${task.displayTitle}',
       maxLines: 2,
       overflow: TextOverflow.ellipsis,
       style: Theme.of(context).textTheme.bodyMedium,
@@ -322,9 +506,9 @@ class _ApprovalSheetDetails extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Reason: ${approval.reason}'),
+            Text('原因：${approval.reason}'),
             const SizedBox(height: 4),
-            Text('Risk: ${approval.risk}'),
+            Text('风险：${approval.risk}'),
           ],
         ),
       ),
@@ -355,8 +539,8 @@ class _VoiceContextButton extends StatelessWidget {
     final label = busy
         ? '整理语音'
         : listening
-            ? 'Release'
-            : 'Hold to Talk';
+            ? '松开'
+            : '按住说话';
     return GestureDetector(
       onTapDown: disabled ? null : (_) => onStart(),
       onTapUp: disabled ? null : (_) => onStop(),

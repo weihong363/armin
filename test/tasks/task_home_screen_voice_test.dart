@@ -19,7 +19,7 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('home-add-context-button')));
     await tester.pumpAndSettle();
 
-    expect(find.text('Create a task before adding context.'), findsOneWidget);
+    expect(find.text('请先创建任务再添加上下文。'), findsOneWidget);
     expect(find.byKey(const ValueKey('home-voice-panel')), findsNothing);
   });
 
@@ -38,9 +38,9 @@ void main() {
     );
 
     expect(
-        find.text('No work needs your attention right now.'), findsOneWidget);
-    expect(find.text('Connection paused'), findsNothing);
-    expect(find.text('Recently completed'), findsNothing);
+        find.text('当前没有需要你关注的事项'), findsOneWidget);
+    expect(find.text('连接已暂停'), findsNothing);
+    expect(find.text('最近完成'), findsNothing);
   });
 
   testWidgets('needs attention feed only shows human attention work',
@@ -72,17 +72,17 @@ void main() {
       ],
     );
 
-    expect(find.text('Waiting For You'), findsOneWidget);
+    expect(find.text('等待你处理'), findsOneWidget);
     expect(find.text('Needs Attention (3)'), findsNothing);
     expect(find.text('Payment refactor'), findsWidgets);
     expect(
-        find.textContaining('This task needs your decision'), findsOneWidget);
+        find.textContaining('这个任务需要你做决定'), findsOneWidget);
     expect(find.text('Login cleanup'), findsWidgets);
-    expect(find.textContaining('Waiting for your instruction'), findsOneWidget);
+    expect(find.textContaining('等待你的指示'), findsOneWidget);
     expect(find.text('Failing import'), findsWidgets);
-    expect(find.textContaining('Review the issue before continuing'),
+    expect(find.textContaining('继续之前请先检查问题'),
         findsOneWidget);
-    expect(find.text('Work is moving.'), findsNothing);
+    expect(find.text('工作正在推进'), findsNothing);
   });
 
   testWidgets('waiting section shows moving empty state', (tester) async {
@@ -98,12 +98,12 @@ void main() {
       ],
     );
 
-    expect(find.text('Waiting For You'), findsOneWidget);
+    expect(find.text('等待你处理'), findsOneWidget);
     expect(find.text('Needs Attention (0)'), findsNothing);
-    expect(find.text('Everything is moving.'), findsOneWidget);
+    expect(find.text('一切都在推进中'), findsOneWidget);
     expect(
-        find.text('No work needs your attention right now.'), findsOneWidget);
-    expect(find.text('Work keeps moving after you leave.'), findsOneWidget);
+        find.text('当前没有需要你关注的事项'), findsOneWidget);
+    expect(find.text('工作会在你离开后继续推进'), findsOneWidget);
   });
 
   testWidgets('work activity feed shows work events without runtime wording',
@@ -133,10 +133,10 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('home-activity-feed-button')));
     await tester.pumpAndSettle();
 
-    expect(find.text('Work Activity Feed (1)'), findsOneWidget);
-    expect(find.text('Task needs attention'), findsOneWidget);
-    expect(find.text('Task completed'), findsOneWidget);
-    expect(find.text('Connection paused'), findsOneWidget);
+    expect(find.text('工作动态 (1)'), findsOneWidget);
+    expect(find.text('任务需要关注'), findsOneWidget);
+    expect(find.text('任务已完成'), findsOneWidget);
+    expect(find.text('连接已暂停'), findsOneWidget);
     expect(find.textContaining('Runtime lost'), findsNothing);
     expect(find.textContaining('tmux'), findsNothing);
     expect(find.textContaining('SSH'), findsNothing);
@@ -181,7 +181,7 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('home-add-context-button')));
     await tester.pumpAndSettle();
 
-    expect(find.text('Select Task'), findsOneWidget);
+    expect(find.text('选择任务'), findsOneWidget);
     await tester.tap(find.widgetWithText(ListTile, 'Log analysis'));
     await tester.pumpAndSettle();
 
@@ -241,11 +241,11 @@ void main() {
 
     expect(find.text('主机'), findsNothing);
     expect(find.text('我'), findsNothing);
-    expect(find.text('New Task'), findsOneWidget);
+    expect(find.text('新建任务'), findsOneWidget);
     expect(
         find.byKey(const ValueKey('home-add-context-button')), findsOneWidget);
-    expect(find.text('History'), findsOneWidget);
-    await tester.tap(find.text('History'));
+    expect(find.text('历史'), findsOneWidget);
+    await tester.tap(find.text('历史'));
     await tester.pumpAndSettle();
 
     expect(find.text('历史任务'), findsOneWidget);
@@ -266,17 +266,17 @@ void main() {
       ],
     );
 
-    expect(find.text('Waiting For You'), findsOneWidget);
+    expect(find.text('等待你处理'), findsOneWidget);
     expect(find.text('Old approval'), findsOneWidget);
     expect(find.text('Decision needed'), findsOneWidget);
     expect(find.text('Continue copy'), findsOneWidget);
     expect(find.text('Paused task'), findsNothing);
-    expect(find.text('View all 5 waiting tasks'), findsOneWidget);
+    expect(find.text('查看全部 5 项等待任务'), findsOneWidget);
 
     await tester.tap(find.text('View all 5 waiting tasks'));
     await tester.pumpAndSettle();
 
-    expect(find.text('Waiting For You'), findsOneWidget);
+    expect(find.text('等待你处理'), findsOneWidget);
     expect(find.text('Paused task'), findsOneWidget);
     expect(find.text('Hidden failure'), findsOneWidget);
   });

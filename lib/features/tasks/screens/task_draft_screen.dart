@@ -129,6 +129,7 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
           _SectionTitle(title: '运行环境'),
           const SizedBox(height: 8),
           _ExecutionTarget(
+            key: const ValueKey('host-selector'),
             host: selectedHost,
             projectPath: selectedProjectPath,
             onHostChanged: (value) {
@@ -1057,6 +1058,7 @@ class _SurfaceCard extends StatelessWidget {
 
 class _CompactVoiceButton extends StatelessWidget {
   const _CompactVoiceButton({
+    super.key,
     required this.onStart,
     required this.onStop,
   });
@@ -1188,6 +1190,7 @@ class _TaskComposerHero extends StatelessWidget {
               right: 6,
               bottom: 6,
               child: _CompactVoiceButton(
+                key: const ValueKey('voice-hold-button'),
                 onStart: onStartVoice,
                 onStop: onStopVoice,
               ),
@@ -1230,6 +1233,7 @@ class _TaskComposerHero extends StatelessWidget {
 
 class _ExecutionTarget extends StatelessWidget {
   const _ExecutionTarget({
+    super.key,
     required this.host,
     required this.projectPath,
     required this.onHostChanged,

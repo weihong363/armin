@@ -2836,12 +2836,12 @@ String _currentSituationText(TaskSession task) {
 }
 
 bool _hasMeaningfulOutput(TaskSession task) {
-  if (task.shortSummary != null &&
+  if (task.shortSummary.isNotEmpty &&
       const CodexOutputCleaner().clean(task.shortSummary).trim().isNotEmpty) {
     return true;
   }
   if (task.result?.summary != null &&
-      const CodexOutputCleaner().clean(task.result!.summary!).trim().isNotEmpty) {
+      const CodexOutputCleaner().clean(task.result!.summary).trim().isNotEmpty) {
     return true;
   }
   if (task.turns.isNotEmpty) {

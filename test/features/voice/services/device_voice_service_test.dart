@@ -61,6 +61,41 @@ Ran jq -r '.pet_id' output/hatch-pet/*/pet_request.json
     expect(segments.single.languageCode, 'zh-CN');
   });
 
+  test('voice transcript segments add punctuation across long hold pauses', () {
+    final joined = DeviceVoiceService.joinTranscriptSegmentsForTest(
+      '先检查登录失败原因',
+      '然后跑一下测试',
+    );
+
+    expect(joined, '先检查登录失败原因。然后跑一下测试');
+  });
+
+  test('voice transcript segments avoid duplicate punctuation', () {
+    expect(
+      DeviceVoiceService.joinTranscriptSegmentsForTest(
+        '先检查登录失败原因。',
+        '然后跑一下测试',
+      ),
+      '先检查登录失败原因。然后跑一下测试',
+    );
+    expect(
+      DeviceVoiceService.joinTranscriptSegmentsForTest(
+        '先检查登录失败原因',
+        '，然后跑一下测试',
+      ),
+      '先检查登录失败原因，然后跑一下测试',
+    );
+  });
+
+  test('voice transcript segments use English sentence punctuation', () {
+    final joined = DeviceVoiceService.joinTranscriptSegmentsForTest(
+      'check the login flow',
+      'then run the tests',
+    );
+
+    expect(joined, 'check the login flow. then run the tests');
+  });
+
   test('speech summary joins short lines into natural expression', () {
     final cleaned = DeviceVoiceService.cleanSpeechSummaryForTest('''
 已完成修复
@@ -266,8 +301,7 @@ platform darwin -- Python 3.13.5, pytest-7.4.0, pluggy-1.6.0 -- /usr/local/bin/p
     });
 
     test('digit + 行 at end of sentence', () {
-      final cleaned =
-          DeviceVoiceService.cleanSpeechTextForTest('修改了 12 行。');
+      final cleaned = DeviceVoiceService.cleanSpeechTextForTest('修改了 12 行。');
       expect(cleaned, contains('航'));
       expect(cleaned, isNot(contains('行')));
     });
@@ -301,8 +335,7 @@ platform darwin -- Python 3.13.5, pytest-7.4.0, pluggy-1.6.0 -- /usr/local/bin/p
 
   group('pronunciation hints — 不应误伤', () {
     test('执行不被替换', () {
-      final cleaned =
-          DeviceVoiceService.cleanSpeechTextForTest('执行 shell 命令');
+      final cleaned = DeviceVoiceService.cleanSpeechTextForTest('执行 shell 命令');
       expect(cleaned, contains('行'));
       expect(cleaned, isNot(contains('航')));
     });

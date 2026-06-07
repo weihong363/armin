@@ -92,6 +92,8 @@ void main() {
 
     await tester.tap(find.byKey(const ValueKey('host-selector')));
     await tester.pumpAndSettle();
+    await tester.tap(find.text('执行主机'));
+    await tester.pumpAndSettle();
     await tester.tap(find.textContaining('Qoder ·').last);
     await tester.pumpAndSettle();
 

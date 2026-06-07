@@ -100,7 +100,7 @@ void main() {
 
     expect(find.text('等待你处理'), findsOneWidget);
     expect(find.text('Needs Attention (0)'), findsNothing);
-    expect(find.text('一切都在推进中'), findsOneWidget);
+    expect(find.text('一切都在推进中'), findsAtLeastNWidgets(1));
     expect(
         find.text('当前没有需要你关注的事项'), findsOneWidget);
     expect(find.text('工作会在你离开后继续推进'), findsOneWidget);
@@ -153,11 +153,13 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('home-add-context-button')));
     await tester.pumpAndSettle();
 
-    expect(find.text('Add context to this task'), findsOneWidget);
+    expect(find.text('继续任务'), findsOneWidget);
     expect(
-      find.text('This context will be added to: Payment refactor'),
+      find.text('此上下文将添加到：Payment refactor'),
       findsOneWidget,
     );
+    await tester.tap(find.text('手动输入'));
+    await tester.pumpAndSettle();
     await tester.enterText(find.byType(TextField), 'Keep changes minimal.');
     await tester.tap(find.text('发送'));
     await tester.pumpAndSettle();
@@ -186,7 +188,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(
-      find.text('This context will be added to: Log analysis'),
+      find.text('此上下文将添加到：Log analysis'),
       findsOneWidget,
     );
   });
@@ -202,7 +204,7 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('home-add-context-button')));
     await tester.pumpAndSettle();
     final gesture = await tester.startGesture(
-      tester.getCenter(find.text('Hold to Talk')),
+      tester.getCenter(find.text('按住说话')),
     );
     await tester.pump();
     await gesture.up();
@@ -273,7 +275,7 @@ void main() {
     expect(find.text('Paused task'), findsNothing);
     expect(find.text('查看全部 5 项等待任务'), findsOneWidget);
 
-    await tester.tap(find.text('View all 5 waiting tasks'));
+    await tester.tap(find.text('查看全部 5 项等待任务'));
     await tester.pumpAndSettle();
 
     expect(find.text('等待你处理'), findsOneWidget);

@@ -28,6 +28,8 @@ class DeviceVoiceService implements VoiceService {
   bool? _available;
   bool _isListening = false;
   String _latestWords = '';
+  String _committedWords = '';
+  String _currentSessionWords = '';
   int _restartCount = 0;
   static const int _maxRestarts = 5;
   final Set<String> _selectedVoiceLanguages = {};
@@ -44,6 +46,8 @@ class DeviceVoiceService implements VoiceService {
     }
 
     _latestWords = '';
+    _committedWords = '';
+    _currentSessionWords = '';
     _restartCount = 0;
     _isListening = true;
     _startListeningSession(onPartial);
@@ -53,7 +57,8 @@ class DeviceVoiceService implements VoiceService {
   /// (e.g. Android silence timeout), it auto-restarts up to [_maxRestarts]
   /// times as long as the user is still holding the button.
   void _startListeningSession(void Function(String partial)? onPartial) {
-    unawaited(_speechToText.listen(
+    unawaited(_speechToText
+        .listen(
       localeId: _localeId,
       // Direct parameters control the Dart-side timer that triggers
       // SpeechRecognizer.stopListening() after the given durations.
@@ -66,12 +71,18 @@ class DeviceVoiceService implements VoiceService {
         autoPunctuation: true,
       ),
       onResult: (SpeechRecognitionResult result) {
-        _latestWords = result.recognizedWords;
+        _currentSessionWords = result.recognizedWords.trim();
+        _latestWords = _joinTranscriptSegments(
+          _committedWords,
+          _currentSessionWords,
+        );
         onPartial?.call(_latestWords);
       },
-    ).then((_) async {
+    )
+        .then((_) async {
       // The listen session ended without the user releasing the button
       // (e.g. Android silence timeout). Restart automatically.
+      _commitCurrentSession();
       if (_isListening && _restartCount < _maxRestarts) {
         _restartCount++;
         await Future<void>.delayed(const Duration(milliseconds: 200));
@@ -84,18 +95,18 @@ class DeviceVoiceService implements VoiceService {
 
   @override
   Future<String> stopListening() async {
-    final savedWords = _latestWords.trim();
     if (!_isListening) {
-      return savedWords;
+      return _latestWords.trim();
     }
 
+    _isListening = false;
     try {
       await _speechToText.stop();
     } catch (_) {
       // Platform may have already auto-stopped after timeout or silence.
     }
-    _isListening = false;
-    return savedWords;
+    _commitCurrentSession();
+    return _latestWords.trim();
   }
 
   @override
@@ -235,6 +246,49 @@ class DeviceVoiceService implements VoiceService {
     String languageCode,
   ) {
     return _preferredVoice(voices, languageCode);
+  }
+
+  @visibleForTesting
+  static String joinTranscriptSegmentsForTest(String previous, String next) {
+    return _joinTranscriptSegments(previous, next);
+  }
+
+  void _commitCurrentSession() {
+    final current = _currentSessionWords.trim();
+    if (current.isEmpty) {
+      return;
+    }
+    _committedWords = _joinTranscriptSegments(_committedWords, current);
+    _latestWords = _committedWords;
+    _currentSessionWords = '';
+  }
+
+  static String _joinTranscriptSegments(String previous, String next) {
+    final left = previous.trim();
+    final right = next.trim();
+    if (left.isEmpty) {
+      return right;
+    }
+    if (right.isEmpty) {
+      return left;
+    }
+    if (_startsWithPunctuation(right) || _endsWithPunctuation(left)) {
+      return '$left$right';
+    }
+    final separator = _containsCjk(left) || _containsCjk(right) ? '。' : '. ';
+    return '$left$separator$right';
+  }
+
+  static bool _startsWithPunctuation(String text) {
+    return RegExp(r'^[。！？；：，、,.!?;:]').hasMatch(text);
+  }
+
+  static bool _endsWithPunctuation(String text) {
+    return RegExp(r'[。！？；：，、,.!?;:]$').hasMatch(text);
+  }
+
+  static bool _containsCjk(String text) {
+    return RegExp(r'[\u4e00-\u9fff]').hasMatch(text);
   }
 
   static String _cleanSpeechLine(String line) {

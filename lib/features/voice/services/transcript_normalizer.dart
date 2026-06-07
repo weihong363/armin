@@ -1,4 +1,5 @@
 import '../models/normalization_result.dart';
+import 'pinyin_confusion_corrector.dart';
 import 'terminology_dictionary.dart';
 
 /// 开发者上下文信息，用于提升归一化质量
@@ -41,6 +42,9 @@ class DeveloperContext {
 class TranscriptNormalizer {
   const TranscriptNormalizer();
 
+  final PinyinConfusionCorrector _corrector =
+      const PinyinConfusionCorrector();
+
   /// 归一化语音转录文本
   ///
   /// [rawText] 为 ASR 原始输出。
@@ -61,6 +65,22 @@ class TranscriptNormalizer {
 
     // ---- 阶段 1: 术语词典修正 ----
     var text = _applyDictionary(trimmed, dictionary, changes);
+
+    // ---- 阶段 1.5: 拼音混淆集纠错 ----
+    final confusionResult = _corrector.correct(text);
+    if (confusionResult.corrections.isNotEmpty) {
+      for (final c in confusionResult.corrections) {
+        changes.add(
+          NormalizationChange(
+            original: c.original,
+            corrected: c.corrected,
+            reason: '拼音纠错：${c.original}→${c.corrected}',
+            isDictionaryMatch: false,
+          ),
+        );
+      }
+      text = confusionResult.text;
+    }
 
     // ---- 阶段 2: 格式清理 ----
     text = _cleanPunctuation(text);

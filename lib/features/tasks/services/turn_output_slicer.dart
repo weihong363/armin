@@ -3,16 +3,25 @@ import '../models/native_output_turn.dart';
 class TurnOutputSlicer {
   const TurnOutputSlicer();
 
-  String outputForTurn(List<NativeOutputTurn> turns, int index) {
+  String outputForTurn(
+    List<NativeOutputTurn> turns,
+    int index, {
+    List<String> extraFilterTexts = const [],
+  }) {
     return _outputForTurn(
       turns,
       index,
       outputOf: (turn) => turn.cleanedOutput,
       previousOutputOf: (turn) => turn.cleanedOutput,
+      extraFilterTexts: extraFilterTexts,
     );
   }
 
-  String rawOutputForTurn(List<NativeOutputTurn> turns, int index) {
+  String rawOutputForTurn(
+    List<NativeOutputTurn> turns,
+    int index, {
+    List<String> extraFilterTexts = const [],
+  }) {
     return _outputForTurn(
       turns,
       index,
@@ -20,6 +29,7 @@ class TurnOutputSlicer {
           turn.rawOutput.trim().isEmpty ? turn.cleanedOutput : turn.rawOutput,
       previousOutputOf: (turn) =>
           turn.rawOutput.trim().isEmpty ? turn.cleanedOutput : turn.rawOutput,
+      extraFilterTexts: extraFilterTexts,
     );
   }
 
@@ -28,6 +38,7 @@ class TurnOutputSlicer {
     int index, {
     required String Function(NativeOutputTurn turn) outputOf,
     required String Function(NativeOutputTurn turn) previousOutputOf,
+    List<String> extraFilterTexts = const [],
   }) {
     if (index < 0 || index >= turns.length) {
       return '';

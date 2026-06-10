@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 
 import '../../../app_state_scope.dart';
 import '../../../core/models/task_status.dart';
+import '../../runtime/services/runtime_event_bus.dart';
+import '../../runtime/models/runtime_task_snapshot.dart';
 import '../../../shared/theme/armin_theme.dart';
 import '../../agent/parsers/approval_request.dart';
 import '../../agent/parsers/task_result.dart';
@@ -47,14 +49,21 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
   int _latestTurnRevealToken = 0;
   String _handledAttentionRevealSignature = '';
 
+  StreamSubscription<RuntimeEvent>? _eventSubscription;
+  int _resultVersion = 0;
+  RuntimeTaskSnapshot? _progressSnapshot;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    final state = AppStateScope.read(context);
+    _eventSubscription = state.runtimeEvents.listen(_onRuntimeEvent);
   }
 
   @override
   void dispose() {
+    _eventSubscription?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     _tabController.dispose();
     super.dispose();
@@ -76,6 +85,41 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
     });
     if (_tabController.index != _resultTabIndex) {
       _tabController.animateTo(_resultTabIndex);
+    }
+  }
+
+  void _onRuntimeEvent(RuntimeEvent event) {
+    if (event.taskId != widget.taskId || !mounted) {
+      return;
+    }
+    switch (event.type) {
+      case RuntimeEventType.taskProgress:
+        // Lightweight: only update the snapshot for progress bar / status label.
+        // No full rebuild — InheritedNotifier still drives batched frame-end
+        // rebuilds, but _resultVersion stays unchanged so _ResultPanel skips
+        // expensive _outputSummaries computation.
+        if (event.snapshot != null) {
+          setState(() {
+            _progressSnapshot = event.snapshot;
+          });
+        }
+        break;
+      case RuntimeEventType.taskCompleted:
+      case RuntimeEventType.taskFailed:
+      case RuntimeEventType.taskCancelled:
+      case RuntimeEventType.taskWaitingUser:
+        // Terminal / low-frequency: bump version so _ResultPanel does a full
+        // recomputation. Clear progress snapshot so UI switches to full
+        // TaskSession data.
+        setState(() {
+          _progressSnapshot = null;
+          _resultVersion++;
+        });
+      case RuntimeEventType.taskCreated:
+      case RuntimeEventType.taskStarted:
+        setState(() {
+          _resultVersion++;
+        });
     }
   }
 
@@ -145,7 +189,8 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
             SliverPadding(
               padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
               sliver: SliverToBoxAdapter(
-                child: _CurrentSituationCard(task: task),
+                child: _CurrentSituationCard(
+                    task: task, progressSnapshot: _progressSnapshot),
               ),
             ),
             SliverPadding(
@@ -185,6 +230,7 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
               _ResultPanel(
                 task: task,
                 revealLatestTurnToken: _latestTurnRevealToken,
+                resultVersion: _resultVersion,
               ),
               _AdvancedDebugPanel(task: task),
             ],
@@ -572,16 +618,20 @@ class _TaskHeaderState extends State<_TaskHeader> {
 }
 
 class _CurrentSituationCard extends StatelessWidget {
-  const _CurrentSituationCard({required this.task});
+  const _CurrentSituationCard({required this.task, this.progressSnapshot});
 
   final TaskSession task;
+  final RuntimeTaskSnapshot? progressSnapshot;
 
   @override
   Widget build(BuildContext context) {
+    final text = progressSnapshot != null && task.status == TaskStatus.running
+        ? _progressSituationText(task, progressSnapshot!)
+        : _currentSituationText(task);
     return _InfoCard(
       title: '当前状况',
       child: Text(
-        _currentSituationText(task),
+        text,
         maxLines: 3,
         overflow: TextOverflow.ellipsis,
       ),
@@ -589,64 +639,99 @@ class _CurrentSituationCard extends StatelessWidget {
   }
 }
 
-class _TimelinePanel extends StatelessWidget {
+class _TimelinePanel extends StatefulWidget {
   const _TimelinePanel({required this.task});
 
   final TaskSession task;
 
   @override
-  Widget build(BuildContext context) {
-    final readableSummary = const SemanticSnippetBuilder()
+  State<_TimelinePanel> createState() => _TimelinePanelState();
+}
+
+class _TimelinePanelState extends State<_TimelinePanel> {
+  String _cachedReadableSummary = '';
+  String _cachedSignature = '';
+
+  static String _computeSignature(TaskSession task) {
+    return '${task.id}:${task.status.name}:${task.shortSummary}:'
+        '${task.completedAt?.microsecondsSinceEpoch}';
+  }
+
+  static String _computeReadableSummary(TaskSession task) {
+    return const SemanticSnippetBuilder()
         .build(
           const CodexOutputCleaner().clean(task.shortSummary),
           contentType: SnippetContentType.agentSummary,
           maxChars: 220,
         )
         .visibleText;
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _cachedSignature = _computeSignature(widget.task);
+    _cachedReadableSummary = _computeReadableSummary(widget.task);
+  }
+
+  @override
+  void didUpdateWidget(covariant _TimelinePanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final newSignature = _computeSignature(widget.task);
+    if (newSignature != _cachedSignature) {
+      _cachedSignature = newSignature;
+      _cachedReadableSummary = _computeReadableSummary(widget.task);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final readableSummary = _cachedReadableSummary;
     final items = [
       _TimelineItem(
         icon: Icons.add_task_outlined,
-        time: _timeLabel(task.createdAt),
-        title: '任务已创建',
-        subtitle: _cleanSnippet(task.userText, maxChars: 120),
+        time: _timeLabel(widget.task.createdAt),
+        title: '\u4efb\u52a1\u5df2\u521b\u5efa',
+        subtitle: _cleanSnippet(widget.task.userText, maxChars: 120),
       ),
       _TimelineItem(
         icon: Icons.send_outlined,
-        time: _timeLabel(task.updatedAt),
-        title: '工作已开始',
-        subtitle: '从任务简述开始工作',
+        time: _timeLabel(widget.task.updatedAt),
+        title: '\u5de5\u4f5c\u5df2\u5f00\u59cb',
+        subtitle: '\u4ece\u4efb\u52a1\u7b80\u8ff0\u5f00\u59cb\u5de5\u4f5c',
       ),
-      for (final input in _followUpVoiceInputs(task))
+      for (final input in _followUpVoiceInputs(widget.task))
         _TimelineItem(
           icon: Icons.add_comment_outlined,
           time: _timeLabel(input.createdAt),
-          title: '上下文已添加',
+          title: '\u4e0a\u4e0b\u6587\u5df2\u6dfb\u52a0',
           subtitle: _cleanSnippet(input.rawSttText, maxChars: 120),
         ),
       _TimelineItem(
-        icon: _timelineResultIcon(task.status),
-        time:
-            task.completedAt == null ? '--:--' : _timeLabel(task.completedAt!),
-        title: _timelineResultTitle(task.status),
+        icon: _timelineResultIcon(widget.task.status),
+        time: widget.task.completedAt == null
+            ? '--:--'
+            : _timeLabel(widget.task.completedAt!),
+        title: _timelineResultTitle(widget.task.status),
         subtitle: readableSummary.isEmpty
-            ? _currentSituationText(task)
+            ? _currentSituationText(widget.task)
             : readableSummary,
-        color: _timelineResultColor(task.status),
+        color: _timelineResultColor(widget.task.status),
       ),
     ];
     final visibleItems = items.reversed.take(3).toList(growable: false);
 
     return ListView.separated(
       padding: const EdgeInsets.all(20),
-      itemCount: visibleItems.length + (task.turns.isEmpty ? 0 : 1),
+      itemCount: visibleItems.length + (widget.task.turns.isEmpty ? 0 : 1),
       separatorBuilder: (_, __) => const SizedBox(height: 12),
       itemBuilder: (context, index) {
         if (index < visibleItems.length) {
           return visibleItems[index];
         }
         return _InfoCard(
-          title: '任务输出历史',
-          child: _TurnSummaryList(task: task),
+          title: '\u4efb\u52a1\u8f93\u51fa\u5386\u53f2',
+          child: _TurnSummaryList(task: widget.task),
         );
       },
     );
@@ -733,10 +818,7 @@ class _TurnSummaryRow extends StatelessWidget {
         if (turn.rawOutput.isNotEmpty || turn.cleanedOutput.isNotEmpty) ...[
           const SizedBox(height: 6),
           _LazyTurnOutputExpansion(
-            key: ValueKey(
-              '${turn.id}:${turn.lastOutputAt.microsecondsSinceEpoch}:'
-              '${turn.rawOutput.length}:${turn.cleanedOutput.length}',
-            ),
+            key: ValueKey('${turn.id}:${turn.lastOutputAt.microsecondsSinceEpoch}'),
             turns: turns,
             turnIndex: turnIndex,
           ),
@@ -863,10 +945,12 @@ class _ResultPanel extends StatefulWidget {
   const _ResultPanel({
     required this.task,
     required this.revealLatestTurnToken,
+    required this.resultVersion,
   });
 
   final TaskSession task;
   final int revealLatestTurnToken;
+  final int resultVersion;
 
   @override
   State<_ResultPanel> createState() => _ResultPanelState();
@@ -956,11 +1040,12 @@ class _ResultPanelState extends State<_ResultPanel> {
   @override
   void didUpdateWidget(covariant _ResultPanel oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.task.id != widget.task.id ||
-        oldWidget.task.updatedAt != widget.task.updatedAt ||
-        oldWidget.task.summary != widget.task.summary ||
-        oldWidget.task.result?.summary != widget.task.result?.summary ||
-        _turnsSignature(oldWidget.task) != _turnsSignature(widget.task)) {
+    final deepChanged = oldWidget.resultVersion != widget.resultVersion;
+    if (deepChanged &&
+        (oldWidget.task.id != widget.task.id ||
+            oldWidget.task.summary != widget.task.summary ||
+            oldWidget.task.result?.summary != widget.task.result?.summary ||
+            _turnsSignature(oldWidget.task) != _turnsSignature(widget.task))) {
       _summariesFuture = _outputSummaries(widget.task);
     }
     if (oldWidget.revealLatestTurnToken != widget.revealLatestTurnToken) {
@@ -1154,17 +1239,9 @@ class _ResultPanelState extends State<_ResultPanel> {
 
   String _turnsSignature(TaskSession task) {
     return task.turns
-        .map(
-          (turn) => [
-            turn.turnIndex,
-            turn.status.name,
-            turn.userInput,
-            turn.rawOutput,
-            turn.cleanedOutput,
-            turn.lastOutputAt.microsecondsSinceEpoch,
-          ].join('|'),
-        )
-        .join('\n---\n');
+        .map((t) => '${t.turnIndex}:${t.status.name}:'
+            '${t.rawOutput.hashCode}:${t.lastOutputAt.microsecondsSinceEpoch}')
+        .join('|');
   }
 
   String _legacyOutputSource(TaskSession task) {
@@ -1531,7 +1608,7 @@ class _TaskNeedsPanelState extends State<_TaskNeedsPanel> {
             ),
             const SizedBox(height: 12),
           ],
-          if (task.terminalPrompt != null) ...[
+          if (task.terminalPrompt != null && _pendingApproval(task) == null) ...[
             _TerminalPromptCard(
               prompt: task.terminalPrompt!,
               onSelect: (option) => _selectTerminalPromptOption(
@@ -2848,6 +2925,15 @@ bool _hasMeaningfulOutput(TaskSession task) {
     return true;
   }
   return false;
+}
+
+String _progressSituationText(TaskSession task, RuntimeTaskSnapshot snapshot) {
+  final action = snapshot.action.isNotEmpty ? '动作: ${snapshot.action}。' : '';
+  final progress = snapshot.progress > 0 ? '进度 ${snapshot.progress}%' : '';
+  final parts = [action, progress].where((p) => p.isNotEmpty);
+  if (parts.isEmpty) return _currentSituationText(task);
+  return '此任务仍在工作中。${parts.join('，')}。'
+      '\n当前不需要任何操作。';
 }
 
 _NextAction _nextActionForTask(TaskStatus status) {

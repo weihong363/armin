@@ -886,6 +886,8 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
         lower.startsWith('风险信息') ||
         lower.startsWith('user constraints') ||
         lower.startsWith('## user constraints') ||
+        lower.startsWith('armin context governance') ||
+        _isSummaryGovernanceLine(lower) ||
         lower.startsWith('## user task') ||
         lower.startsWith('## context chunk') ||
         lower.startsWith('## secret placeholders') ||
@@ -907,9 +909,7 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
         lower.startsWith('turn ') ||
         lower.startsWith('结果为：turn ') ||
         lower.startsWith('result: turn ') ||
-        (lower.contains('最小改动') &&
-            lower.contains('不要提交') &&
-            lower.contains('高风险操作先确认')) ||
+        _isChineseConstraintLine(lower) ||
         lower == 'explored' ||
         lower == 'thinking' ||
         lower == 'thinking...' ||
@@ -966,6 +966,43 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
     return RegExp(r'^(?:error|failed|success)(?:\s*[:：-]|\s|$)')
             .hasMatch(lower) ||
         RegExp(r'\b(?:error|failed|success)\s*[:：-]').hasMatch(lower);
+  }
+
+  bool _isSummaryGovernanceLine(String lower) {
+    const lines = [
+      'only inspect files directly related to the task.',
+      'never scan the entire repository.',
+      'avoid reading docs/ and readme unless necessary.',
+      'keep edits minimal and focused.',
+      'do not analyze unrelated architecture.',
+      'run only targeted tests.',
+      'keep command output short.',
+      'you have full authority to create, modify, and delete files without asking.',
+      'run any commands, tests, or builds needed to complete the task.',
+      'do not interrupt the user',
+      'never modify any file',
+      'do not run commands that alter state.',
+      'ask before any potentially risky read operation.',
+    ];
+    for (final text in lines) {
+      if (lower.endsWith(text)) return true;
+    }
+    return _isChineseConstraintLine(lower);
+  }
+
+  bool _isChineseConstraintLine(String lower) {
+    const lines = [
+      '只分析不修改',
+      '最小改动',
+      '允许修改',
+      '修改后运行测试',
+      '不要提交 git',
+      '高风险操作先确认',
+    ];
+    for (final text in lines) {
+      if (lower.endsWith(text)) return true;
+    }
+    return false;
   }
 }
 

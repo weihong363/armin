@@ -601,11 +601,11 @@ world
 
     expect(store.task!.status, TaskStatus.turnIdle);
     expect(store.task!.result?.summary, 'HELLO WORLD');
-    expect(store.task!.executionLogs.map((log) => log.rawOutput),
-        contains('HELLO WORLD'));
+    // executionLogs may be empty for pure-progress chunks;
+    // the full execution snapshot is captured on state transitions only.
     expect(
       store.task!.metricEvents.map((event) => event.eventType),
-      containsAllInOrder(['log_update', 'turn_idle']),
+      contains('turn_idle'),
     );
     expect(voice.spokenSummaries, hasLength(1));
     expect(voice.spokenSummaries.single, contains('HELLO WORLD'));
@@ -649,12 +649,12 @@ world
     await Future<void>.delayed(Duration.zero);
     await Future<void>.delayed(Duration.zero);
 
-    expect(
-      store.task!.metricEvents
-          .where((event) => event.eventType == 'log_update'),
-      hasLength(1),
-    );
-    expect(store.task!.metricEvents.single.payloadJson, '{"bytes":6}');
+    // Pure-progress updates are handled via _taskWithLightProgress
+    // which skips metrics accumulation. Metrics are only created on
+    // state transitions. Repeated progress chunks produce 0 metric nodes.
+    final logUpdates = store.task!.metricEvents
+        .where((event) => event.eventType == 'log_update');
+    expect(logUpdates, isEmpty);
   });
 
   test('approval request is spoken when attention speech is enabled', () async {

@@ -141,4 +141,118 @@ AGENTS.md file · 12 skills
     expect(cleaned, isNot(contains('Auto Model')));
     expect(cleaned, isNot(contains('Shift+Tab')));
   });
+
+  test('removes aggressive governance header and rules', () {
+    const raw = '''
+Armin context governance (aggressive):
+- You have full authority to create, modify, and delete files without asking.
+- Run any commands, tests, or builds needed to complete the task.
+- Only inspect files directly related to the task.
+- Never scan the entire repository.
+- Do not interrupt the user — proceed autonomously unless you encounter a hard blocker.
+输出 hello world
+hello world
+''';
+
+    final cleaned = const CodexOutputCleaner().clean(raw);
+
+    expect(cleaned, isNot(contains('Armin context governance')));
+    expect(cleaned, isNot(contains('full authority')));
+    expect(cleaned, isNot(contains('proceed autonomously')));
+    expect(cleaned, contains('输出 hello world'));
+    expect(cleaned, contains('hello world'));
+  });
+
+  test('removes safe governance header and rules', () {
+    const raw = '''
+Armin context governance (safe):
+- Only inspect files directly related to the task.
+- Never scan the entire repository.
+- Avoid reading docs/ and README unless necessary.
+- Never modify any file — analysis and reporting only.
+- Do not run commands that alter state.
+- Ask before any potentially risky read operation.
+分析登录模块
+登录模块位于 lib/login/login_service.dart，主要处理 JWT token 验证。
+''';
+
+    final cleaned = const CodexOutputCleaner().clean(raw);
+
+    expect(cleaned, isNot(contains('Armin context governance')));
+    expect(cleaned, isNot(contains('analysis and reporting only')));
+    expect(cleaned, isNot(contains('potentially risky')));
+    expect(cleaned, contains('分析登录模块'));
+    expect(cleaned, contains('login_service.dart'));
+  });
+
+  test('removes multi-line thinking blocks with indented content', () {
+    const raw = '''
+创建一个输出hello world的py文件
+Thinking
+  The user wants me to create a simple Python file that outputs "hello world".
+  Let me create a simple hello.py file in the current workspace.
+  Write(/Users/test/hello.py)
+    Accepted hello.py
+
+      1 print("hello world")
+
+Thinking
+  I've created the hello.py file. Let me verify it works by running it.
+  Bash(python3 /Users/test/hello.py)
+    hello world
+
+Thinking
+  Perfect, the file runs correctly and outputs "hello world" as expected.
+已创建 hello.py，输出验证正常。
+Credits exhausted.
+''';
+
+    final cleaned = const CodexOutputCleaner().clean(raw);
+
+    expect(cleaned, isNot(contains('Thinking')));
+    expect(cleaned, isNot(contains('The user wants me to')));
+    expect(cleaned, isNot(contains('Let me create')));
+    expect(cleaned, isNot(contains("I've created")));
+    expect(cleaned, contains('Perfect, the file runs'));
+    expect(cleaned, contains('已创建 hello.py，输出验证正常。'));
+    expect(cleaned, contains('创建一个输出hello world的py文件'));
+    expect(cleaned, contains('Credits exhausted'));
+  });
+
+  test('removes Chinese constraint lines from prompt template', () {
+    const raw = '''
+Armin context governance:
+- Only inspect files directly related to the task.
+- Never scan the entire repository.
+## User task
+分析登录页面的登录流程
+## User constraints
+- 只分析不修改
+- 最小改动
+- 不要提交 Git
+- 高风险操作先确认
+## Context chunk 1
+lib/login/ 目录包含所有登录相关代码
+登录页面位于 lib/login/login_page.dart
+
+登录流程分析如下：
+1. 用户输入凭证后调用 AuthService.authenticate()
+2. JWT token 存储在 SecureStorage 中
+3. 登录成功后跳转到主页
+''';
+
+    final cleaned = const CodexOutputCleaner().clean(raw);
+
+    expect(cleaned, isNot(contains('Armin context governance')));
+    expect(cleaned, isNot(contains('只分析不修改')));
+    expect(cleaned, isNot(contains('最小改动')));
+    expect(cleaned, isNot(contains('不要提交 Git')));
+    expect(cleaned, isNot(contains('高风险操作先确认')));
+    expect(cleaned, isNot(contains('## User task')));
+    expect(cleaned, isNot(contains('## User constraints')));
+    expect(cleaned, isNot(contains('## Context chunk')));
+    expect(cleaned, contains('登录流程分析如下'));
+    expect(cleaned, contains('AuthService.authenticate()'));
+    expect(cleaned, contains('SecureStorage'));
+  });
 }

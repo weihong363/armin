@@ -88,4 +88,72 @@ Validation complete:
 
     expect(prompt, isNull);
   });
+
+  test('detects Qoder plan approval prompt via structural > prefix', () {
+    const output = '''
+Qoder has written up a plan and is ready to execute. Would you like to proceed?
+
+ ❯ 1. Yes, execute with Auto mode
+   2. Yes, execute with YOLO mode
+   3. Yes, continue with manual approval
+   4. Yes, proceed to Goal execution
+      Enter goal mode \u2014 autonomous execution with no interruptions.
+   5. Refuse and say something
+      Reject this plan and provide feedback to the model.
+   6. Reject plan
+      Reject this plan without providing feedback.
+''';
+
+    final prompt = const TerminalPromptParser().parse(output);
+
+    expect(prompt, isNotNull);
+    expect(prompt!.question,
+        'Qoder has written up a plan and is ready to execute. '
+        'Would you like to proceed?');
+    expect(prompt.command, isEmpty);
+    expect(prompt.options, hasLength(6));
+    expect(prompt.options.first.key, '1');
+    expect(
+        prompt.options.first.label, 'Yes, execute with Auto mode');
+    expect(
+        prompt.options.last.label, 'Reject plan');
+  });
+
+  test('ignores code line numbers that look like options', () {
+    const output = '''
+function example() {
+  101. const x = 1;
+  102. const y = 2;
+  103. return x + y;
+}
+''';
+
+    final prompt = const TerminalPromptParser().parse(output);
+
+    expect(prompt, isNull);
+  });
+
+  test('ignores markdown numbered list without cursor prefix', () {
+    const output = '''
+Here are the steps:
+1. Install dependencies
+2. Run the build
+3. Deploy to production
+''';
+
+    final prompt = const TerminalPromptParser().parse(output);
+
+    expect(prompt, isNull);
+  });
+
+  test('structural detection requires at least 2 options', () {
+    const output = '''
+Proceed?
+> 1. Yes
+''';
+
+    final prompt = const TerminalPromptParser().parse(output);
+
+    expect(prompt, isNull);
+  });
 }

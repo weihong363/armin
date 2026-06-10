@@ -6,7 +6,10 @@ import 'package:flutter/foundation.dart';
 
 import '../../hosts/models/host_config.dart';
 import '../../tasks/services/agent_instruction_discovery.dart';
+import '../models/agent_approval_config.dart';
 import '../parsers/approval_parser.dart';
+import '../parsers/approval_request.dart';
+import '../parsers/terminal_prompt.dart';
 import '../parsers/terminal_prompt_parser.dart';
 import 'agent_session_service.dart';
 import 'agent_runtime_config.dart';
@@ -21,7 +24,7 @@ class SSHAgentSessionService implements AgentSessionService {
     Duration pollInterval = AgentRuntimeConfig.pollInterval,
     RuntimePolicy runtimePolicy = const RuntimePolicy(),
     CodexOutputCleaner cleaner = const CodexOutputCleaner(),
-  })  : _approvalParser = approvalParser ?? ApprovalParser(),
+  })  : _approvalParser = approvalParser ?? const ApprovalParser(),
         _terminalPromptParser = terminalPromptParser,
         _pollInterval = pollInterval,
         _runtimePolicy = runtimePolicy,
@@ -32,6 +35,7 @@ class SSHAgentSessionService implements AgentSessionService {
   final Duration _pollInterval;
   final RuntimePolicy _runtimePolicy;
   final CodexOutputCleaner _cleaner;
+  AgentApprovalConfig? _currentApprovalConfig;
 
   @override
   Future<AgentConnectionTestResult> testConnection(
@@ -116,6 +120,7 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
   @override
   Stream<AgentExecutionUpdate> execute(AgentExecutionRequest request) async* {
     _validateExecutionRequest(request);
+    _currentApprovalConfig = request.approvalConfig;
     final client = await _connect(
       host: request.host,
       port: request.port,
@@ -196,34 +201,30 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
             return;
           }
           final approval = _approvalParser.parse(observedOutput);
-          if (approval != null) {
-            controller.add(
-              AgentExecutionUpdate(
-                rawOutput: '',
-                cleanedOutput: _cleaner.clean(observedOutput),
-                observerState: NativeOutputObserverState.needAttention,
-                needsAttention: true,
-                approval: approval,
-                done: true,
-              ),
-            );
-          } else {
-            final snapshot = observer.observeSettled(observedOutput);
-            final terminalPrompt = _terminalPromptParser.parse(observedOutput);
-            controller.add(
-              AgentExecutionUpdate(
-                rawOutput: '',
-                cleanedOutput: snapshot.cleanedOutput,
-                observerState: snapshot.state,
-                turnIdle: snapshot.turnIdle,
-                runtimeLost: snapshot.runtimeLost,
-                needsAttention:
-                    terminalPrompt != null || snapshot.needsAttention,
-                terminalPrompt: terminalPrompt,
-                done: true,
-              ),
-            );
-          }
+          final terminalPrompt = _terminalPromptParser.parse(observedOutput);
+          final isSafeMode =
+              _currentApprovalConfig?.mode == AgentApprovalMode.safe;
+          // Bridge native terminal prompts into approval requests so that
+          // users see the simplified Approve / Reject card — except in
+          // safe mode where the full terminal prompt card is preferred.
+          final effectiveApproval = approval ??
+              (isSafeMode ? null : _approvalFromTerminalPrompt(terminalPrompt));
+          final snapshot = observer.observeSettled(observedOutput);
+          controller.add(
+            AgentExecutionUpdate(
+              rawOutput: '',
+              cleanedOutput: snapshot.cleanedOutput,
+              observerState: snapshot.state,
+              turnIdle: snapshot.turnIdle,
+              runtimeLost: snapshot.runtimeLost,
+              needsAttention: terminalPrompt != null ||
+                  snapshot.needsAttention ||
+                  effectiveApproval != null,
+              approval: effectiveApproval,
+              terminalPrompt: terminalPrompt,
+              done: true,
+            ),
+          );
           await controller.close();
         }),
       );
@@ -245,12 +246,16 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
     final observedOutput = output.observedText;
     final snapshot = observer.observe(observedOutput);
     final terminalPrompt = _terminalPromptParser.parse(observedOutput);
+    final approval = _approvalParser.parse(observedOutput);
     return AgentExecutionUpdate(
       rawOutput: rawOutput,
       cleanedOutput: snapshot.cleanedOutput,
       observerState: snapshot.state,
       runtimeLost: snapshot.runtimeLost,
-      needsAttention: terminalPrompt != null || snapshot.needsAttention,
+      needsAttention: approval != null ||
+          terminalPrompt != null ||
+          snapshot.needsAttention,
+      approval: approval,
       terminalPrompt: terminalPrompt,
     );
   }
@@ -272,6 +277,26 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
 
   bool _isRuntimeLimitReached(String output) {
     return output.contains('Armin runtime limit reached while session');
+  }
+
+  /// Converts a native terminal prompt into an [ApprovalRequest] so the
+  /// simplified Approve / Reject card is available even when the legacy
+  /// NEED_APPROVAL markers are absent.
+  ///
+  /// Handles both command-level prompts (where a specific shell command
+  /// needs approval) and plan-level prompts (where the agent asks "ready
+  /// to proceed?" without a concrete command).
+  ApprovalRequest? _approvalFromTerminalPrompt(TerminalPrompt? prompt) {
+    if (prompt == null || prompt.question.trim().isEmpty) {
+      return null;
+    }
+    return ApprovalRequest(
+      reason: prompt.question,
+      command: prompt.command.trim().isEmpty
+          ? 'plan_approval'
+          : prompt.command,
+      risk: 'medium',
+    );
   }
 
   @override

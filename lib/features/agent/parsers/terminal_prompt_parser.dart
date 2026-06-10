@@ -47,17 +47,17 @@ class TerminalPromptParser {
     }
 
     final questionIndex = lines.lastIndexWhere(_isKnownCommandQuestion);
-    if (questionIndex < 0) {
-      return null;
+    if (questionIndex >= 0) {
+      final optionIndex = _firstOptionIndex(lines, questionIndex + 1);
+      if (optionIndex != null) {
+        return _PromptBlock(
+          questionIndex: questionIndex,
+          optionIndex: optionIndex,
+        );
+      }
     }
-    final optionIndex = _firstOptionIndex(lines, questionIndex + 1);
-    if (optionIndex == null) {
-      return null;
-    }
-    return _PromptBlock(
-      questionIndex: questionIndex,
-      optionIndex: optionIndex,
-    );
+
+    return _findStructuralPromptBlock(lines);
   }
 
   int? _firstOptionIndex(List<String> lines, int start) {
@@ -97,12 +97,19 @@ class TerminalPromptParser {
   }
 
   bool _isKnownCommandQuestion(String line) {
-    final lower = line.toLowerCase();
-    return lower.contains('allow execution of') ||
-        lower.contains('allow this command to run') ||
-        lower.contains('allow command execution') ||
-        lower.contains('approve this command') ||
-        lower.contains('would you like to run');
+    final lower = line.trim().toLowerCase();
+    // Structural: a line ending with ? that references actions the agent
+    // wants to perform — intentionally NOT matching CLI-specific keywords.
+    if (!lower.endsWith('?') && !lower.endsWith('？')) {
+      return false;
+    }
+    return lower.contains('execut') ||
+        lower.contains('allow') ||
+        lower.contains('approv') ||
+        lower.contains('proceed') ||
+        lower.contains('运行') ||
+        lower.contains('允许') ||
+        lower.contains('继续');
   }
 
   bool _looksLikeQuestion(String line) {
@@ -177,6 +184,65 @@ class TerminalPromptParser {
         RegExp(r'allow execution of \[(.+?)\]', caseSensitive: false)
             .firstMatch(lines[questionIndex]);
     return bracketed?.group(1)?.trim() ?? '';
+  }
+
+  /// Detects interactive CLI prompt blocks by structural features alone:
+  /// a cluster of numbered option lines where at least one carries a
+  /// cursor prefix (>, ❯, ►, ▸).  No CLI-specific keywords are required.
+  _PromptBlock? _findStructuralPromptBlock(List<String> lines) {
+    if (lines.length < 4) return null;
+
+    // Scan from bottom up collecting numbered option lines.
+    final optionIndices = <int>[];
+    for (var i = lines.length - 1; i >= 0; i--) {
+      if (_optionMatch(lines[i]) != null) {
+        optionIndices.add(i);
+      } else if (optionIndices.isNotEmpty) {
+        final trimmed = lines[i].trim();
+        if (trimmed.isEmpty || _isSeparator(trimmed)) {
+          continue;
+        }
+        break;
+      }
+    }
+    if (optionIndices.length < 2) return null;
+
+    // Reverse to ascending line order.
+    final sorted = optionIndices.reversed.toList(growable: false);
+
+    // Options must start from 1.
+    final firstMatch = _optionMatch(lines[sorted.first]);
+    if (firstMatch == null || firstMatch.group(1) != '1') return null;
+
+    // At least one option must carry a cursor prefix.
+    final hasCursor = sorted.any((idx) {
+      final line = lines[idx];
+      return line.trimLeft().startsWith('>') ||
+          line.trimLeft().startsWith('❯') ||
+          line.trimLeft().startsWith('►') ||
+          line.trimLeft().startsWith('▸');
+    });
+    if (!hasCursor) return null;
+
+    // Maximum 20 options (interactive menus are short).
+    if (sorted.length > 20) return null;
+
+    // Find the question line: first non-blank, non-separator line above
+    // the first option.
+    final optionIndex = sorted.first;
+    int? questionIndex;
+    for (var i = optionIndex - 1; i >= 0; i--) {
+      final trimmed = lines[i].trim();
+      if (trimmed.isEmpty || _isSeparator(trimmed)) continue;
+      questionIndex = i;
+      break;
+    }
+    if (questionIndex == null) return null;
+
+    return _PromptBlock(
+      questionIndex: questionIndex,
+      optionIndex: optionIndex,
+    );
   }
 }
 

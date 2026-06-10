@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/scheduler.dart';
 
 import '../../features/agent/services/agent_session_service.dart';
 import '../../features/agent/services/agent_runtime_config.dart';
@@ -18,6 +19,10 @@ import '../../features/tasks/models/voice_input.dart';
 import '../../features/tasks/services/output_summary_provider.dart';
 import '../../features/tasks/services/secret_redactor.dart';
 import '../../features/tasks/services/turn_output_slicer.dart';
+import '../../features/runtime/models/runtime_task_snapshot.dart';
+import '../../features/runtime/services/bridge_runtime.dart';
+import '../../features/runtime/services/runtime_event_bus.dart';
+import '../../features/runtime/services/runtime_task_store.dart';
 import '../../features/voice/services/device_voice_service.dart';
 import '../../features/voice/services/task_speech_policy.dart';
 import '../../features/voice/services/voice_service.dart';
@@ -35,10 +40,18 @@ class ArminAppState extends ChangeNotifier {
     TaskSpeechPolicy? taskSpeechPolicy,
     OutputSummaryProvider? outputSummaryProvider,
     this.speechSettings = const TaskSpeechSettings(),
+    RuntimeEventBus? runtimeEventBus,
+    BridgeRuntime? bridgeRuntime,
   })  : _store = store,
         _taskSpeechPolicy = taskSpeechPolicy ?? const TaskSpeechPolicy(),
         outputSummaryProvider =
-            outputSummaryProvider ?? SelectableOutputSummaryProvider() {
+            outputSummaryProvider ?? SelectableOutputSummaryProvider(),
+        this.runtimeEventBus = runtimeEventBus ?? RuntimeEventBus() {
+    this.bridgeRuntime = bridgeRuntime ??
+        BridgeRuntime(
+          taskStore: InMemoryRuntimeTaskStore(),
+          eventBus: this.runtimeEventBus,
+        );
     _configureOutputSummaryProvider();
   }
 
@@ -53,7 +66,12 @@ class ArminAppState extends ChangeNotifier {
         _taskSpeechPolicy = const TaskSpeechPolicy(),
         outputSummaryProvider =
             outputSummaryProvider ?? SelectableOutputSummaryProvider(),
-        speechSettings = const TaskSpeechSettings() {
+        speechSettings = const TaskSpeechSettings(),
+        runtimeEventBus = RuntimeEventBus() {
+    bridgeRuntime = BridgeRuntime(
+      taskStore: InMemoryRuntimeTaskStore(),
+      eventBus: runtimeEventBus,
+    );
     _configureOutputSummaryProvider();
   }
 
@@ -64,6 +82,9 @@ class ArminAppState extends ChangeNotifier {
   final OutputSummaryProvider outputSummaryProvider;
   final SecretRedactor _secretRedactor = const SecretRedactor();
   TaskSpeechSettings speechSettings;
+  final RuntimeEventBus runtimeEventBus;
+  late final BridgeRuntime bridgeRuntime;
+  final Set<String> _bridgedTaskIds = {};
 
   List<HostConfig> hosts = const [];
   List<TaskSession> tasks = const [];
@@ -73,12 +94,17 @@ class ArminAppState extends ChangeNotifier {
       _runningExecutions = {};
   final Map<String, Timer> _autoDetachTimers = {};
   final Map<String, String> _lastSpokenHashes = {};
+  final Map<String, StringBuffer> _progressOutputMap = {};
+  bool _notifyScheduled = false;
 
   Future<void> load() async {
     hosts = await _store.loadHosts();
     tasks = await _store.loadTasks();
     projectPaths = await _store.loadProjectPaths();
     ready = true;
+    for (final task in tasks) {
+      _bridgeEnsureTaskCreated(task);
+    }
     notifyListeners();
   }
 
@@ -128,7 +154,8 @@ class ArminAppState extends ChangeNotifier {
       updatedTasks.insert(0, task);
     }
     tasks = updatedTasks;
-    notifyListeners();
+    _bridgeEnsureTaskCreated(task);
+    _scheduleNotify();
   }
 
   Future<void> updateTaskTitle(TaskSession task, String title) async {
@@ -210,6 +237,7 @@ class ArminAppState extends ChangeNotifier {
                 : task.shortSummary,
       ),
     );
+    _bridgeSyncTerminalStatus(task.id, status, now, task.shortSummary);
   }
 
   Future<void> saveProjectPath(ProjectPathConfig projectPath) async {
@@ -265,7 +293,7 @@ class ArminAppState extends ChangeNotifier {
       TaskSession task, TerminalPromptOption option,
       {String customResponse = ''}) async {
     final latest = _latestTask(task.id) ?? task;
-    final prompt = latest.terminalPrompt;
+    final prompt = latest.terminalPrompt ?? task.terminalPrompt;
     if (prompt == null ||
         !prompt.options.any((candidate) => candidate.key == option.key)) {
       throw StateError('Terminal prompt option is no longer available.');
@@ -395,17 +423,9 @@ class ArminAppState extends ChangeNotifier {
 
   String _turnsSignature(TaskSession task) {
     return task.turns
-        .map(
-          (turn) => [
-            turn.turnIndex,
-            turn.status.name,
-            turn.userInput,
-            turn.rawOutput,
-            turn.cleanedOutput,
-            turn.lastOutputAt.microsecondsSinceEpoch,
-          ].join('|'),
-        )
-        .join('\n---\n');
+        .map((t) => '${t.turnIndex}:${t.status.name}:${t.rawOutput.hashCode}:'
+            '${t.lastOutputAt.microsecondsSinceEpoch}')
+        .join('|');
   }
 
   Future<TaskSession> _captureFinalLog(
@@ -493,6 +513,8 @@ class ArminAppState extends ChangeNotifier {
       unawaited(previous.cancel());
     }
 
+    _bridgeNotifyExecutionStarted(initialTask);
+
     var task = initialTask;
     var pendingUpdates = Future<void>.value();
     late final StreamSubscription<AgentExecutionUpdate> subscription;
@@ -509,8 +531,22 @@ class ArminAppState extends ChangeNotifier {
             return;
           }
           final previousTask = latest;
-          task = _taskWithExecutionUpdate(previousTask, update);
-          await saveTask(task);
+          final hasStatusChange = _updateWouldChangeStatus(previousTask, update);
+          if (hasStatusChange) {
+            // State transition: flush accumulated output, full persistence.
+            _progressOutputMap.remove(previousTask.id);
+            task = _taskWithExecutionUpdate(previousTask, update);
+            await saveTask(task);
+            _bridgeSyncStreamStatus(task, previousTask);
+          } else {
+            // Pure progress: accumulate output, skip JSON persistence.
+            _progressOutputMap
+                .putIfAbsent(previousTask.id, () => StringBuffer())
+                .write(update.rawOutput);
+            task = _taskWithLightProgress(previousTask, update);
+            _updateInMemory(task);
+          }
+          _bridgeNotifyExecutionUpdate(task, update.rawOutput);
           await _speakTaskUpdate(previousTask, task);
         });
       },
@@ -653,6 +689,21 @@ class ArminAppState extends ChangeNotifier {
 
   Future<void> resolveApproval(TaskSession task,
       {required bool approved}) async {
+    // When the approval card is backed by a native terminal prompt (e.g.
+    // Codex CLI "Allow execution of ..."), route to the terminal option
+    // selection flow so the agent receives the expected numbered key.
+    final terminalPrompt = task.terminalPrompt;
+    if (terminalPrompt != null && terminalPrompt.options.isNotEmpty) {
+      // Persist the approval decision before sending the terminal key so
+      // the approval card does not reappear after re-attach.
+      await _saveApprovalDecision(task, approved: approved);
+      final optionKey = _terminalOptionKeyForDecision(terminalPrompt, approved);
+      final option = terminalPrompt.options
+          .firstWhere((opt) => opt.key == optionKey,
+              orElse: () => terminalPrompt.options.first);
+      await selectTerminalOption(task, option);
+      return;
+    }
     final decision = approved ? 'approved' : 'rejected';
     await sendFollowUp(
       task,
@@ -665,6 +716,35 @@ Apply this decision to the pending approval request.
     await _saveApprovalDecision(task, approved: approved);
     final updatedTask = _latestTask(task.id) ?? task;
     startTaskExecution(updatedTask, _attachRequest(updatedTask));
+  }
+
+  /// Picks the safest terminal-option key for a binary approve / reject
+  /// decision over a native agent permission prompt.
+  String _terminalOptionKeyForDecision(
+      TerminalPrompt prompt, bool approved) {
+    if (approved) {
+      for (final option in prompt.options) {
+        final lower = option.label.toLowerCase();
+        if (lower.contains('allow once') ||
+            lower.contains('允许一次') ||
+            lower == 'allow' ||
+            lower == 'yes' ||
+            lower == '是') {
+          return option.key;
+        }
+      }
+      return prompt.options.first.key;
+    }
+    for (final option in prompt.options.reversed) {
+      final lower = option.label.toLowerCase();
+      if (lower.contains('no') ||
+          lower.contains('reject') ||
+          lower.contains('否') ||
+          lower.contains('拒绝')) {
+        return option.key;
+      }
+    }
+    return prompt.options.last.key;
   }
 
   HostConfig? get defaultHost {
@@ -779,6 +859,127 @@ Apply this decision to the pending approval request.
         ),
       ),
     );
+    _bridgeSyncTerminalStatus(task.id, status, now, shortSummary ?? task.shortSummary);
+  }
+
+  // ─── Bridge Runtime integration ───
+
+  void _bridgeEnsureTaskCreated(TaskSession task) {
+    if (_bridgedTaskIds.contains(task.id)) {
+      return;
+    }
+    _bridgedTaskIds.add(task.id);
+    unawaited(bridgeRuntime.createTask(
+      RuntimeTaskSnapshot.fromTaskStatus(
+        taskId: task.id,
+        status: task.status,
+        createdAt: task.createdAt,
+        updatedAt: task.updatedAt,
+        summary: task.shortSummary,
+      ),
+    ));
+  }
+
+  void _bridgeNotifyExecutionStarted(TaskSession task) {
+    final projectPath = task.host.projectPath;
+    final tmuxName = task.host.tmuxSessionName;
+    unawaited(bridgeRuntime.startTask(
+      taskId: task.id,
+      sessionName: projectPath,
+      projectPath: projectPath,
+      tmuxSessionName: tmuxName,
+      now: DateTime.now(),
+    ));
+  }
+
+  void _bridgeNotifyExecutionUpdate(
+    TaskSession task,
+    String rawOutput,
+  ) {
+    final trimmed = rawOutput.trim();
+    if (trimmed.isEmpty) {
+      return;
+    }
+    unawaited(bridgeRuntime.observeOutput(
+      taskId: task.id,
+      capturedOutput: rawOutput,
+      now: DateTime.now(),
+    ));
+  }
+
+  void _bridgeSyncTerminalStatus(
+    String taskId,
+    TaskStatus status,
+    DateTime now,
+    String summary,
+  ) {
+    switch (status) {
+      case TaskStatus.turnIdle:
+      case TaskStatus.needAttention:
+      case TaskStatus.needApproval:
+        unawaited(bridgeRuntime.markWaitingUser(
+          taskId,
+          summary: summary,
+          now: now,
+        ));
+      case TaskStatus.userCompleted:
+      case TaskStatus.completed:
+        unawaited(bridgeRuntime.completeTask(
+          taskId,
+          summary: summary,
+          now: now,
+        ));
+      case TaskStatus.failed:
+      case TaskStatus.userFailed:
+      case TaskStatus.runtimeLost:
+        unawaited(bridgeRuntime.failTask(
+          taskId,
+          summary: summary,
+          now: now,
+        ));
+      case TaskStatus.stopped:
+        unawaited(bridgeRuntime.cancelTask(
+          taskId,
+          summary: summary,
+          now: now,
+        ));
+      case TaskStatus.running:
+      case TaskStatus.paused:
+      case TaskStatus.observerDetached:
+      case TaskStatus.draft:
+      case TaskStatus.pending:
+        break;
+    }
+  }
+
+  /// Sync bridge when stream-side task status changes (not via _saveControlledTask).
+  void _bridgeSyncStreamStatus(TaskSession current, TaskSession previous) {
+    if (current.status == previous.status) {
+      return;
+    }
+    _bridgeSyncTerminalStatus(
+      current.id,
+      current.status,
+      DateTime.now(),
+      current.shortSummary,
+    );
+  }
+
+  void _scheduleNotify() {
+    if (_notifyScheduled) {
+      return;
+    }
+    _notifyScheduled = true;
+    try {
+      SchedulerBinding.instance.addPostFrameCallback((_) {
+        _notifyScheduled = false;
+        notifyListeners();
+      });
+    } catch (_) {
+      // Fall back to immediate notify when binding is unavailable (e.g. tests).
+      _notifyScheduled = false;
+      notifyListeners();
+    }
   }
 
   Future<TaskSession> _appendRawLog(TaskSession task, String rawOutput) async {
@@ -818,6 +1019,46 @@ Apply this decision to the pending approval request.
     return null;
   }
 
+  /// Returns true if processing [update] would change the task's status.
+  bool _updateWouldChangeStatus(TaskSession task, AgentExecutionUpdate update) {
+    if (update.approval != null) return true;
+    if (update.terminalPrompt != null) return true;
+    if (update.result != null) return true;
+    if (update.turnIdle || update.done) return true;
+    if (update.runtimeLost) return true;
+    return false;
+  }
+
+  /// Lightweight in-memory task update for pure progress (no status change).
+  /// Does NOT build rawLog or executionLogs to avoid O(n²) string growth.
+  TaskSession _taskWithLightProgress(
+    TaskSession task,
+    AgentExecutionUpdate update,
+  ) {
+    final now = DateTime.now();
+    final turns = task.turns.isEmpty
+        ? task.turns
+        : List<NativeOutputTurn>.of(task.turns);
+    if (turns.isNotEmpty) {
+      turns[turns.length - 1] = turns.last.copyWith(lastOutputAt: now);
+    }
+    return task.copyWith(turns: turns, updatedAt: now);
+  }
+
+  /// Replaces the task in the in-memory list and schedules a UI rebuild
+  /// WITHOUT persisting to disk (saveTask is skipped for progress).
+  void _updateInMemory(TaskSession task) {
+    final updatedTasks = [...tasks];
+    final index = updatedTasks.indexWhere((item) => item.id == task.id);
+    if (index >= 0) {
+      updatedTasks[index] = task;
+    } else {
+      updatedTasks.insert(0, task);
+    }
+    tasks = updatedTasks;
+    _scheduleNotify();
+  }
+
   TaskSession _taskWithExecutionUpdate(
     TaskSession task,
     AgentExecutionUpdate update,
@@ -825,9 +1066,13 @@ Apply this decision to the pending approval request.
     final updateAt = DateTime.now();
     final rawLog = '${task.rawLog}${update.rawOutput}';
     final executionLogs = _executionLogsWithUpdate(task, update, updateAt);
+    final accumulatedOutput = _progressOutputMap[task.id]?.toString() ?? '';
+    final effectiveRawOutput = accumulatedOutput.isNotEmpty
+        ? accumulatedOutput + update.rawOutput
+        : update.rawOutput;
     final taskWithTurn = _taskWithTurnOutput(
       task,
-      rawOutput: update.rawOutput,
+      rawOutput: effectiveRawOutput,
       cleanedOutput: update.cleanedOutput ?? '',
       now: updateAt,
       status: _turnStatusForUpdate(update),
@@ -836,10 +1081,31 @@ Apply this decision to the pending approval request.
 
     if (update.approval != null) {
       final approval = update.approval!;
+      // Don't re-apply an approval that was already resolved by the user.
+      final alreadyResolved = taskWithTurn.approvalRequests.any(
+        (a) =>
+            a.reason == approval.reason &&
+            a.command == approval.command &&
+            a.status.trim().toLowerCase() != 'pending',
+      );
+      if (alreadyResolved) {
+        return taskWithTurn.copyWith(
+          rawLog: rawLog,
+          executionLogs: executionLogs,
+          updatedAt: updateAt,
+          clearApproval: true,
+          clearTerminalPrompt: true,
+        );
+      }
+      // Preserve the terminal prompt alongside the approval so that
+      // the full set of interactive controls is available.
+      final effectiveTerminalPrompt =
+          update.terminalPrompt ?? taskWithTurn.terminalPrompt;
       return taskWithTurn.copyWith(
         status: TaskStatus.needApproval,
         rawLog: rawLog,
         approval: approval,
+        terminalPrompt: effectiveTerminalPrompt,
         approvalRequests: [...taskWithTurn.approvalRequests, approval],
         executionLogs: executionLogs,
         updatedAt: updateAt,
@@ -855,6 +1121,22 @@ Apply this decision to the pending approval request.
     }
 
     if (update.terminalPrompt != null) {
+      // Don't re-apply a terminal prompt that mirrors a resolved approval.
+      final promptQuestion =
+          update.terminalPrompt!.question.trim().toLowerCase();
+      final mirrorsResolvedApproval = taskWithTurn.approvalRequests.any(
+        (a) =>
+            a.status.trim().toLowerCase() != 'pending' &&
+            a.reason.trim().toLowerCase() == promptQuestion,
+      );
+      if (mirrorsResolvedApproval) {
+        return taskWithTurn.copyWith(
+          rawLog: rawLog,
+          executionLogs: executionLogs,
+          updatedAt: updateAt,
+          clearTerminalPrompt: true,
+        );
+      }
       return taskWithTurn.copyWith(
         status: TaskStatus.needAttention,
         rawLog: rawLog,
@@ -1253,6 +1535,8 @@ Apply this decision to the pending approval request.
       clearApproval: true,
     );
     await saveTask(failedTask);
+    _bridgeSyncTerminalStatus(
+        task.id, TaskStatus.failed, failedAt, message);
     return failedTask;
   }
 
@@ -1289,6 +1573,8 @@ Apply this decision to the pending approval request.
       clearApproval: true,
     );
     await saveTask(detachedTask);
+    _bridgeSyncTerminalStatus(task.id, TaskStatus.observerDetached, now,
+        'SSH 监听已断开，远端任务状态未知；可以重新监听或停止任务');
     return detachedTask;
   }
 
@@ -1333,6 +1619,9 @@ Apply this decision to the pending approval request.
         status == TaskStatus.completed ||
         status == TaskStatus.failed;
   }
+
+  /// Public stream of runtime lifecycle events for UI-layer consumption.
+  Stream<RuntimeEvent> get runtimeEvents => runtimeEventBus.events;
 
   bool _canDeleteTask(TaskStatus status) {
     return status == TaskStatus.completed ||
@@ -1380,6 +1669,7 @@ Apply this decision to the pending approval request.
           ),
         ],
         clearApproval: true,
+        clearTerminalPrompt: true,
       ),
     );
   }

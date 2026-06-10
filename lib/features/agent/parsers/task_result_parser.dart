@@ -217,7 +217,7 @@ class TaskResultParser {
   }
 
   bool _isGovernanceEcho(String lower) {
-    return lower == 'armin context governance:' ||
+    return lower.startsWith('armin context governance') ||
         lower == 'only inspect files directly related to the task.' ||
         lower == 'never scan the entire repository.' ||
         lower == 'avoid reading docs/ and readme unless necessary.' ||
@@ -232,6 +232,18 @@ class TaskResultParser {
         lower == '- do not analyze unrelated architecture.' ||
         lower == '- run only targeted tests.' ||
         lower == '- keep command output short.' ||
+        lower == '- you have full authority to create, modify, and delete files without asking.' ||
+        lower == '- run any commands, tests, or builds needed to complete the task.' ||
+        lower == '- do not interrupt the user — proceed autonomously unless you encounter a hard blocker.' ||
+        lower == '- never modify any file — analysis and reporting only.' ||
+        lower == '- do not run commands that alter state.' ||
+        lower == '- ask before any potentially risky read operation.' ||
+        lower == '只分析不修改' ||
+        lower == '最小改动' ||
+        lower == '允许修改' ||
+        lower == '修改后运行测试' ||
+        lower == '不要提交 git' ||
+        lower == '高风险操作先确认' ||
         (lower.contains('最小改动') &&
             lower.contains('不要提交') &&
             lower.contains('高风险操作先确认'));

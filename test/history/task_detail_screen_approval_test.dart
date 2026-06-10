@@ -11,6 +11,7 @@ import 'package:armin/features/agent/services/agent_session_service.dart';
 import 'package:armin/features/history/screens/task_detail_screen.dart';
 import 'package:armin/features/hosts/models/host_config.dart';
 import 'package:armin/features/projects/models/project_path_config.dart';
+import 'package:armin/features/runtime/services/runtime_event_bus.dart';
 import 'package:armin/features/tasks/models/native_output_turn.dart';
 import 'package:armin/features/tasks/models/task_constraint.dart';
 import 'package:armin/features/tasks/models/task_session.dart';
@@ -942,6 +943,15 @@ Allow this command to run? Redirection detected.
       ],
     );
     await state.load();
+    // Simulate the Bridge Runtime terminal event that accompanies
+    // a new result turn in production.
+    state.runtimeEventBus.publish(
+      RuntimeEvent(
+        type: RuntimeEventType.taskWaitingUser,
+        taskId: 'task-1',
+        createdAt: DateTime.now(),
+      ),
+    );
     await tester.pumpAndSettle();
 
     expect(find.textContaining('world'), findsWidgets);

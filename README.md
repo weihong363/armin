@@ -88,6 +88,7 @@ lib/
 - 每任务独立短 tmux session，支持断开监听与重新连接
 - 原生输出观察和清洗：输出暂停进入"等待继续"，不自动判定完成
 - Bridge Runtime 架构：SessionManager、TaskWatcher、RuntimeEventBus 异步解耦
+- Runtime 原则：tmux 只作为传输和承载层，不作为结构化事实来源。Armin 会优先消费 RuntimeEventBus 中的结构化事件来更新任务状态、注意力状态、审批状态和结果摘要；终端原始输出只作为审计和 fallback，不直接作为任务完成或审批成功的唯一依据。
 
 **交互与控制**
 - 文本/语音追加、暂停、恢复、停止、标记完成和标记失败
@@ -103,6 +104,15 @@ lib/
 - 任务详情审计视图，包含交互轮次、结果、提示、原始日志和指标时间线
 
 旧的结构化结果/批准解析器（`features/agent/parsers/`）仅保留为兼容代码和测试，不决定任务完成或触发 session cleanup。
+
+## Runtime 设计原则
+
+1. tmux 是 transport，不是 truth
+2. 每个 task 独立 session
+3. RuntimeEventBus 承载结构化事件
+4. raw log 只用于审计/fallback
+5. approval 分为 terminal approval 和 review decision
+6. UI 消费 work state，不直接消费 raw terminal state
 
 ## 开发设置
 

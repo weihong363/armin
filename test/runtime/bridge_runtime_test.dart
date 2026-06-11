@@ -45,12 +45,17 @@ void main() {
 
     expect(
       events.map((event) => event.type.wireName),
-      [
+      containsAll([
         'TASK_CREATED',
         'TASK_STARTED',
+        'OBSERVER_ATTACHED',
         'TASK_WAITING_USER',
         'TASK_COMPLETED',
-      ],
+      ]),
+    );
+    expect(
+      events.map((event) => event.type),
+      contains(RuntimeEventType.observerAttached),
     );
     expect(events.last.snapshot?.status, RuntimeTaskStatus.completed);
 

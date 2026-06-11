@@ -175,6 +175,8 @@ abstract class AgentSessionService {
 
   Future<void> resume(AgentControlRequest request);
 
+  Future<void> interrupt(AgentControlRequest request);
+
   Future<void> stop(AgentControlRequest request);
 
   Future<void> cleanup(AgentControlRequest request);

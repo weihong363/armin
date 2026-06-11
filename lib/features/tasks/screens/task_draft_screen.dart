@@ -126,7 +126,7 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
             onStopVoice: _stopListening,
           ),
           const SizedBox(height: 20),
-          _SectionTitle(title: '运行环境'),
+          const _SectionTitle(title: '运行环境'),
           const SizedBox(height: 8),
           _ExecutionTarget(
             key: const ValueKey('host-selector'),
@@ -155,7 +155,7 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
             warning: _agentInstructionWarning,
           ),
           const SizedBox(height: 20),
-          _SectionTitle(title: '执行模式'),
+          const _SectionTitle(title: '执行模式'),
           const SizedBox(height: 8),
           _ExecutionModeSelector(
             mode: _executionMode,
@@ -172,7 +172,7 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
             onTap: () => setState(() => _showAdvanced = !_showAdvanced),
             child: Row(
               children: [
-                Expanded(
+                const Expanded(
                   child: _SectionTitle(title: '高级选项'),
                 ),
                 Icon(
@@ -206,8 +206,9 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
               onAddSecret: _addSecret,
               onAppendContext: _appendContext,
             ),
-            crossFadeState:
-                _showAdvanced ? CrossFadeState.showSecond : CrossFadeState.showFirst,
+            crossFadeState: _showAdvanced
+                ? CrossFadeState.showSecond
+                : CrossFadeState.showFirst,
           ),
         ],
       ),
@@ -1081,7 +1082,8 @@ class _CompactVoiceButton extends StatelessWidget {
             color: ArminTheme.primary.withValues(alpha: 0.28),
           ),
         ),
-        child: const Icon(Icons.mic_outlined, size: 22, color: ArminTheme.primary),
+        child:
+            const Icon(Icons.mic_outlined, size: 22, color: ArminTheme.primary),
       ),
     );
   }
@@ -1116,12 +1118,9 @@ extension _ExecutionModeLabel on _ExecutionMode {
 
   String get description {
     return switch (this) {
-      _ExecutionMode.safe =>
-          '只读 · 不做修改',
-      _ExecutionMode.balanced =>
-          '可修改代码 · 先请示',
-      _ExecutionMode.aggressive =>
-          '完全授权 · 不中断',
+      _ExecutionMode.safe => '只读 · 不做修改',
+      _ExecutionMode.balanced => '可修改代码 · 先请示',
+      _ExecutionMode.aggressive => '完全授权 · 不中断',
     };
   }
 
@@ -1251,8 +1250,7 @@ class _ExecutionTarget extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final projectLabel =
-        projectPath != null ? projectPath!.name : '选择项目';
+    final projectLabel = projectPath != null ? projectPath!.name : '选择项目';
     final hostSub = host != null
         ? '${host!.name} \u00b7 ${host!.username}@${host!.host}'
         : null;
@@ -1319,14 +1317,12 @@ class _ExecutionTarget extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('主机',
-                    style: Theme.of(sheetContext).textTheme.titleSmall),
+                Text('主机', style: Theme.of(sheetContext).textTheme.titleSmall),
                 const SizedBox(height: 8),
                 DropdownButtonFormField<String>(
                   initialValue: host?.id,
                   isExpanded: true,
-                  decoration: const InputDecoration(
-                      labelText: '执行主机'),
+                  decoration: const InputDecoration(labelText: '执行主机'),
                   items: [
                     for (final h in hosts)
                       DropdownMenuItem(
@@ -1343,14 +1339,12 @@ class _ExecutionTarget extends StatelessWidget {
                   },
                 ),
                 const SizedBox(height: 16),
-                Text('项目',
-                    style: Theme.of(sheetContext).textTheme.titleSmall),
+                Text('项目', style: Theme.of(sheetContext).textTheme.titleSmall),
                 const SizedBox(height: 8),
                 DropdownButtonFormField<String>(
                   initialValue: projectPath?.id,
                   isExpanded: true,
-                  decoration: const InputDecoration(
-                      labelText: '项目目录'),
+                  decoration: const InputDecoration(labelText: '项目目录'),
                   items: [
                     for (final p in projectPaths)
                       DropdownMenuItem(
@@ -1390,8 +1384,7 @@ class _ExecutionModeSelector extends StatelessWidget {
         Row(
           children: [
             for (final m in _ExecutionMode.values) ...[
-              if (m != _ExecutionMode.values.first)
-                const SizedBox(width: 8),
+              if (m != _ExecutionMode.values.first) const SizedBox(width: 8),
               Expanded(
                 child: _ModeCard(
                   mode: m,
@@ -1431,8 +1424,7 @@ class _ModeCard extends StatelessWidget {
       onTap: onTap,
       child: DecoratedBox(
         decoration: BoxDecoration(
-          color:
-              isSelected ? ArminTheme.primary.withValues(alpha: 0.08) : null,
+          color: isSelected ? ArminTheme.primary.withValues(alpha: 0.08) : null,
           border: Border.all(
             color: isSelected ? ArminTheme.primary : ArminTheme.border,
           ),
@@ -1450,10 +1442,8 @@ class _ModeCard extends StatelessWidget {
               const SizedBox(height: 4),
               Text(mode.label,
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color:
-                            isSelected ? ArminTheme.primary : ArminTheme.ink,
-                        fontWeight:
-                            isSelected ? FontWeight.w600 : null,
+                        color: isSelected ? ArminTheme.primary : ArminTheme.ink,
+                        fontWeight: isSelected ? FontWeight.w600 : null,
                       )),
             ],
           ),
@@ -1494,7 +1484,7 @@ class _AdvancedOptions extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const SizedBox(height: 12),
-        _SectionTitle(title: '附加上下文'),
+        const _SectionTitle(title: '附加上下文'),
         const SizedBox(height: 4),
         Text(
           '可选附加上下文、错误日志或文件路径',
@@ -1536,7 +1526,7 @@ class _AdvancedOptions extends StatelessWidget {
           onChanged: onContextChanged,
         ),
         const SizedBox(height: 16),
-        _SectionTitle(title: '精细约束'),
+        const _SectionTitle(title: '精细约束'),
         const SizedBox(height: 8),
         Wrap(
           spacing: 8,
@@ -1551,7 +1541,7 @@ class _AdvancedOptions extends StatelessWidget {
           ],
         ),
         const SizedBox(height: 16),
-        _SectionTitle(title: '敏感信息'),
+        const _SectionTitle(title: '敏感信息'),
         const SizedBox(height: 8),
         TextField(
           controller: secretNameController,

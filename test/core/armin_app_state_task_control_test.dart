@@ -166,6 +166,23 @@ void main() {
     expect(state.tasks.single.shortSummary, 'stream update');
   });
 
+  test('refreshTasks reloads task list from store', () async {
+    final task = _task(status: TaskStatus.running);
+    final store = _TaskStore(task);
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: _ControlAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    store.task = task.copyWith(shortSummary: 'reloaded from store');
+    await state.refreshTasks();
+
+    expect(state.tasks.single.shortSummary, 'reloaded from store');
+    expect(store.loadTasksCount, 2);
+  });
+
   test('deleteTask removes task from store', () async {
     final task = _task(status: TaskStatus.userCompleted);
     final store = _TaskStore(task);
@@ -234,6 +251,51 @@ void main() {
     expect(agent.lastExecuteRequest?.prompt, isEmpty);
   });
 
+  test('resolveApproval routes native terminal approvals through option key',
+      () async {
+    const option = TerminalPromptOption(key: '1', label: 'Allow once');
+    final task = _task(status: TaskStatus.needApproval).copyWith(
+      approval: const ApprovalRequest(
+        reason: 'Apply this change?',
+        command: 'plan_approval',
+        risk: 'medium',
+      ),
+      terminalPrompt: const TerminalPrompt(
+        question: 'Apply this change?',
+        options: [
+          option,
+          TerminalPromptOption(key: '4', label: 'Reject and type something'),
+        ],
+      ),
+      approvalRequests: const [
+        ApprovalRequest(
+          reason: 'Apply this change?',
+          command: 'plan_approval',
+          risk: 'medium',
+        ),
+      ],
+    );
+    final store = _TaskStore(task);
+    final agent = _ControlAgent();
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: agent,
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await state.resolveApproval(task, approved: true);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(agent.events, isNot(contains('sendFollowUp')));
+    expect(agent.selectedTerminalOption, '1');
+    expect(store.task!.status, TaskStatus.running);
+    expect(store.task!.approval, isNull);
+    expect(store.task!.terminalPrompt, isNull);
+    expect(store.task!.approvalRequests.single.status, 'approved');
+    expect(agent.lastExecuteRequest?.attachOnly, isTrue);
+  });
+
   test('terminal prompt update persists selectable terminal actions', () async {
     final task = _task(status: TaskStatus.running);
     final store = _TaskStore(task);
@@ -255,6 +317,27 @@ void main() {
     expect(store.task!.terminalPrompt?.options.first.label, 'Allow once');
     expect(
         store.task!.metricEvents.last.eventType, 'terminal_prompt_requested');
+  });
+
+  test('needsAttention update changes running task to needAttention', () async {
+    final task = _task(status: TaskStatus.running);
+    final store = _TaskStore(task);
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: _NeedsAttentionAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    state.startTaskExecution(
+      task,
+      const AgentExecutionRequest(prompt: 'Task'),
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    expect(store.task!.status, TaskStatus.needAttention);
+    expect(store.task!.shortSummary, 'Agent 正在等待你的输入');
+    expect(store.task!.metricEvents.last.eventType, 'need_attention');
   });
 
   test('selectTerminalOption writes selected key and resumes observation',
@@ -397,7 +480,67 @@ world
     expect(
         agent.lastExecuteRequest?.tmuxSessionName, task.host.tmuxSessionName);
     expect(store.task!.turns.last.cleanedOutput, contains('world'));
-    expect(store.task!.result?.summary, contains('world'));
+    expect(store.task!.result, isNull);
+    expect(agent.events, contains('captureLog'));
+  });
+
+  test('refreshTaskFromRemote recovers approval prompt while task is running',
+      () async {
+    final task = _task(status: TaskStatus.running).copyWith(
+      approvalRequests: [
+        ApprovalRequest(
+          reason: 'Apply this change?',
+          command: 'plan_approval',
+          risk: 'medium',
+          status: 'approved',
+          resolvedAt: DateTime(2026, 5, 18, 0, 1),
+        ),
+      ],
+      turns: [
+        NativeOutputTurn(
+          id: 'turn-task-1-1',
+          taskId: 'task-1',
+          turnIndex: 1,
+          userInput: '写 README',
+          rawOutput: '',
+          cleanedOutput: '',
+          startedAt: DateTime(2026, 5, 18),
+          lastOutputAt: DateTime(2026, 5, 18),
+          status: NativeOutputTurnStatus.running,
+        ),
+      ],
+    );
+    final store = _TaskStore(task);
+    final agent = _ControlAgent()
+      ..capturedLog = '''
+Tool: Write
+File: README.md
+
+Apply this change?
+
+  ❯ 1. Allow once
+    2. Allow for this session
+    3. Modify with external editor
+    4. Reject and type something
+    5. No
+''';
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: agent,
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await state.refreshTaskFromRemote(task);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(store.task!.status, TaskStatus.needApproval);
+    expect(store.task!.approval?.reason, 'Apply this change?');
+    expect(store.task!.approvalRequests.single.reason, 'Apply this change?');
+    expect(store.task!.approvalRequests.single.status, 'pending');
+    expect(store.task!.approvalRequests.single.resolvedAt, isNull);
+    expect(store.task!.terminalPrompt?.options.first.label, 'Allow once');
+    expect(agent.lastExecuteRequest?.attachOnly, isTrue);
     expect(agent.events, contains('captureLog'));
   });
 
@@ -1068,6 +1211,11 @@ class _ControlAgent implements AgentSessionService {
   }
 
   @override
+  Future<void> interrupt(AgentControlRequest request) async {
+    events.add('interrupt');
+  }
+
+  @override
   Future<void> sendFollowUp(AgentControlRequest request) async {
     events.add('sendFollowUp');
     lastFollowUp = request.instruction;
@@ -1271,6 +1419,17 @@ class _TerminalPromptAgent extends _ControlAgent {
           TerminalPromptOption(key: '4', label: 'No'),
         ],
       ),
+    );
+  }
+}
+
+class _NeedsAttentionAgent extends _ControlAgent {
+  @override
+  Stream<AgentExecutionUpdate> execute(AgentExecutionRequest request) async* {
+    yield const AgentExecutionUpdate(
+      rawOutput: 'Permission Required',
+      cleanedOutput: 'Permission Required',
+      needsAttention: true,
     );
   }
 }

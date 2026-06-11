@@ -42,6 +42,9 @@ class TaskDetailScreen extends StatefulWidget {
 class _TaskDetailScreenState extends State<TaskDetailScreen>
     with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   static const _resultTabIndex = 1;
+  static const _refreshTriggerDistance = 96.0;
+  static const _topRefreshGestureHeight = 180.0;
+  static const _maxTopPullOffset = 36.0;
 
   late final TabController _tabController =
       TabController(length: 3, vsync: this);
@@ -52,6 +55,11 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
   StreamSubscription<RuntimeEvent>? _eventSubscription;
   int _resultVersion = 0;
   RuntimeTaskSnapshot? _progressSnapshot;
+  bool _taskPageAtTop = true;
+  bool _topRefreshTracking = false;
+  bool _topRefreshArmed = false;
+  bool _topRefreshRunning = false;
+  double _topRefreshDragDistance = 0;
 
   @override
   void initState() {
@@ -107,7 +115,9 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
       case RuntimeEventType.taskCompleted:
       case RuntimeEventType.taskFailed:
       case RuntimeEventType.taskCancelled:
+      case RuntimeEventType.taskStopped:
       case RuntimeEventType.taskWaitingUser:
+      case RuntimeEventType.taskPaused:
         // Terminal / low-frequency: bump version so _ResultPanel does a full
         // recomputation. Clear progress snapshot so UI switches to full
         // TaskSession data.
@@ -117,9 +127,27 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
         });
       case RuntimeEventType.taskCreated:
       case RuntimeEventType.taskStarted:
+      case RuntimeEventType.taskResumed:
+      case RuntimeEventType.connectionRestored:
         setState(() {
           _resultVersion++;
         });
+      case RuntimeEventType.outputUpdated:
+      case RuntimeEventType.deliverableUpdated:
+      case RuntimeEventType.approvalRequested:
+      case RuntimeEventType.approvalResolving:
+      case RuntimeEventType.approvalResolved:
+      case RuntimeEventType.approvalRejected:
+      case RuntimeEventType.approvalFailed:
+      case RuntimeEventType.observerAttached:
+      case RuntimeEventType.observerDetached:
+      case RuntimeEventType.connectionLost:
+      case RuntimeEventType.reviewSubmitted:
+      case RuntimeEventType.waitingForInstruction:
+      case RuntimeEventType.waitingForReview:
+      case RuntimeEventType.waitingForApproval:
+        // New event types: no special handling needed for detail screen yet.
+        break;
     }
   }
 
@@ -180,64 +208,176 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
       ),
       body: SafeArea(
         top: false,
-        child: NestedScrollView(
-          headerSliverBuilder: (context, innerBoxIsScrolled) => [
-            SliverPadding(
-              padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
-              sliver: SliverToBoxAdapter(child: _TaskHeader(task: task)),
-            ),
-            SliverPadding(
-              padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
-              sliver: SliverToBoxAdapter(
-                child: _CurrentSituationCard(
-                    task: task, progressSnapshot: _progressSnapshot),
-              ),
-            ),
-            SliverPadding(
-              padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
-              sliver: SliverToBoxAdapter(
-                child: KeyedSubtree(
-                  key: _attentionAnchorKey,
-                  child: _TaskNeedsPanel(
-                    task: task,
-                    onViewResult: _revealLatestResult,
+        child: Listener(
+          onPointerDown: _handleTopRefreshPointerDown,
+          onPointerMove: _handleTopRefreshPointerMove,
+          onPointerUp: (_) => _finishTopRefreshGesture(context, task),
+          onPointerCancel: (_) => _resetTopRefreshGesture(),
+          child: Stack(
+            children: [
+              Transform.translate(
+                offset: Offset(0, _topPullOffset),
+                child: NotificationListener<ScrollNotification>(
+                  onNotification: _handleTaskScrollNotification,
+                  child: NestedScrollView(
+                    physics: const _DeliberateRefreshScrollPhysics(),
+                    headerSliverBuilder: (context, innerBoxIsScrolled) => [
+                      SliverPadding(
+                        padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
+                        sliver:
+                            SliverToBoxAdapter(child: _TaskHeader(task: task)),
+                      ),
+                      SliverPadding(
+                        padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
+                        sliver: SliverToBoxAdapter(
+                          child: _CurrentSituationCard(
+                              task: task, progressSnapshot: _progressSnapshot),
+                        ),
+                      ),
+                      SliverPadding(
+                        padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
+                        sliver: SliverToBoxAdapter(
+                          child: KeyedSubtree(
+                            key: _attentionAnchorKey,
+                            child: _TaskNeedsPanel(
+                              task: task,
+                              onViewResult: _revealLatestResult,
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SliverToBoxAdapter(child: SizedBox(height: 8)),
+                      SliverPersistentHeader(
+                        pinned: true,
+                        delegate: _TabBarHeaderDelegate(
+                          TabBar(
+                            controller: _tabController,
+                            isScrollable: false,
+                            labelColor: ArminTheme.ink,
+                            indicatorColor: ArminTheme.primary,
+                            tabs: const [
+                              Tab(text: '动态'),
+                              Tab(text: '产出'),
+                              Tab(text: '高级'),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                    body: TabBarView(
+                      controller: _tabController,
+                      children: [
+                        _TimelinePanel(task: task),
+                        _ResultPanel(
+                          task: task,
+                          revealLatestTurnToken: _latestTurnRevealToken,
+                          resultVersion: _resultVersion,
+                        ),
+                        _AdvancedDebugPanel(task: task),
+                      ],
+                    ),
                   ),
                 ),
               ),
-            ),
-            const SliverToBoxAdapter(child: SizedBox(height: 8)),
-            SliverPersistentHeader(
-              pinned: true,
-              delegate: _TabBarHeaderDelegate(
-                TabBar(
-                  controller: _tabController,
-                  isScrollable: false,
-                  labelColor: ArminTheme.ink,
-                  indicatorColor: ArminTheme.primary,
-                  tabs: const [
-                    Tab(text: '动态'),
-                    Tab(text: '产出'),
-                    Tab(text: '高级'),
-                  ],
+              if (_topRefreshArmed || _topRefreshRunning)
+                const Positioned(
+                  top: 12,
+                  left: 0,
+                  right: 0,
+                  child: Center(
+                    child: SizedBox(
+                      width: 22,
+                      height: 22,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2.4,
+                        color: ArminTheme.primary,
+                      ),
+                    ),
+                  ),
                 ),
-              ),
-            ),
-          ],
-          body: TabBarView(
-            controller: _tabController,
-            children: [
-              _TimelinePanel(task: task),
-              _ResultPanel(
-                task: task,
-                revealLatestTurnToken: _latestTurnRevealToken,
-                resultVersion: _resultVersion,
-              ),
-              _AdvancedDebugPanel(task: task),
             ],
           ),
         ),
       ),
     );
+  }
+
+  double get _topPullOffset =>
+      math.min(_topRefreshDragDistance * 0.35, _maxTopPullOffset);
+
+  void _handleTopRefreshPointerDown(PointerDownEvent event) {
+    final canStart = _taskPageAtTop &&
+        event.localPosition.dy <= _topRefreshGestureHeight &&
+        !_topRefreshRunning;
+    _topRefreshTracking = canStart;
+    _topRefreshDragDistance = 0;
+    _topRefreshArmed = false;
+  }
+
+  void _handleTopRefreshPointerMove(PointerMoveEvent event) {
+    if (!_topRefreshTracking || event.delta.dy <= 0) {
+      return;
+    }
+    setState(() {
+      _topRefreshDragDistance += event.delta.dy;
+      _topRefreshArmed = _topRefreshDragDistance >= _refreshTriggerDistance;
+    });
+  }
+
+  Future<void> _finishTopRefreshGesture(
+    BuildContext context,
+    TaskSession task,
+  ) async {
+    if (!_topRefreshTracking) {
+      return;
+    }
+    final shouldRefresh = _topRefreshDragDistance >= _refreshTriggerDistance;
+    _topRefreshTracking = false;
+    if (!shouldRefresh) {
+      _resetTopRefreshGesture();
+      return;
+    }
+    setState(() {
+      _topRefreshRunning = true;
+      _topRefreshArmed = true;
+      _topRefreshDragDistance = _refreshTriggerDistance;
+    });
+    try {
+      await AppStateScope.read(context).refreshTaskFromRemote(task);
+    } catch (error) {
+      if (!context.mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('同步远端状态失败：$error')),
+      );
+    }
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _topRefreshRunning = false;
+      _topRefreshArmed = false;
+      _topRefreshDragDistance = 0;
+    });
+  }
+
+  void _resetTopRefreshGesture() {
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _topRefreshTracking = false;
+      _topRefreshArmed = false;
+      _topRefreshDragDistance = 0;
+    });
+  }
+
+  bool _handleTaskScrollNotification(ScrollNotification notification) {
+    if (notification.depth == 0 && notification.metrics.axis == Axis.vertical) {
+      _taskPageAtTop = notification.metrics.extentBefore == 0;
+    }
+    return false;
   }
 
   void _maybeRevealAttentionAction(TaskSession task) {
@@ -397,6 +537,20 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
         task.status == TaskStatus.userFailed ||
         task.status == TaskStatus.stopped ||
         task.status == TaskStatus.runtimeLost;
+  }
+}
+
+class _DeliberateRefreshScrollPhysics extends AlwaysScrollableScrollPhysics {
+  const _DeliberateRefreshScrollPhysics({super.parent});
+
+  static const _dragStartThreshold = 36.0;
+
+  @override
+  double get dragStartDistanceMotionThreshold => _dragStartThreshold;
+
+  @override
+  _DeliberateRefreshScrollPhysics applyTo(ScrollPhysics? ancestor) {
+    return _DeliberateRefreshScrollPhysics(parent: buildParent(ancestor));
   }
 }
 
@@ -786,9 +940,7 @@ class _TurnSummaryRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final title = turn.turnIndex == 1
-        ? '初始任务输出'
-        : '上下文更新输出 ${turn.turnIndex}';
+    final title = turn.turnIndex == 1 ? '初始任务输出' : '上下文更新输出 ${turn.turnIndex}';
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -818,7 +970,8 @@ class _TurnSummaryRow extends StatelessWidget {
         if (turn.rawOutput.isNotEmpty || turn.cleanedOutput.isNotEmpty) ...[
           const SizedBox(height: 6),
           _LazyTurnOutputExpansion(
-            key: ValueKey('${turn.id}:${turn.lastOutputAt.microsecondsSinceEpoch}'),
+            key: ValueKey(
+                '${turn.id}:${turn.lastOutputAt.microsecondsSinceEpoch}'),
             turns: turns,
             turnIndex: turnIndex,
           ),
@@ -1058,7 +1211,6 @@ class _ResultPanelState extends State<_ResultPanel> {
     final result = widget.task.result;
     return ListView(
       key: const PageStorageKey<String>('task-detail-result-list'),
-      physics: const AlwaysScrollableScrollPhysics(),
       padding: const EdgeInsets.fromLTRB(20, 20, 20, 96),
       children: [
         SizedBox(key: _topAnchorKey, height: 0),
@@ -1172,27 +1324,28 @@ class _ResultPanelState extends State<_ResultPanel> {
     if (summaries.isNotEmpty) {
       return summaries;
     }
-    final legacy = await provider.summarize(
+    final explicitResult = _explicitResultSummary(task);
+    if (explicitResult.isEmpty) {
+      return const [];
+    }
+    final resultSummary = await provider.summarize(
       OutputSummaryRequest(
-        cleanedOutput: _legacyOutputSource(task),
+        cleanedOutput: explicitResult,
         status: task.status,
         taskTitle: task.title,
-        promptInputs: [
-          task.userText,
-          ...task.turns.map((turn) => turn.userInput)
-        ],
+        promptInputs: [task.userText],
         agentCommand: task.host.agentCommand,
       ),
     );
-    final text = legacy.displaySummary.trim();
+    final text = resultSummary.displaySummary.trim();
     return text.isEmpty
         ? const []
         : [
             _TurnOutputSummary(
               title: '结果',
               text: text,
-              speechText: legacy.speechSummary.trim().isNotEmpty
-                  ? legacy.speechSummary.trim()
+              speechText: resultSummary.speechSummary.trim().isNotEmpty
+                  ? resultSummary.speechSummary.trim()
                   : DeviceVoiceService.cleanSpeechText(text),
               fullOutputForSpeech: text,
             ),
@@ -1244,18 +1397,8 @@ class _ResultPanelState extends State<_ResultPanel> {
         .join('|');
   }
 
-  String _legacyOutputSource(TaskSession task) {
-    final candidates = [
-      task.result?.summary ?? '',
-      task.summary ?? '',
-      task.shortSummary,
-    ];
-    for (final candidate in candidates) {
-      if (const CodexOutputCleaner().clean(candidate).trim().isNotEmpty) {
-        return candidate;
-      }
-    }
-    return '';
+  String _explicitResultSummary(TaskSession task) {
+    return const CodexOutputCleaner().clean(task.result?.summary ?? '').trim();
   }
 }
 
@@ -1337,7 +1480,10 @@ class _ResultDetailsSectionState extends State<_ResultDetailsSection> {
     return values.isEmpty ||
         values.every((v) {
           final trimmed = v.trim();
-          return trimmed.isEmpty || trimmed == '-' || trimmed == '无' || trimmed == 'None';
+          return trimmed.isEmpty ||
+              trimmed == '-' ||
+              trimmed == '无' ||
+              trimmed == 'None';
         });
   }
 }
@@ -1509,7 +1655,10 @@ class _DetailList extends StatelessWidget {
 
   static bool _isEmpty(String value) {
     final trimmed = value.trim();
-    return trimmed.isEmpty || trimmed == '-' || trimmed == '无' || trimmed == 'None';
+    return trimmed.isEmpty ||
+        trimmed == '-' ||
+        trimmed == '无' ||
+        trimmed == 'None';
   }
 
   bool get _allEmpty => values.every(_isEmpty);
@@ -1608,7 +1757,8 @@ class _TaskNeedsPanelState extends State<_TaskNeedsPanel> {
             ),
             const SizedBox(height: 12),
           ],
-          if (task.terminalPrompt != null && _pendingApproval(task) == null) ...[
+          if (task.terminalPrompt != null &&
+              _pendingApproval(task) == null) ...[
             _TerminalPromptCard(
               prompt: task.terminalPrompt!,
               onSelect: (option) => _selectTerminalPromptOption(
@@ -1819,9 +1969,10 @@ class _TaskNeedsPanelState extends State<_TaskNeedsPanel> {
     TaskSession task,
   ) async {
     final provider = AppStateScope.of(context).outputSummaryProvider;
-    if (task.turns.isNotEmpty) {
-      final latestIndex = task.turns.length - 1;
-      final latestTurn = task.turns.last;
+    final latestResult = _latestResultTurn(task);
+    if (latestResult != null) {
+      final latestIndex = latestResult.index;
+      final latestTurn = latestResult.turn;
       final summary = await provider.summarize(
         OutputSummaryRequest(
           cleanedOutput:
@@ -1841,40 +1992,56 @@ class _TaskNeedsPanelState extends State<_TaskNeedsPanel> {
       }
     }
 
-    final legacySummary = await provider.summarize(
+    final explicitResult = _explicitResultSummary(task);
+    if (explicitResult.isEmpty) {
+      return '';
+    }
+    final resultSummary = await provider.summarize(
       OutputSummaryRequest(
-        cleanedOutput: _legacyOutputSource(task),
+        cleanedOutput: explicitResult,
         status: task.status,
         taskTitle: task.title,
-        promptInputs: [
-          task.userText,
-          ...task.turns.map((turn) => turn.userInput)
-        ],
+        promptInputs: [task.userText],
         agentCommand: task.host.agentCommand,
       ),
     );
-    final legacyText = legacySummary.displaySummary.trim();
-    if (legacyText.isEmpty) {
+    final resultText = resultSummary.displaySummary.trim();
+    if (resultText.isEmpty) {
       return '';
     }
-    final speechText = legacySummary.speechSummary.trim();
+    final speechText = resultSummary.speechSummary.trim();
     return speechText.isNotEmpty
         ? speechText
-        : DeviceVoiceService.cleanSpeechText(legacyText);
+        : DeviceVoiceService.cleanSpeechText(resultText);
   }
 
-  String _legacyOutputSource(TaskSession task) {
-    final candidates = [
-      task.result?.summary ?? '',
-      task.summary ?? '',
-      task.shortSummary,
-    ];
-    for (final candidate in candidates) {
-      if (const CodexOutputCleaner().clean(candidate).trim().isNotEmpty) {
-        return candidate;
+  _IndexedTurn? _latestResultTurn(TaskSession task) {
+    for (var index = task.turns.length - 1; index >= 0; index--) {
+      final turn = task.turns[index];
+      if (_isReadableResultTurn(turn.status)) {
+        return _IndexedTurn(index: index, turn: turn);
       }
     }
-    return '';
+    return null;
+  }
+
+  bool _isReadableResultTurn(NativeOutputTurnStatus status) {
+    return switch (status) {
+      NativeOutputTurnStatus.needAttention ||
+      NativeOutputTurnStatus.running =>
+        false,
+      NativeOutputTurnStatus.turnIdle ||
+      NativeOutputTurnStatus.runtimeLost ||
+      NativeOutputTurnStatus.failed ||
+      NativeOutputTurnStatus.completedByUser ||
+      NativeOutputTurnStatus.failedByUser ||
+      NativeOutputTurnStatus.stopped =>
+        true,
+    };
+  }
+
+  String _explicitResultSummary(TaskSession task) {
+    return const CodexOutputCleaner().clean(task.result?.summary ?? '').trim();
   }
 }
 
@@ -2321,20 +2488,18 @@ class _AdvancedDebugPanelState extends State<_AdvancedDebugPanel> {
                         ),
               ),
               _ControlButton(
-                icon: controlState == RuntimeControlState.paused
-                    ? Icons.play_arrow_outlined
-                    : Icons.pause_outlined,
-                label: controlState == RuntimeControlState.paused ? '恢复' : '暂停',
-                tone: ControlTone.neutral,
-                onPressed: controlState == RuntimeControlState.stopped ||
-                        controlState == RuntimeControlState.detached
-                    ? null
-                    : () => _runControlAction(
+                icon: Icons.not_interested_outlined,
+                label: '中断',
+                tone: ControlTone.danger,
+                onPressed: task.turns.isNotEmpty &&
+                        task.turns.last.status ==
+                            NativeOutputTurnStatus.running
+                    ? () => _runControlAction(
                           context,
-                          () => controlState == RuntimeControlState.paused
-                              ? AppStateScope.read(context).resumeTask(task)
-                              : AppStateScope.read(context).pauseTask(task),
-                        ),
+                          () => AppStateScope.read(context)
+                              .interruptTask(task),
+                        )
+                    : null,
               ),
               _ControlButton(
                 icon: Icons.stop_rounded,
@@ -2348,27 +2513,24 @@ class _AdvancedDebugPanelState extends State<_AdvancedDebugPanel> {
                         ),
               ),
               _ControlButton(
-                icon: Icons.sensors_outlined,
-                label: '重新监听',
-                tone: ControlTone.neutral,
-                onPressed: controlState == RuntimeControlState.detached
-                    ? () => _runControlAction(
-                          context,
-                          () => AppStateScope.read(context).reconnectTask(task),
-                        )
-                    : null,
-              ),
-              _ControlButton(
-                icon: Icons.link_off_outlined,
-                label: '断开监听',
-                tone: ControlTone.danger,
-                onPressed: controlState == RuntimeControlState.stopped ||
-                        controlState == RuntimeControlState.detached
+                icon: controlState == RuntimeControlState.detached
+                    ? Icons.sensors_outlined
+                    : Icons.link_off_outlined,
+                label: controlState == RuntimeControlState.detached
+                    ? '重新监听'
+                    : '断开监听',
+                tone: controlState == RuntimeControlState.detached
+                    ? ControlTone.neutral
+                    : ControlTone.danger,
+                onPressed: controlState == RuntimeControlState.stopped
                     ? null
                     : () => _runControlAction(
                           context,
-                          () =>
-                              AppStateScope.read(context).disconnectTask(task),
+                          () => controlState == RuntimeControlState.detached
+                              ? AppStateScope.read(context)
+                                  .reconnectTask(task)
+                              : AppStateScope.read(context)
+                                  .disconnectTask(task),
                         ),
               ),
             ],
@@ -2891,23 +3053,13 @@ String _currentSituationText(TaskSession task) {
         ? '任务发现了需要你决定的事项。\n'
             '批准或拒绝以继续。'
         : '此任务正在等待你的决定才能继续。',
-    TaskStatus.failed ||
-    TaskStatus.userFailed =>
-      '此任务遇到了问题，需要查看后才能继续。',
-    TaskStatus.paused =>
-      '此任务已暂停。\n准备好后恢复它。',
-    TaskStatus.running ||
-    TaskStatus.pending =>
-      '此任务仍在工作中。\n当前不需要任何操作。',
-    TaskStatus.completed ||
-    TaskStatus.userCompleted =>
-      '最新结果已就绪，可供查看。',
-    TaskStatus.runtimeLost =>
-      '更新已暂停。\n如需继续观察此任务，请重新连接。',
-    TaskStatus.observerDetached =>
-      '更新已暂停。\n任务可能仍在远端运行。',
-    TaskStatus.stopped =>
-      '此任务已停止。\n查看输出，或根据需要启动新运行。',
+    TaskStatus.failed || TaskStatus.userFailed => '此任务遇到了问题，需要查看后才能继续。',
+    TaskStatus.paused => '此任务已暂停。\n准备好后恢复它。',
+    TaskStatus.running || TaskStatus.pending => '此任务仍在工作中。\n当前不需要任何操作。',
+    TaskStatus.completed || TaskStatus.userCompleted => '最新结果已就绪，可供查看。',
+    TaskStatus.runtimeLost => '更新已暂停。\n如需继续观察此任务，请重新连接。',
+    TaskStatus.observerDetached => '更新已暂停。\n任务可能仍在远端运行。',
+    TaskStatus.stopped => '此任务已停止。\n查看输出，或根据需要启动新运行。',
     TaskStatus.draft => '此任务尚未启动。',
   };
 }
@@ -2918,7 +3070,10 @@ bool _hasMeaningfulOutput(TaskSession task) {
     return true;
   }
   if (task.result?.summary != null &&
-      const CodexOutputCleaner().clean(task.result!.summary).trim().isNotEmpty) {
+      const CodexOutputCleaner()
+          .clean(task.result!.summary)
+          .trim()
+          .isNotEmpty) {
     return true;
   }
   if (task.turns.isNotEmpty) {
@@ -2940,8 +3095,7 @@ _NextAction _nextActionForTask(TaskStatus status) {
   return switch (status) {
     TaskStatus.needApproval => _NextAction(
         title: '需要你决定',
-        description:
-            '选择此任务是否可以继续执行提议的操作。',
+        description: '选择此任务是否可以继续执行提议的操作。',
         icon: Icons.rule_outlined,
         color: Colors.orange.shade700,
       ),
@@ -2953,22 +3107,19 @@ _NextAction _nextActionForTask(TaskStatus status) {
       ),
     TaskStatus.running || TaskStatus.pending => const _NextAction(
         title: '当前无需操作',
-        description:
-            '任务仍在推进。你可以让它继续运行或暂停它。',
+        description: '任务仍在推进。你可以让它继续运行或暂停它。',
         icon: Icons.play_circle_outline,
         color: ArminTheme.primary,
       ),
     TaskStatus.completed || TaskStatus.userCompleted => _NextAction(
         title: '可查看',
-        description:
-            '检查交付成果，然后接受或继续添加上下文。',
+        description: '检查交付成果，然后接受或继续添加上下文。',
         icon: Icons.fact_check_outlined,
         color: Colors.green.shade700,
       ),
     TaskStatus.failed || TaskStatus.userFailed => _NextAction(
         title: '需要查看',
-        description:
-            '检查发生的情况，并决定是否从此处继续。',
+        description: '检查发生的情况，并决定是否从此处继续。',
         icon: Icons.error_outline,
         color: Colors.red.shade700,
       ),
@@ -2980,15 +3131,13 @@ _NextAction _nextActionForTask(TaskStatus status) {
       ),
     TaskStatus.observerDetached => _NextAction(
         title: '需要时重新连接',
-        description:
-            '更新已暂停。继续前请重新连接或查看详情。',
+        description: '更新已暂停。继续前请重新连接或查看详情。',
         icon: Icons.wifi_off_outlined,
         color: Colors.blueGrey.shade700,
       ),
     TaskStatus.runtimeLost => _NextAction(
         title: '连接已暂停',
-        description:
-            '远端会话不再可用。准备好后处理任务状态。',
+        description: '远端会话不再可用。准备好后处理任务状态。',
         icon: Icons.task_alt_outlined,
         color: Colors.blueGrey.shade700,
       ),
@@ -3000,8 +3149,7 @@ _NextAction _nextActionForTask(TaskStatus status) {
       ),
     TaskStatus.stopped => _NextAction(
         title: '查看详情',
-        description:
-            '此任务已停止。查看历史记录或启动新运行。',
+        description: '此任务已停止。查看历史记录或启动新运行。',
         icon: Icons.stop_circle_outlined,
         color: Colors.grey.shade700,
       ),

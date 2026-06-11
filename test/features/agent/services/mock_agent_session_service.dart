@@ -73,6 +73,9 @@ TASK_RESULT_END
   Future<void> resume(AgentControlRequest request) async {}
 
   @override
+  Future<void> interrupt(AgentControlRequest request) async {}
+
+  @override
   Future<void> stop(AgentControlRequest request) async {}
 
   @override

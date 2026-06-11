@@ -258,6 +258,32 @@ Summer 是一个 Codex桌面宠物（pixel-art风格），角色设定为一位�
     expect(summary.displaySummary, isNot(contains('Grep(')));
   });
 
+  test('rule provider uses latest post-thinking output instead of prompt',
+      () async {
+    const prompt = '实现一个批量重命名工具，支持正则替换、前缀、后缀和序号。';
+    const output = OutputSummaryRequest(
+      cleanedOutput: '''
+实现一个批量重命名工具，支持正则替换、前缀、后缀和序号。
+Thinking...
+我需要先检查项目结构。
+核心重命名逻辑已全部就绪，实际重命名验证通过。
+下一步可以写 README.md，或者继续调整参数校验。
+''',
+      status: TaskStatus.turnIdle,
+      taskTitle: prompt,
+      promptInputs: [prompt],
+    );
+
+    final summary =
+        await const RuleBasedOutputSummaryProvider().summarize(output);
+
+    expect(summary.displaySummary, contains('核心重命名逻辑已全部就绪'));
+    expect(summary.displaySummary, contains('下一步可以写 README.md'));
+    expect(summary.displaySummary, isNot(contains('实现一个批量重命名工具')));
+    expect(summary.displaySummary, isNot(contains('Thinking')));
+    expect(summary.displaySummary, isNot(contains('检查项目结构')));
+  });
+
   test('rule provider removes meta narration prefixes before results',
       () async {
     const metaNarration = OutputSummaryRequest(
@@ -481,6 +507,70 @@ pin-up 风格，含 9 个动画状态（idle/running/waving/jumping/failed/waiti
     expect(summary.speechSummary, contains('API'));
     expect(summary.displaySummary, isNot(contains('|')));
     expect(summary.displaySummary, isNot(contains('---')));
+  });
+
+  test('rule provider preserves context around structured table results',
+      () async {
+    const tableOutput = OutputSummaryRequest(
+      cleanedOutput: '''
+核心重命名逻辑已全部就绪，实际重命名验证通过。当前实现的核心函数：
+┌──────────────────┬──────────────────────────────────┐
+│ 函数             │ 职责                             │
+├──────────────────┼──────────────────────────────────┤
+│ collect_files()  │ 按正则收集文件，支持递归         │
+│ build_replace()  │ re.sub 正则替换                  │
+│ build_prefix()   │ 文件名前添加前缀                 │
+│ build_suffix()   │ 文件名（扩展名前）添加后缀       │
+│ build_sequence() │ 零填充序号重命名                 │
+│ process_files()  │ 调度各模式，生成变更列表         │
+│ apply_changes()  │ 执行重命名，含冲突检测和 dry-run │
+└──────────────────┴──────────────────────────────────┘
+下一步可以写 README.md，或者你觉得有需要调整的地方。
+''',
+      status: TaskStatus.turnIdle,
+      taskTitle: '实现重命名工具',
+    );
+
+    final summary =
+        await const RuleBasedOutputSummaryProvider().summarize(tableOutput);
+
+    expect(summary.displaySummary, contains('核心重命名逻辑已全部就绪'));
+    expect(summary.displaySummary, contains('实际重命名验证通过'));
+    expect(summary.displaySummary, contains('collect_files()，按正则收集文件'));
+    expect(summary.displaySummary, contains('apply_changes()，执行重命名'));
+    expect(summary.displaySummary, contains('下一步可以写 README.md'));
+    expect(summary.displaySummary, isNot(contains('│')));
+    expect(summary.displaySummary, isNot(contains('┌')));
+  });
+
+  test('rule provider filters prompt before structured table results',
+      () async {
+    const prompt = '实现一个批量重命名工具，支持正则替换、前缀、后缀和序号。';
+    const tableOutput = OutputSummaryRequest(
+      cleanedOutput: '''
+实现一个批量重命名工具，支持正则替换、前缀、后缀和序号。
+核心重命名逻辑已全部就绪，实际重命名验证通过。当前实现的核心函数：
+┌──────────────────┬──────────────────────────────────┐
+│ 函数             │ 职责                             │
+├──────────────────┼──────────────────────────────────┤
+│ collect_files()  │ 按正则收集文件，支持递归         │
+│ apply_changes()  │ 执行重命名，含冲突检测和 dry-run │
+└──────────────────┴──────────────────────────────────┘
+下一步可以写 README.md，或者继续调整参数校验。
+''',
+      status: TaskStatus.turnIdle,
+      taskTitle: prompt,
+      promptInputs: [prompt],
+    );
+
+    final summary =
+        await const RuleBasedOutputSummaryProvider().summarize(tableOutput);
+
+    expect(summary.displaySummary, isNot(contains('实现一个批量重命名工具')));
+    expect(summary.displaySummary, contains('核心重命名逻辑已全部就绪'));
+    expect(summary.displaySummary, contains('collect_files()，按正则收集文件'));
+    expect(summary.displaySummary, contains('下一步可以写 README.md'));
+    expect(summary.displaySummary, isNot(contains('│')));
   });
 
   test('rule provider merges wrapped table cells before summarizing', () async {
@@ -795,6 +885,41 @@ You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro).
     expect(summary.speechSummary, isNot(contains('SKILL.md')));
     expect(summary.speechSummary, isNot(contains('/Users/ironion')));
     expect(summary.speechSummary, isNot(contains('Use /skills')));
+  });
+
+  test('rule provider strips Permission Required approval prompt block',
+      () async {
+    // Simpler case: prompt with a clear result after
+    const output = 'Permission Required\n'
+        '\n'
+        'Tool: Write\n'
+        'File: test.py\n'
+        '\n'
+        '    1 print("hello")\n'
+        '\n'
+        'Apply this change?\n'
+        '\n'
+        '  \u003e 1. Allow once\n'
+        '    2. Allow for this session\n'
+        '    3. Reject and type something\n'
+        '    4. No\n'
+        '\n'
+        '\u4efb\u52a1\u5b8c\u6210\uff0c\u5df2\u521b\u5efa\u6587\u4ef6\u3002\n';
+
+    final summary = await const RuleBasedOutputSummaryProvider().summarize(
+      const OutputSummaryRequest(
+        cleanedOutput: output,
+        status: TaskStatus.turnIdle,
+        taskTitle: 'test',
+      ),
+    );
+
+    expect(summary.displaySummary, isNotEmpty);
+    expect(summary.displaySummary, contains('\u4efb\u52a1\u5b8c\u6210'));
+    expect(summary.displaySummary, isNot(contains('Permission Required')));
+    expect(summary.displaySummary, isNot(contains('Apply this change')));
+    expect(summary.displaySummary, isNot(contains('Allow once')));
+    expect(summary.displaySummary, isNot(contains('print("hello")')));
   });
 }
 

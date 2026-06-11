@@ -196,8 +196,7 @@ void main() {
 
     expect(find.text('当前状况'), findsOneWidget);
     expect(
-      find.text(
-          '此任务正在等待你的下一步指令才能继续。'),
+      find.text('此任务正在等待你的下一步指令才能继续。'),
       findsAtLeastNWidgets(1),
     );
     expect(find.text('这个任务需要什么'), findsOneWidget);
@@ -885,6 +884,71 @@ Allow this command to run? Redirection detected.
     expect(find.text('暂无结果'), findsOneWidget);
   });
 
+  testWidgets('result panel ignores summary and shortSummary fallback',
+      (tester) async {
+    final task = _task().copyWith(
+      status: TaskStatus.turnIdle,
+      summary: 'LEGACY_SUMMARY_SHOULD_NOT_RENDER',
+      shortSummary: 'LEGACY_SHORT_SUMMARY_SHOULD_NOT_RENDER',
+    );
+    final state = ArminAppState(
+      store: _TaskStore(task),
+      agentSessionService: const _NoopAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await tester.pumpWidget(
+      AppStateScope(
+        state: state,
+        child: const MaterialApp(home: TaskDetailScreen(taskId: 'task-1')),
+      ),
+    );
+    await _tapDetailTab(tester, '结果');
+
+    expect(
+        find.textContaining('LEGACY_SUMMARY_SHOULD_NOT_RENDER'), findsNothing);
+    expect(find.textContaining('LEGACY_SHORT_SUMMARY_SHOULD_NOT_RENDER'),
+        findsNothing);
+    expect(find.text('暂无结果'), findsOneWidget);
+  });
+
+  testWidgets('result panel uses explicit TaskResult summary', (tester) async {
+    final task = _task().copyWith(
+      status: TaskStatus.completed,
+      result: const TaskResult(
+        status: 'success',
+        summary: '显式任务结果已生成。',
+        changedFiles: [],
+        validation: [],
+        risks: [],
+        nextActions: [],
+      ),
+      summary: 'LEGACY_SUMMARY_SHOULD_NOT_RENDER',
+      shortSummary: 'LEGACY_SHORT_SUMMARY_SHOULD_NOT_RENDER',
+    );
+    final state = ArminAppState(
+      store: _TaskStore(task),
+      agentSessionService: const _NoopAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await tester.pumpWidget(
+      AppStateScope(
+        state: state,
+        child: const MaterialApp(home: TaskDetailScreen(taskId: 'task-1')),
+      ),
+    );
+    await _tapDetailTab(tester, '结果');
+
+    expect(find.textContaining('显式任务结果已生成'), findsWidgets);
+    expect(
+        find.textContaining('LEGACY_SUMMARY_SHOULD_NOT_RENDER'), findsNothing);
+    expect(find.textContaining('LEGACY_SHORT_SUMMARY_SHOULD_NOT_RENDER'),
+        findsNothing);
+  });
+
   testWidgets('result refreshes after reloading updated turns', (tester) async {
     final now = DateTime(2026, 5, 18);
     final initialTask = _task().copyWith(
@@ -1395,6 +1459,121 @@ Summer 是一个桌面宠物。
     expect(find.text('未命名任务'), findsWidgets);
     expect(find.byTooltip('编辑标题'), findsOneWidget);
   });
+
+  testWidgets('pull to refresh resyncs remote approval prompt', (tester) async {
+    final task = _task().copyWith(
+      status: TaskStatus.running,
+      approvalRequests: [
+        ApprovalRequest(
+          reason: 'Apply this change?',
+          command: 'plan_approval',
+          risk: 'medium',
+          status: 'approved',
+          resolvedAt: DateTime(2026, 5, 18, 0, 1),
+        ),
+      ],
+    );
+    final store = _TaskStore(task);
+    final agent = _RefreshingAgent()
+      ..capturedLog = '''
+Tool: Write
+File: README.md
+
+Apply this change?
+
+  ❯ 1. Allow once
+    2. Allow for this session
+    3. Modify with external editor
+    4. Reject and type something
+    5. No
+''';
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: agent,
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await tester.pumpWidget(
+      AppStateScope(
+        state: state,
+        child: const MaterialApp(home: TaskDetailScreen(taskId: 'task-1')),
+      ),
+    );
+
+    final topStart =
+        tester.getTopLeft(find.byType(NestedScrollView)) + const Offset(24, 24);
+    final gesture = await tester.startGesture(topStart);
+    await gesture.moveBy(const Offset(0, 140));
+    await gesture.up();
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+    await tester.pumpAndSettle();
+
+    expect(agent.captureCount, greaterThan(0));
+    expect(store.task.status, TaskStatus.needApproval);
+    expect(find.text('任务确认'), findsOneWidget);
+    expect(find.text('Apply this change?'), findsWidgets);
+    expect(find.text('允许'), findsWidgets);
+  });
+
+  testWidgets('small pull on task detail does not trigger refresh',
+      (tester) async {
+    final task = _task().copyWith(status: TaskStatus.running);
+    final store = _TaskStore(task);
+    final agent = _RefreshingAgent()..capturedLog = 'Apply this change?';
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: agent,
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await tester.pumpWidget(
+      AppStateScope(
+        state: state,
+        child: const MaterialApp(home: TaskDetailScreen(taskId: 'task-1')),
+      ),
+    );
+
+    final topStart =
+        tester.getTopLeft(find.byType(NestedScrollView)) + const Offset(24, 24);
+    final gesture = await tester.startGesture(topStart);
+    await gesture.moveBy(const Offset(0, 24));
+    await gesture.up();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(agent.captureCount, 0);
+    expect(store.task.status, TaskStatus.running);
+  });
+
+  testWidgets('pull inside task detail tabs does not trigger refresh',
+      (tester) async {
+    final task = _task().copyWith(status: TaskStatus.running);
+    final store = _TaskStore(task);
+    final agent = _RefreshingAgent()..capturedLog = 'Apply this change?';
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: agent,
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await tester.pumpWidget(
+      AppStateScope(
+        state: state,
+        child: const MaterialApp(home: TaskDetailScreen(taskId: 'task-1')),
+      ),
+    );
+
+    await tester.drag(find.byType(ListView).first, const Offset(0, 500));
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+
+    expect(agent.captureCount, 0);
+    expect(store.task.status, TaskStatus.running);
+  });
 }
 
 TaskSession _task() {
@@ -1476,6 +1655,9 @@ class _NoopAgent implements AgentSessionService {
   Future<void> resume(AgentControlRequest request) async {}
 
   @override
+  Future<void> interrupt(AgentControlRequest request) async {}
+
+  @override
   Future<void> sendFollowUp(AgentControlRequest request) async {}
 
   @override
@@ -1541,6 +1723,23 @@ class _CapturingAgent extends _NoopAgent {
   @override
   Future<void> cleanup(AgentControlRequest request) async {
     cleanedUp = true;
+  }
+}
+
+class _RefreshingAgent extends _NoopAgent {
+  String capturedLog = '';
+  int captureCount = 0;
+  AgentExecutionRequest? lastExecuteRequest;
+
+  @override
+  Stream<AgentExecutionUpdate> execute(AgentExecutionRequest request) async* {
+    lastExecuteRequest = request;
+  }
+
+  @override
+  Future<String> captureLog(AgentControlRequest request) async {
+    captureCount++;
+    return capturedLog;
   }
 }
 

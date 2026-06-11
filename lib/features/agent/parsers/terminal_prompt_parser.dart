@@ -105,6 +105,7 @@ class TerminalPromptParser {
     }
     return lower.contains('execut') ||
         lower.contains('allow') ||
+        lower.contains('apply') ||
         lower.contains('approv') ||
         lower.contains('proceed') ||
         lower.contains('运行') ||

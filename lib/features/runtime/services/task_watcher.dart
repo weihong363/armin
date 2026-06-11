@@ -1,5 +1,20 @@
 import '../models/runtime_task_snapshot.dart';
 
+/// Observes incremental terminal output and extracts progress, action,
+/// and status hints via pattern matching.
+///
+/// **Role**: Secondary compatibility layer.
+///
+/// RuntimeEventBus is the primary source of runtime state.
+/// TaskWatcher remains for:
+/// - Progress extraction (percentage patterns)
+/// - Action extraction (last meaningful line)
+/// - Summary/checkpoint extraction
+/// - Legacy output parsing compatibility
+/// - Audit-friendly output observation
+///
+/// String matching via [contains] is a **last resort fallback** —
+/// the primary state authority is [RuntimeEventBus] events.
 class TaskWatcher {
   final Map<String, int> _lastOffsets = {};
 

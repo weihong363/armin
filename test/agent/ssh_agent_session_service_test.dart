@@ -119,6 +119,8 @@ void main() {
     expect(command, contains('stable_count'));
     expect(command, contains('stable_count" -ge 4'));
     expect(command, contains('Allow execution of|Allow command execution'));
+    expect(command, contains('Permission Required'));
+    expect(command, contains('permission|approval|confirm|allow|reject'));
     expect(command, contains("'\"'\"'/usr/bin/tmux'\"'\"' capture-pane"));
     expect(command, contains('-S -80'));
     expect(command, isNot(contains('-S -2000')));
@@ -460,7 +462,10 @@ decision: approved
 
     final command = service.buildTerminalOptionCommandForTest(request, '1');
 
-    expect(command, contains("send-keys -t 'armin-2800'"));
+    expect(command, contains("has-session -t 'armin-2800'"));
+    expect(command, contains('display-message -p -t'));
+    expect(command, contains("'#{pane_id}'"));
+    expect(command, contains(r'send-keys -t "$pane"'));
     expect(command, contains("-- '1' C-m"));
   });
 }

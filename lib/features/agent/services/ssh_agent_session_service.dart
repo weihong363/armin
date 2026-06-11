@@ -152,19 +152,19 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
       );
 
       stdoutSub = session.stdout
-        .cast<List<int>>()
-        .transform(utf8.decoder)
-        .listen((text) {
-      output.write(text);
-      controller.add(_buildStreamingUpdate(text, output, observer));
-    });
-    stderrSub = session.stderr
-        .cast<List<int>>()
-        .transform(utf8.decoder)
-        .listen((text) {
-      output.write(text);
-      controller.add(_buildStreamingUpdate(text, output, observer));
-    });
+          .cast<List<int>>()
+          .transform(utf8.decoder)
+          .listen((text) {
+        output.write(text);
+        controller.add(_buildStreamingUpdate(text, output, observer));
+      });
+      stderrSub = session.stderr
+          .cast<List<int>>()
+          .transform(utf8.decoder)
+          .listen((text) {
+        output.write(text);
+        controller.add(_buildStreamingUpdate(text, output, observer));
+      });
 
       unawaited(
         Future.wait([stdoutSub.asFuture<void>(), stderrSub.asFuture<void>()])
@@ -247,15 +247,18 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
     final snapshot = observer.observe(observedOutput);
     final terminalPrompt = _terminalPromptParser.parse(observedOutput);
     final approval = _approvalParser.parse(observedOutput);
+    final isSafeMode = _currentApprovalConfig?.mode == AgentApprovalMode.safe;
+    final effectiveApproval = approval ??
+        (isSafeMode ? null : _approvalFromTerminalPrompt(terminalPrompt));
     return AgentExecutionUpdate(
       rawOutput: rawOutput,
       cleanedOutput: snapshot.cleanedOutput,
       observerState: snapshot.state,
       runtimeLost: snapshot.runtimeLost,
-      needsAttention: approval != null ||
+      needsAttention: effectiveApproval != null ||
           terminalPrompt != null ||
           snapshot.needsAttention,
-      approval: approval,
+      approval: effectiveApproval,
       terminalPrompt: terminalPrompt,
     );
   }
@@ -292,9 +295,7 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
     }
     return ApprovalRequest(
       reason: prompt.question,
-      command: prompt.command.trim().isEmpty
-          ? 'plan_approval'
-          : prompt.command,
+      command: prompt.command.trim().isEmpty ? 'plan_approval' : prompt.command,
       risk: 'medium',
     );
   }
@@ -334,6 +335,12 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
   Future<void> resume(AgentControlRequest request) async {
     _validateControlRequest(request);
     await _sendKeys(request, 'fg');
+  }
+
+  @override
+  Future<void> interrupt(AgentControlRequest request) async {
+    _validateControlRequest(request);
+    await _sendRawKeys(request, 'C-c');
   }
 
   @override
@@ -420,8 +427,12 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
 
   String _buildSendKeysCommand(AgentControlRequest request, String text) {
     final tmux = _tmuxCommand(request.tmuxCommand);
-    return '$tmux send-keys -t ${_shellQuote(request.tmuxSessionName)} '
-        '-- ${_shellQuote(text)} C-m';
+    final session = _shellQuote(request.tmuxSessionName);
+    return '''
+$tmux has-session -t $session
+pane="\$($tmux display-message -p -t $session '#{pane_id}')"
+$tmux send-keys -t "\$pane" -- ${_shellQuote(text)} C-m
+''';
   }
 
   Future<void> _pasteText(AgentControlRequest request, String text) async {
@@ -515,6 +526,7 @@ $tmux send-keys -t "\$pane" C-m$clearHistory
     final stablePolls = _runtimePolicy.stablePollCount(_pollInterval);
     final maxPolls = _runtimePolicy.maxPollCount(_pollInterval);
     final monitorStart = -_runtimePolicy.monitorCaptureLines;
+    final approvalPromptPattern = _approvalPromptPattern(profile);
     final sessionSetup = request.attachOnly
         ? '''
 if ! $tmux has-session -t $session 2>/dev/null; then
@@ -624,7 +636,7 @@ while [ "\$i" -lt $maxPolls ]; do
     fi
     break
   fi
-  if printf "%s" "\$pane_output" | grep -E -q "Allow execution of|Allow command execution|Would you like to run|Asking User|Enter select|Type Something"; then
+  if printf "%s" "\$pane_output" | grep -E -i -q ${_shellQuote(approvalPromptPattern)}; then
     if [ "\$snapshot_emitted" -eq 0 ]; then
       emit_armin_snapshot
     fi
@@ -854,6 +866,8 @@ fi
         label: 'Qoder',
         workspaceFlag: '-w',
         readyPattern: r'Qoder|qoder|/help|/status|workspace|>',
+        approvalPromptPattern:
+            r'Permission Required|Apply this change|Allow once|Reject and type something|Approve|Proceed|Continue',
         skipCodexUpdatePrompt: false,
       );
     }
@@ -861,8 +875,16 @@ fi
       label: 'Codex',
       workspaceFlag: '-C',
       readyPattern: r'OpenAI Codex|directory:',
+      approvalPromptPattern:
+          r'Permission Required|Apply this change|Allow execution of|Allow command execution|Would you like to run|Asking User|Enter select|Type Something|Allow once|Allow for this session|Reject and type something',
       skipCodexUpdatePrompt: true,
     );
+  }
+
+  String _approvalPromptPattern(_AgentRuntimeProfile profile) {
+    const genericInteractivePattern =
+        r'([0-9]{1,2}[.)][[:space:]]*(Allow|Reject|Approve|Yes|No|Continue|Proceed))|([>❯][[:space:]]*[0-9]{1,2}[.)])|((permission|approval|confirm|allow|reject|proceed|continue).{0,80}[?？])|((waiting for|asking).{0,40}(user|input))';
+    return '$genericInteractivePattern|${profile.approvalPromptPattern}';
   }
 
   String _buildReadyCheck(_AgentRuntimeProfile profile) {
@@ -1029,11 +1051,13 @@ class _AgentRuntimeProfile {
     required this.label,
     required this.workspaceFlag,
     required this.readyPattern,
+    required this.approvalPromptPattern,
     required this.skipCodexUpdatePrompt,
   });
 
   final String label;
   final String workspaceFlag;
   final String readyPattern;
+  final String approvalPromptPattern;
   final bool skipCodexUpdatePrompt;
 }

@@ -17,7 +17,8 @@ import 'codex_output_cleaner.dart';
 import 'native_output_observer.dart';
 import 'runtime_policy.dart';
 
-class SSHAgentSessionService implements AgentSessionService {
+class SSHAgentSessionService
+    implements AgentSessionService, RemoteTaskProbeService {
   SSHAgentSessionService({
     ApprovalParser? approvalParser,
     TerminalPromptParser terminalPromptParser = const TerminalPromptParser(),
@@ -369,11 +370,61 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
     return output.trim();
   }
 
+  @override
+  Future<RemoteTaskProbe> probeRemoteState(AgentControlRequest request) async {
+    _validateControlRequest(request);
+    final output = await _runControlCommand(
+      request,
+      _wrapRemoteCommand(
+        _buildProbeRemoteStateCommand(request),
+        pathPrepend: request.pathPrepend,
+        shellWrapper: request.shellWrapper,
+      ),
+    );
+    return _parseRemoteTaskProbe(output);
+  }
+
   String _buildCaptureLogCommand(AgentControlRequest request) {
     final tmux = _tmuxCommand(request.tmuxCommand);
     return '$tmux capture-pane -p -t '
         '${_shellQuote(request.tmuxSessionName)} '
         '-S -${_runtimePolicy.finalCaptureLines} 2>/dev/null || true';
+  }
+
+  String _buildProbeRemoteStateCommand(AgentControlRequest request) {
+    final tmux = _tmuxCommand(request.tmuxCommand);
+    final session = _shellQuote(request.tmuxSessionName);
+    return '''
+if ! $tmux has-session -t $session 2>/dev/null; then
+  printf '%s\\n' '__ARMIN_PROBE_SESSION_MISSING__'
+  exit 0
+fi
+$tmux capture-pane -p -t $session -S -${_runtimePolicy.monitorCaptureLines} 2>/dev/null || true
+''';
+  }
+
+  RemoteTaskProbe _parseRemoteTaskProbe(String output) {
+    if (output.contains('__ARMIN_PROBE_SESSION_MISSING__')) {
+      return const RemoteTaskProbe.missingSession();
+    }
+    final snapshot = output.trim();
+    final terminalPrompt = _terminalPromptParser.parse(snapshot);
+    final approval = _approvalParser.parse(snapshot) ??
+        _approvalFromTerminalPrompt(terminalPrompt);
+    return RemoteTaskProbe(
+      sessionExists: true,
+      snapshot: snapshot,
+      hasApprovalPrompt: approval != null,
+      hasTerminalPrompt: terminalPrompt != null,
+      hasExitedMarker: _hasExitedMarker(snapshot),
+    );
+  }
+
+  bool _hasExitedMarker(String output) {
+    return RegExp(
+      r'Armin\s+(?:Codex|Qoder)\s+exited with status',
+      caseSensitive: false,
+    ).hasMatch(output);
   }
 
   Future<SSHClient> _connect({
@@ -596,6 +647,7 @@ last_hash="\$initial_hash"
 last_emitted_hash="\$initial_hash"
 $promptSubmit
 stable_count=0
+last_stable_emitted_hash=""
 changed_after_start=0
 i=0
 while [ "\$i" -lt $maxPolls ]; do
@@ -643,10 +695,10 @@ while [ "\$i" -lt $maxPolls ]; do
     break
   fi
   if [ "\$changed_after_start" -eq 1 ] && [ "\$stable_count" -ge $stablePolls ]; then
-    if [ "\$snapshot_emitted" -eq 0 ]; then
+    if [ "\$snapshot_emitted" -eq 0 ] && [ "\$current_hash" != "\$last_stable_emitted_hash" ]; then
       emit_armin_snapshot
+      last_stable_emitted_hash="\$current_hash"
     fi
-    break
   fi
   if [ "\$i" -eq ${maxPolls - 1} ]; then
     if [ "\$snapshot_emitted" -eq 0 ]; then
@@ -784,6 +836,11 @@ fi
   @visibleForTesting
   String buildCaptureLogCommandForTest(AgentControlRequest request) {
     return _buildCaptureLogCommand(request);
+  }
+
+  @visibleForTesting
+  String buildProbeRemoteStateCommandForTest(AgentControlRequest request) {
+    return _buildProbeRemoteStateCommand(request);
   }
 
   @visibleForTesting

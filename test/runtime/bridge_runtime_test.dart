@@ -1,4 +1,5 @@
 import 'package:armin/features/runtime/models/runtime_task_snapshot.dart';
+import 'package:armin/features/runtime/models/work_state.dart';
 import 'package:armin/features/runtime/services/bridge_runtime.dart';
 import 'package:armin/features/runtime/services/runtime_event_bus.dart';
 import 'package:armin/features/runtime/services/runtime_task_store.dart';
@@ -194,5 +195,53 @@ void main() {
 
     await subscription.cancel();
     await eventBus.dispose();
+  });
+
+  test('bridge runtime restores durable work state and event history',
+      () async {
+    final store = InMemoryRuntimeTaskStore();
+    final now = DateTime(2026, 6, 7, 10);
+    final firstRuntime = BridgeRuntime(
+      taskStore: store,
+      eventBus: RuntimeEventBus(),
+    );
+
+    await firstRuntime.createTask(
+      RuntimeTaskSnapshot(
+        taskId: 'task-1',
+        status: RuntimeTaskStatus.pending,
+        createdAt: now,
+        updatedAt: now,
+      ),
+    );
+    await firstRuntime.startTask(
+      taskId: 'task-1',
+      sessionName: 'work-project',
+      projectPath: '/repo',
+      tmuxSessionName: 'armin-task-1',
+      now: now.add(const Duration(seconds: 1)),
+    );
+    await firstRuntime.markWaitingUser(
+      'task-1',
+      summary: 'Needs your instruction',
+      now: now.add(const Duration(seconds: 2)),
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    final restoredRuntime = BridgeRuntime(
+      taskStore: store,
+      eventBus: RuntimeEventBus(),
+    );
+    await restoredRuntime.restoreDurableState();
+
+    expect(
+      restoredRuntime.workState('task-1')?.phase,
+      WorkPhase.turnIdle,
+    );
+    expect(
+      restoredRuntime.diagnostics('task-1')?.lastRuntimeEventType,
+      RuntimeEventType.taskWaitingUser.wireName,
+    );
+    expect(await store.loadEvents(taskId: 'task-1'), hasLength(4));
   });
 }

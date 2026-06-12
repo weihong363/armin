@@ -14,6 +14,7 @@ dependencies:
   flutter_secure_storage: ^9.2.2
   path_provider: ^2.1.5
   speech_to_text: 7.3.0
+  sqflite: ^2.4.3
 
 dev_dependencies:
   flutter_lints: ^4.0.0

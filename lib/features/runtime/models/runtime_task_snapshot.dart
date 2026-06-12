@@ -97,6 +97,27 @@ class RuntimeTaskSnapshot {
       'checkpoint': checkpoint,
     };
   }
+
+  factory RuntimeTaskSnapshot.fromJson(Map<String, Object?> json) {
+    return RuntimeTaskSnapshot(
+      taskId: json['task_id'] as String? ?? '',
+      status: RuntimeTaskStatus.values.firstWhere(
+        (status) => status.name == json['status'],
+        orElse: () => RuntimeTaskStatus.pending,
+      ),
+      createdAt: DateTime.tryParse(json['created_at'] as String? ?? '') ??
+          DateTime.now(),
+      updatedAt: DateTime.tryParse(json['updated_at'] as String? ?? '') ??
+          DateTime.now(),
+      sessionId: json['session_id'] as String? ?? '',
+      summary: json['summary'] as String? ?? '',
+      currentStep: json['current_step'] as String? ?? '',
+      action: json['action'] as String? ?? '',
+      progress: json['progress'] as int? ?? 0,
+      lastLogOffset: json['last_log_offset'] as int? ?? 0,
+      checkpoint: json['checkpoint'] as String? ?? '',
+    );
+  }
 }
 
 RuntimeTaskStatus _runtimeStatusFromTaskStatus(TaskStatus status) {

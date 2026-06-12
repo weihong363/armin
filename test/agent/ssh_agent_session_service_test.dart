@@ -118,6 +118,7 @@ void main() {
     expect(command, contains('Enter'));
     expect(command, contains('stable_count'));
     expect(command, contains('stable_count" -ge 4'));
+    expect(command, contains('last_stable_emitted_hash'));
     expect(command, contains('Allow execution of|Allow command execution'));
     expect(command, contains('Permission Required'));
     expect(command, contains('permission|approval|confirm|allow|reject'));
@@ -271,6 +272,7 @@ void main() {
     expect(command, contains('sleep 0.5'));
     expect(command, contains('stable_count'));
     expect(command, contains('stable_count" -ge 4'));
+    expect(command, contains('last_stable_emitted_hash'));
     expect(command, isNot(contains('initial_markers')));
     expect(command, isNot(contains('marker_count')));
     expect(command, contains('Armin could not capture tmux pane'));
@@ -310,8 +312,31 @@ void main() {
 
     expect(execution, contains('-S -40'));
     expect(execution, contains('stable_count" -ge 3'));
+    expect(execution, contains('last_stable_emitted_hash'));
     expect(execution, contains('while [ "\$i" -lt 7 ]'));
     expect(finalCapture, contains('-S -120'));
+  });
+
+  test('probe command checks session and captures recent pane only', () {
+    final service = SSHAgentSessionService(
+      runtimePolicy: const RuntimePolicy(monitorCaptureLines: 40),
+    );
+
+    final command = service.buildProbeRemoteStateCommandForTest(
+      const AgentControlRequest(
+        host: '127.0.0.1',
+        port: 22,
+        username: 'ironion',
+        tmuxSessionName: 'armin-2800',
+        password: 'secret-password',
+      ),
+    );
+
+    expect(command, contains("has-session -t 'armin-2800'"));
+    expect(command, contains("capture-pane -p -t 'armin-2800' -S -40"));
+    expect(command, contains('__ARMIN_PROBE_SESSION_MISSING__'));
+    expect(command, isNot(contains('send-keys')));
+    expect(command, isNot(contains('new-session')));
   });
 
   test('missing readable result log keeps captured pane output', () {

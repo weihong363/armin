@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import '../models/approval_state.dart';
 import '../models/runtime_diagnostics.dart';
 import '../models/runtime_task_snapshot.dart';
@@ -33,6 +35,38 @@ class BridgeRuntime {
   /// Returns current WorkState for a task.
   WorkState? workState(String taskId) => _workStates[taskId];
 
+  Future<RuntimeTaskSnapshot?> taskSnapshot(String taskId) {
+    _validateTaskId(taskId);
+    return taskStore.loadTask(taskId);
+  }
+
+  Future<void> restoreDurableState() async {
+    final store = taskStore;
+    if (store is! RuntimePersistenceStore) {
+      return;
+    }
+    final workStates = await store.loadWorkStates();
+    for (final state in workStates) {
+      _workStates[state.taskId] = state;
+      _diagnosticsUpdate(
+          state.taskId,
+          (d) => d.copyWith(
+                workPhase: state.phase,
+                updatedAt: state.updatedAt,
+              ));
+    }
+    final events = await store.loadEvents();
+    for (final event in events) {
+      _diagnosticsUpdate(
+          event.taskId,
+          (d) => d.copyWith(
+                lastRuntimeEventType: event.type.wireName,
+                eventCount: d.eventCount + 1,
+                updatedAt: event.createdAt,
+              ));
+    }
+  }
+
   Future<RuntimeTaskSnapshot> createTask(RuntimeTaskSnapshot task) async {
     _validateTaskId(task.taskId);
     await taskStore.saveTask(task);
@@ -66,13 +100,16 @@ class BridgeRuntime {
     );
     await taskStore.saveTask(updated);
     _publish(RuntimeEventType.taskStarted, updated);
-    _diagnosticsUpdate(taskId, (d) => d.copyWith(
-          runId: session.id,
-          sessionName: session.tmuxSessionName,
-          observerState: 'attached',
-          updatedAt: observedAt,
-        ));
-    _publishDirect(RuntimeEventType.observerAttached, taskId, observedAt, updated);
+    _diagnosticsUpdate(
+        taskId,
+        (d) => d.copyWith(
+              runId: session.id,
+              sessionName: session.tmuxSessionName,
+              observerState: 'attached',
+              updatedAt: observedAt,
+            ));
+    _publishDirect(
+        RuntimeEventType.observerAttached, taskId, observedAt, updated);
     _updateWorkState(taskId, WorkPhase.working, 'Agent started.', '');
     return updated;
   }
@@ -123,40 +160,49 @@ class BridgeRuntime {
   void notifyObserverAttached(String taskId, {DateTime? now}) {
     final observedAt = now ?? DateTime.now();
     _publishDirect(RuntimeEventType.observerAttached, taskId, observedAt, null);
-    _diagnosticsUpdate(taskId, (d) => d.copyWith(
-          observerState: 'attached',
-          updatedAt: observedAt,
-        ));
+    _diagnosticsUpdate(
+        taskId,
+        (d) => d.copyWith(
+              observerState: 'attached',
+              updatedAt: observedAt,
+            ));
   }
 
   /// Publish observer detached event.
   void notifyObserverDetached(String taskId, {DateTime? now}) {
     final observedAt = now ?? DateTime.now();
     _publishDirect(RuntimeEventType.observerDetached, taskId, observedAt, null);
-    _diagnosticsUpdate(taskId, (d) => d.copyWith(
-          observerState: 'detached',
-          updatedAt: observedAt,
-        ));
+    _diagnosticsUpdate(
+        taskId,
+        (d) => d.copyWith(
+              observerState: 'detached',
+              updatedAt: observedAt,
+            ));
   }
 
   /// Publish connection lost event.
   void notifyConnectionLost(String taskId, {DateTime? now}) {
     final observedAt = now ?? DateTime.now();
     _publishDirect(RuntimeEventType.connectionLost, taskId, observedAt, null);
-    _diagnosticsUpdate(taskId, (d) => d.copyWith(
-          observerState: 'connection_lost',
-          updatedAt: observedAt,
-        ));
+    _diagnosticsUpdate(
+        taskId,
+        (d) => d.copyWith(
+              observerState: 'connection_lost',
+              updatedAt: observedAt,
+            ));
   }
 
   /// Publish connection restored event.
   void notifyConnectionRestored(String taskId, {DateTime? now}) {
     final observedAt = now ?? DateTime.now();
-    _publishDirect(RuntimeEventType.connectionRestored, taskId, observedAt, null);
-    _diagnosticsUpdate(taskId, (d) => d.copyWith(
-          observerState: 'attached',
-          updatedAt: observedAt,
-        ));
+    _publishDirect(
+        RuntimeEventType.connectionRestored, taskId, observedAt, null);
+    _diagnosticsUpdate(
+        taskId,
+        (d) => d.copyWith(
+              observerState: 'attached',
+              updatedAt: observedAt,
+            ));
   }
 
   Future<RuntimeTaskSnapshot?> observeOutput({
@@ -250,33 +296,43 @@ class BridgeRuntime {
   /// Publish an approval requested event.
   void notifyApprovalRequested(String taskId, {DateTime? now}) {
     final observedAt = now ?? DateTime.now();
-    _publishDirect(RuntimeEventType.approvalRequested, taskId, observedAt, null);
-    _diagnosticsUpdate(taskId, (d) => d.copyWith(
-          approvalState: ApprovalState.pending,
-          updatedAt: observedAt,
-        ));
-    _updateWorkState(taskId, WorkPhase.needsApproval, 'Agent needs your approval.', '');
+    _publishDirect(
+        RuntimeEventType.approvalRequested, taskId, observedAt, null);
+    _diagnosticsUpdate(
+        taskId,
+        (d) => d.copyWith(
+              approvalState: ApprovalState.pending,
+              updatedAt: observedAt,
+            ));
+    _updateWorkState(
+        taskId, WorkPhase.needsApproval, 'Agent needs your approval.', '');
   }
 
   /// Publish an approval resolving event (user action sent to terminal).
   void notifyApprovalResolving(String taskId, {DateTime? now}) {
     final observedAt = now ?? DateTime.now();
-    _publishDirect(RuntimeEventType.approvalResolving, taskId, observedAt, null);
-    _diagnosticsUpdate(taskId, (d) => d.copyWith(
-          approvalState: ApprovalState.resolving,
-          updatedAt: observedAt,
-        ));
-    _updateWorkState(taskId, WorkPhase.working, 'Processing your decision...', '');
+    _publishDirect(
+        RuntimeEventType.approvalResolving, taskId, observedAt, null);
+    _diagnosticsUpdate(
+        taskId,
+        (d) => d.copyWith(
+              approvalState: ApprovalState.resolving,
+              updatedAt: observedAt,
+            ));
+    _updateWorkState(
+        taskId, WorkPhase.working, 'Processing your decision...', '');
   }
 
   /// Publish an approval resolved event.
   void notifyApprovalResolved(String taskId, {DateTime? now}) {
     final observedAt = now ?? DateTime.now();
     _publishDirect(RuntimeEventType.approvalResolved, taskId, observedAt, null);
-    _diagnosticsUpdate(taskId, (d) => d.copyWith(
-          approvalState: ApprovalState.resolved,
-          updatedAt: observedAt,
-        ));
+    _diagnosticsUpdate(
+        taskId,
+        (d) => d.copyWith(
+              approvalState: ApprovalState.resolved,
+              updatedAt: observedAt,
+            ));
     _updateWorkState(taskId, WorkPhase.working, 'Agent continuing.', '');
   }
 
@@ -284,42 +340,51 @@ class BridgeRuntime {
   void notifyApprovalRejected(String taskId, {DateTime? now}) {
     final observedAt = now ?? DateTime.now();
     _publishDirect(RuntimeEventType.approvalRejected, taskId, observedAt, null);
-    _diagnosticsUpdate(taskId, (d) => d.copyWith(
-          approvalState: ApprovalState.resolved,
-          updatedAt: observedAt,
-        ));
+    _diagnosticsUpdate(
+        taskId,
+        (d) => d.copyWith(
+              approvalState: ApprovalState.resolved,
+              updatedAt: observedAt,
+            ));
   }
 
   /// Publish an approval failed event.
   void notifyApprovalFailed(String taskId, {DateTime? now}) {
     final observedAt = now ?? DateTime.now();
     _publishDirect(RuntimeEventType.approvalFailed, taskId, observedAt, null);
-    _diagnosticsUpdate(taskId, (d) => d.copyWith(
-          approvalState: ApprovalState.failed,
-          updatedAt: observedAt,
-        ));
-    _updateWorkState(taskId, WorkPhase.needsApproval,
-        'Approval action failed.', 'Please try again.');
+    _diagnosticsUpdate(
+        taskId,
+        (d) => d.copyWith(
+              approvalState: ApprovalState.failed,
+              updatedAt: observedAt,
+            ));
+    _updateWorkState(taskId, WorkPhase.needsApproval, 'Approval action failed.',
+        'Please try again.');
   }
 
   /// Publish an output updated event.
   void notifyOutputUpdated(String taskId, {DateTime? now}) {
     final observedAt = now ?? DateTime.now();
     _publishDirect(RuntimeEventType.outputUpdated, taskId, observedAt, null);
-    _diagnosticsUpdate(taskId, (d) => d.copyWith(
-          lastObservedOutputTime: observedAt,
-          updatedAt: observedAt,
-        ));
+    _diagnosticsUpdate(
+        taskId,
+        (d) => d.copyWith(
+              lastObservedOutputTime: observedAt,
+              updatedAt: observedAt,
+            ));
   }
 
   /// Publish a deliverable updated event.
   void notifyDeliverableUpdated(String taskId, {DateTime? now}) {
     final observedAt = now ?? DateTime.now();
-    _publishDirect(RuntimeEventType.deliverableUpdated, taskId, observedAt, null);
-    _diagnosticsUpdate(taskId, (d) => d.copyWith(
-          lastDeliverableUpdate: observedAt,
-          updatedAt: observedAt,
-        ));
+    _publishDirect(
+        RuntimeEventType.deliverableUpdated, taskId, observedAt, null);
+    _diagnosticsUpdate(
+        taskId,
+        (d) => d.copyWith(
+              lastDeliverableUpdate: observedAt,
+              updatedAt: observedAt,
+            ));
   }
 
   /// Publish a review submitted event.
@@ -347,19 +412,23 @@ class BridgeRuntime {
     );
     await taskStore.saveTask(updated);
     _publish(eventType, updated);
-    _diagnosticsUpdate(taskId, (d) => d.copyWith(
-          lastRuntimeEventType: eventType.wireName,
-          eventCount: d.eventCount + 1,
-          updatedAt: updated.updatedAt,
-        ));
+    _diagnosticsUpdate(
+        taskId,
+        (d) => d.copyWith(
+              lastRuntimeEventType: eventType.wireName,
+              eventCount: d.eventCount + 1,
+              updatedAt: updated.updatedAt,
+            ));
     // Update WorkState based on transition
     switch (status) {
       case RuntimeTaskStatus.running:
         _updateWorkState(taskId, WorkPhase.working, '', summary);
       case RuntimeTaskStatus.waitingUser:
-        _updateWorkState(taskId, WorkPhase.turnIdle, 'Waiting for you.', summary);
+        _updateWorkState(
+            taskId, WorkPhase.turnIdle, 'Waiting for you.', summary);
       case RuntimeTaskStatus.completed:
-        _updateWorkState(taskId, WorkPhase.completed, 'Task completed.', summary);
+        _updateWorkState(
+            taskId, WorkPhase.completed, 'Task completed.', summary);
       case RuntimeTaskStatus.failed:
         _updateWorkState(taskId, WorkPhase.failed, 'Task failed.', summary);
       case RuntimeTaskStatus.cancelled:
@@ -379,19 +448,21 @@ class BridgeRuntime {
   }
 
   void _publish(RuntimeEventType type, RuntimeTaskSnapshot snapshot) {
-    eventBus.publish(
-      RuntimeEvent(
-        type: type,
-        taskId: snapshot.taskId,
-        createdAt: snapshot.updatedAt,
-        snapshot: snapshot,
-      ),
+    final event = RuntimeEvent(
+      type: type,
+      taskId: snapshot.taskId,
+      createdAt: snapshot.updatedAt,
+      snapshot: snapshot,
     );
-    _diagnosticsUpdate(snapshot.taskId, (d) => d.copyWith(
-          lastRuntimeEventType: type.wireName,
-          eventCount: d.eventCount + 1,
-          updatedAt: snapshot.updatedAt,
-        ));
+    eventBus.publish(event);
+    unawaited(_saveEvent(event));
+    _diagnosticsUpdate(
+        snapshot.taskId,
+        (d) => d.copyWith(
+              lastRuntimeEventType: type.wireName,
+              eventCount: d.eventCount + 1,
+              updatedAt: snapshot.updatedAt,
+            ));
   }
 
   /// Publishes an event without requiring a snapshot.
@@ -401,14 +472,14 @@ class BridgeRuntime {
     DateTime createdAt,
     RuntimeTaskSnapshot? snapshot,
   ) {
-    eventBus.publish(
-      RuntimeEvent(
-        type: type,
-        taskId: taskId,
-        createdAt: createdAt,
-        snapshot: snapshot,
-      ),
+    final event = RuntimeEvent(
+      type: type,
+      taskId: taskId,
+      createdAt: createdAt,
+      snapshot: snapshot,
     );
+    eventBus.publish(event);
+    unawaited(_saveEvent(event));
   }
 
   void _ensureDiagnostics(String taskId) {
@@ -442,17 +513,21 @@ class BridgeRuntime {
     String headline,
     String detail,
   ) {
-    _workStates[taskId] = WorkState(
+    final state = WorkState(
       taskId: taskId,
       phase: phase,
       headline: headline,
       detail: detail,
       updatedAt: DateTime.now(),
     );
-    _diagnosticsUpdate(taskId, (d) => d.copyWith(
-          workPhase: phase,
-          updatedAt: DateTime.now(),
-        ));
+    _workStates[taskId] = state;
+    unawaited(_saveWorkState(state));
+    _diagnosticsUpdate(
+        taskId,
+        (d) => d.copyWith(
+              workPhase: phase,
+              updatedAt: DateTime.now(),
+            ));
   }
 
   RuntimeEventType _eventTypeForStatus(RuntimeTaskStatus status) {
@@ -469,6 +544,20 @@ class BridgeRuntime {
   void _validateTaskId(String taskId) {
     if (taskId.trim().isEmpty) {
       throw ArgumentError.value(taskId, 'taskId', 'Task id is required.');
+    }
+  }
+
+  Future<void> _saveEvent(RuntimeEvent event) async {
+    final store = taskStore;
+    if (store is RuntimePersistenceStore) {
+      await store.saveEvent(event);
+    }
+  }
+
+  Future<void> _saveWorkState(WorkState state) async {
+    final store = taskStore;
+    if (store is RuntimePersistenceStore) {
+      await store.saveWorkState(state);
     }
   }
 }

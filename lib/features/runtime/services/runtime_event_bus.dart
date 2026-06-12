@@ -60,6 +60,15 @@ extension RuntimeEventTypeWireName on RuntimeEventType {
       RuntimeEventType.waitingForApproval => 'WAITING_FOR_APPROVAL',
     };
   }
+
+  static RuntimeEventType fromWireName(String wireName) {
+    for (final type in RuntimeEventType.values) {
+      if (type.wireName == wireName) {
+        return type;
+      }
+    }
+    return RuntimeEventType.taskProgress;
+  }
 }
 
 class RuntimeEvent {
@@ -76,6 +85,32 @@ class RuntimeEvent {
   final DateTime createdAt;
   final RuntimeTaskSnapshot? snapshot;
   final String message;
+
+  Map<String, Object?> toJson() {
+    return {
+      'type': type.wireName,
+      'task_id': taskId,
+      'created_at': createdAt.toIso8601String(),
+      'snapshot': snapshot?.toJson(),
+      'message': message,
+    };
+  }
+
+  factory RuntimeEvent.fromJson(Map<String, Object?> json) {
+    final snapshotJson = json['snapshot'];
+    return RuntimeEvent(
+      type: RuntimeEventTypeWireName.fromWireName(
+        json['type'] as String? ?? '',
+      ),
+      taskId: json['task_id'] as String? ?? '',
+      createdAt: DateTime.tryParse(json['created_at'] as String? ?? '') ??
+          DateTime.now(),
+      snapshot: snapshotJson is Map<String, Object?>
+          ? RuntimeTaskSnapshot.fromJson(snapshotJson)
+          : null,
+      message: json['message'] as String? ?? '',
+    );
+  }
 }
 
 class RuntimeEventBus {

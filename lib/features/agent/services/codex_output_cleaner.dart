@@ -27,7 +27,9 @@ class CodexOutputCleaner {
         blockStarts.add(i);
         var end = i;
         for (var j = i + 1; j < lines.length; j++) {
-          if (lines[j].startsWith(' ') || lines[j].startsWith('\t')) {
+          if (lines[j].trim().isEmpty ||
+              lines[j].startsWith(' ') ||
+              lines[j].startsWith('\t')) {
             end = j;
           } else {
             break;
@@ -39,12 +41,10 @@ class CodexOutputCleaner {
     }
     if (blockStarts.isEmpty) return List.of(lines);
 
-    // Keep the last thinking block, skip all earlier ones.
-    final lastIndex = blockStarts.length - 1;
     final result = <String>[];
     for (var i = 0; i < lines.length; i++) {
       var inRemovedBlock = false;
-      for (var b = 0; b < lastIndex; b++) {
+      for (var b = 0; b < blockStarts.length; b++) {
         if (i >= blockStarts[b] && i <= blockEnds[b]) {
           inRemovedBlock = true;
           break;
@@ -71,9 +71,11 @@ class CodexOutputCleaner {
       return '额度已用完，请稍后重试。';
     }
     final preserveTableLine = _looksLikeDelimitedTableLine(line);
-    return line
-        .replaceFirst(
-            preserveTableLine ? RegExp(r'(?!)') : RegExp(r'^[│|]\s*'), '')
+    var cleaned = line;
+    if (!preserveTableLine) {
+      cleaned = cleaned.replaceFirst(RegExp(r'^[│|]\s*'), '');
+    }
+    return cleaned
         .replaceFirst(RegExp(r'^[›]\s*'), '')
         .replaceFirst(RegExp(r'^[✨⚠]\s*'), '')
         .replaceFirst(RegExp(r'^[•*-]\s+'), '')

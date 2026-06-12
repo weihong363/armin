@@ -29,6 +29,7 @@ import '../../features/runtime/models/work_state.dart';
 import '../../features/runtime/services/bridge_runtime.dart';
 import '../../features/runtime/services/runtime_event_bus.dart';
 import '../../features/runtime/services/runtime_task_store.dart';
+import '../../features/runtime/services/sqlite_runtime_persistence_store.dart';
 import '../../features/voice/services/device_voice_service.dart';
 import '../../features/voice/services/task_speech_policy.dart';
 import '../../features/voice/services/voice_service.dart';
@@ -48,10 +49,14 @@ class ArminAppState extends ChangeNotifier {
     this.speechSettings = const TaskSpeechSettings(),
     RuntimeEventBus? runtimeEventBus,
     BridgeRuntime? bridgeRuntime,
+    bool enableRemoteReconcile = false,
+    Duration remoteReconcileInterval = const Duration(seconds: 10),
   })  : _store = store,
         _taskSpeechPolicy = taskSpeechPolicy ?? const TaskSpeechPolicy(),
         outputSummaryProvider =
             outputSummaryProvider ?? SelectableOutputSummaryProvider(),
+        _enableRemoteReconcile = enableRemoteReconcile,
+        _remoteReconcileInterval = remoteReconcileInterval,
         // ignore: unnecessary_this
         this.runtimeEventBus = runtimeEventBus ?? RuntimeEventBus() {
     // ignore: unnecessary_this
@@ -75,9 +80,11 @@ class ArminAppState extends ChangeNotifier {
         outputSummaryProvider =
             outputSummaryProvider ?? SelectableOutputSummaryProvider(),
         speechSettings = const TaskSpeechSettings(),
+        _enableRemoteReconcile = true,
+        _remoteReconcileInterval = const Duration(seconds: 10),
         runtimeEventBus = RuntimeEventBus() {
     bridgeRuntime = BridgeRuntime(
-      taskStore: InMemoryRuntimeTaskStore(),
+      taskStore: SQLiteRuntimePersistenceStore(),
       eventBus: runtimeEventBus,
     );
     _configureOutputSummaryProvider();
@@ -93,6 +100,7 @@ class ArminAppState extends ChangeNotifier {
   final RuntimeEventBus runtimeEventBus;
   late final BridgeRuntime bridgeRuntime;
   final Set<String> _bridgedTaskIds = {};
+  final Map<String, Future<void>> _bridgeCreateFutures = {};
 
   List<HostConfig> hosts = const [];
   List<TaskSession> tasks = const [];
@@ -103,17 +111,38 @@ class ArminAppState extends ChangeNotifier {
   final Map<String, Timer> _autoDetachTimers = {};
   final Map<String, String> _lastSpokenHashes = {};
   final Map<String, StringBuffer> _progressOutputMap = {};
+  final bool _enableRemoteReconcile;
+  final Duration _remoteReconcileInterval;
+  Timer? _remoteReconcileTimer;
+  final Set<String> _remoteRefreshInFlight = {};
+  final Map<String, String> _remoteProbeHashes = {};
+  final Map<String, int> _remoteProbeStableCounts = {};
   bool _notifyScheduled = false;
 
   Future<void> load() async {
+    await bridgeRuntime.restoreDurableState();
     hosts = await _store.loadHosts();
     tasks = await _store.loadTasks();
     projectPaths = await _store.loadProjectPaths();
     ready = true;
     for (final task in tasks) {
-      _bridgeEnsureTaskCreated(task);
+      await _bridgeEnsureTaskCreated(task);
     }
+    _startRemoteReconcileLoop();
     notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _remoteReconcileTimer?.cancel();
+    for (final timer in _autoDetachTimers.values) {
+      timer.cancel();
+    }
+    for (final subscription in _runningExecutions.values) {
+      unawaited(subscription.cancel());
+    }
+    unawaited(runtimeEventBus.dispose());
+    super.dispose();
   }
 
   Future<void> saveHost(HostConfig host) async {
@@ -162,22 +191,25 @@ class ArminAppState extends ChangeNotifier {
       updatedTasks.insert(0, task);
     }
     tasks = updatedTasks;
-    _bridgeEnsureTaskCreated(task);
+    unawaited(_bridgeEnsureTaskCreated(task));
     _scheduleNotify();
   }
 
   Future<void> refreshTasks() async {
     tasks = await _store.loadTasks();
     for (final task in tasks) {
-      _bridgeEnsureTaskCreated(task);
+      await _bridgeEnsureTaskCreated(task);
     }
     notifyListeners();
   }
 
-  Future<void> refreshTaskFromRemote(TaskSession task) async {
+  Future<void> refreshTaskFromRemote(
+    TaskSession task, {
+    bool markIdleIfNoAttention = false,
+  }) async {
     tasks = await _store.loadTasks();
     final latest = _latestTask(task.id) ?? task;
-    _bridgeEnsureTaskCreated(latest);
+    await _bridgeEnsureTaskCreated(latest);
     if (!_canRefreshRemoteState(latest)) {
       notifyListeners();
       return;
@@ -185,7 +217,11 @@ class ArminAppState extends ChangeNotifier {
     final snapshot = await _captureLogBestEffort(await _controlRequest(latest));
     final trimmed = snapshot.trim();
     if (trimmed.isNotEmpty) {
-      await _applyCapturedRemoteSnapshot(latest, snapshot);
+      await _applyCapturedRemoteSnapshot(
+        latest,
+        snapshot,
+        markIdleIfNoAttention: markIdleIfNoAttention,
+      );
     }
     final synced = _latestTask(task.id) ?? latest;
     startTaskExecution(synced, _attachRequest(synced));
@@ -500,18 +536,122 @@ class ArminAppState extends ChangeNotifier {
     };
   }
 
+  void _startRemoteReconcileLoop() {
+    if (!_enableRemoteReconcile ||
+        _remoteReconcileTimer != null ||
+        agentSessionService is! RemoteTaskProbeService) {
+      return;
+    }
+    _remoteReconcileTimer = Timer.periodic(
+      _remoteReconcileInterval,
+      (_) => unawaited(_reconcileRemoteTasks()),
+    );
+  }
+
+  Future<void> _reconcileRemoteTasks() async {
+    if (!ready) {
+      return;
+    }
+    final probeService = agentSessionService;
+    if (probeService is! RemoteTaskProbeService) {
+      return;
+    }
+    final remoteProbeService = probeService as RemoteTaskProbeService;
+    for (final task in List<TaskSession>.of(tasks)) {
+      final latest = _latestTask(task.id) ?? task;
+      if (!_canRefreshRemoteState(latest) ||
+          _remoteRefreshInFlight.contains(latest.id)) {
+        continue;
+      }
+      await _probeAndRefreshRemoteTask(remoteProbeService, latest);
+    }
+  }
+
+  Future<void> _probeAndRefreshRemoteTask(
+    RemoteTaskProbeService probeService,
+    TaskSession task,
+  ) async {
+    _remoteRefreshInFlight.add(task.id);
+    try {
+      final latest = _latestTask(task.id) ?? task;
+      if (!_canRefreshRemoteState(latest)) {
+        return;
+      }
+      final probe = await probeService.probeRemoteState(
+        await _controlRequest(latest),
+      );
+      final decision = _remoteRefreshDecisionFor(latest, probe);
+      if (!decision.shouldRefresh) {
+        return;
+      }
+      await refreshTaskFromRemote(
+        latest,
+        markIdleIfNoAttention: decision.markIdleIfNoAttention,
+      );
+      _remoteProbeStableCounts.remove(latest.id);
+      if (probe.snapshot.trim().isNotEmpty) {
+        _remoteProbeHashes[latest.id] =
+            probe.snapshot.trim().hashCode.toString();
+      }
+    } catch (error) {
+      if (kDebugMode) {
+        debugPrint('Remote reconcile skipped: $error');
+      }
+    } finally {
+      _remoteRefreshInFlight.remove(task.id);
+    }
+  }
+
+  _RemoteRefreshDecision _remoteRefreshDecisionFor(
+    TaskSession task,
+    RemoteTaskProbe probe,
+  ) {
+    if (!probe.sessionExists || probe.needsAttention || probe.hasExitedMarker) {
+      return const _RemoteRefreshDecision(shouldRefresh: true);
+    }
+    final snapshot = probe.snapshot.trim();
+    if (snapshot.isEmpty) {
+      return const _RemoteRefreshDecision.none();
+    }
+    final hash = snapshot.hashCode.toString();
+    final previousHash = _remoteProbeHashes[task.id];
+    if (previousHash != hash) {
+      _remoteProbeHashes[task.id] = hash;
+      _remoteProbeStableCounts[task.id] = 1;
+      if (task.status == TaskStatus.observerDetached ||
+          task.status == TaskStatus.runtimeLost) {
+        return const _RemoteRefreshDecision(shouldRefresh: true);
+      }
+      return const _RemoteRefreshDecision.none();
+    }
+    final stableCount = (_remoteProbeStableCounts[task.id] ?? 1) + 1;
+    _remoteProbeStableCounts[task.id] = stableCount;
+    if (task.status == TaskStatus.running && stableCount >= 2) {
+      return const _RemoteRefreshDecision(
+        shouldRefresh: true,
+        markIdleIfNoAttention: true,
+      );
+    }
+    return const _RemoteRefreshDecision.none();
+  }
+
   Future<void> _applyCapturedRemoteSnapshot(
     TaskSession task,
-    String snapshot,
-  ) async {
+    String snapshot, {
+    bool markIdleIfNoAttention = false,
+  }) async {
     final approval = const ApprovalParser().parse(snapshot);
     final terminalPrompt = const TerminalPromptParser().parse(snapshot);
+    final hasAttention = approval != null || terminalPrompt != null;
+    final shouldMarkIdle = markIdleIfNoAttention && !hasAttention;
     final update = AgentExecutionUpdate(
       rawOutput: snapshot,
       cleanedOutput: const CodexOutputCleaner().clean(snapshot),
-      needsAttention: approval != null || terminalPrompt != null,
+      needsAttention: hasAttention,
       approval: approval,
       terminalPrompt: terminalPrompt,
+      turnIdle: shouldMarkIdle,
+      done: shouldMarkIdle,
     );
     final updated =
         _taskWithExecutionUpdate(task, update, reopenResolvedApproval: true);
@@ -988,12 +1128,31 @@ Apply this decision to the pending approval request.
 
   // ─── Bridge Runtime integration ───
 
-  void _bridgeEnsureTaskCreated(TaskSession task) {
+  Future<void> _bridgeEnsureTaskCreated(TaskSession task) async {
     if (_bridgedTaskIds.contains(task.id)) {
       return;
     }
-    _bridgedTaskIds.add(task.id);
-    unawaited(bridgeRuntime.createTask(
+    final inFlight = _bridgeCreateFutures[task.id];
+    if (inFlight != null) {
+      await inFlight;
+      return;
+    }
+    final future = _bridgeCreateTaskIfMissing(task);
+    _bridgeCreateFutures[task.id] = future;
+    try {
+      await future;
+    } finally {
+      _bridgeCreateFutures.remove(task.id);
+    }
+  }
+
+  Future<void> _bridgeCreateTaskIfMissing(TaskSession task) async {
+    final existing = await bridgeRuntime.taskSnapshot(task.id);
+    if (existing != null) {
+      _bridgedTaskIds.add(task.id);
+      return;
+    }
+    await bridgeRuntime.createTask(
       RuntimeTaskSnapshot.fromTaskStatus(
         taskId: task.id,
         status: task.status,
@@ -1001,19 +1160,32 @@ Apply this decision to the pending approval request.
         updatedAt: task.updatedAt,
         summary: task.shortSummary,
       ),
-    ));
+    );
+    _bridgedTaskIds.add(task.id);
   }
 
   void _bridgeNotifyExecutionStarted(TaskSession task) {
     final projectPath = task.host.projectPath;
     final tmuxName = task.host.tmuxSessionName;
-    unawaited(bridgeRuntime.startTask(
-      taskId: task.id,
-      sessionName: projectPath,
-      projectPath: projectPath,
-      tmuxSessionName: tmuxName,
-      now: DateTime.now(),
-    ));
+    unawaited(
+      _bridgeEnsureTaskCreated(task).then((_) {
+        return bridgeRuntime.startTask(
+          taskId: task.id,
+          sessionName: projectPath,
+          projectPath: projectPath,
+          tmuxSessionName: tmuxName,
+          now: DateTime.now(),
+        );
+      }).catchError((_) {
+        return RuntimeTaskSnapshot.fromTaskStatus(
+          taskId: task.id,
+          status: task.status,
+          createdAt: task.createdAt,
+          updatedAt: task.updatedAt,
+          summary: task.shortSummary,
+        );
+      }),
+    );
   }
 
   void _bridgeNotifyExecutionUpdate(
@@ -1902,4 +2074,18 @@ Apply this decision to the pending approval request.
         currentCompletedAt,
     };
   }
+}
+
+class _RemoteRefreshDecision {
+  const _RemoteRefreshDecision({
+    required this.shouldRefresh,
+    this.markIdleIfNoAttention = false,
+  });
+
+  const _RemoteRefreshDecision.none()
+      : shouldRefresh = false,
+        markIdleIfNoAttention = false;
+
+  final bool shouldRefresh;
+  final bool markIdleIfNoAttention;
 }

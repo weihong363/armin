@@ -213,7 +213,8 @@ Credits exhausted.
     expect(cleaned, isNot(contains('The user wants me to')));
     expect(cleaned, isNot(contains('Let me create')));
     expect(cleaned, isNot(contains("I've created")));
-    expect(cleaned, contains('Perfect, the file runs'));
+    expect(cleaned, isNot(contains('Perfect, the file runs')));
+    expect(cleaned, isNot(contains('print("hello world")')));
     expect(cleaned, contains('已创建 hello.py，输出验证正常。'));
     expect(cleaned, contains('创建一个输出hello world的py文件'));
     expect(cleaned, contains('Credits exhausted'));

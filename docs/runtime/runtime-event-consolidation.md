@@ -2,6 +2,9 @@
 
 > Phase 2.5 — Consolidation toward event-driven runtime state
 
+Long-term runtime durability and remote-daemon direction are tracked in
+[Bridge Runtime Long-Term Architecture](bridge-runtime-long-term-architecture.md).
+
 ## 1. Current RuntimeEventBus Responsibilities
 
 **Location**: `lib/features/runtime/services/runtime_event_bus.dart`
@@ -69,6 +72,10 @@
 - `destroyed` — Session explicitly cleaned up
 
 **Risk**: Session manager is memory-only — no persistence across app restarts.
+
+**Long-term boundary**: session and task runtime state must be persisted in
+SQLite. The Flutter-process session manager is a transition layer, not the
+authoritative durability boundary.
 
 ---
 
@@ -189,6 +196,11 @@ turnIdle / needAttention → running (continue/followUp)
 
 **Risk**: tmux is both transport and indirect state evidence — the spec says it should be transport only.
 
+**Additional risk**: stable `capture-pane` output can be mistaken for `turnIdle`
+even while the Agent is still thinking, running a child process, or hiding TUI
+updates. Pane stability should mean `outputQuieting` or `no visible update`,
+not completion.
+
 ---
 
 ## 9. Existing Runtime Risks (Summary)
@@ -203,6 +215,7 @@ turnIdle / needAttention → running (continue/followUp)
 | Incomplete RuntimeEventBus | Low | UI can't fully consume events |
 | SessionManager memory-only | Low | No crash recovery for session state |
 | Parallel state tracks (TaskSession + RuntimeTaskSnapshot) | Low | Manual sync prone to drift |
+| Pane stability treated as turn completion | High | Result card and TTS can trigger while remote Agent is still running |
 
 ---
 
@@ -239,3 +252,8 @@ TaskWatcher (Secondary: output observation + legacy fallback)
 ```
 
 String matching becomes last resort fallback.
+
+Runtime state should ultimately be reduced from durable events persisted in
+SQLite. `TaskWatcher._extractStatus()` and `tmux capture-pane` snapshots remain
+compatibility inputs only; they must not be the authority for completion,
+approval resolution, or result availability.

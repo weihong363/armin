@@ -9,6 +9,10 @@ import 'package:armin/features/agent/parsers/terminal_prompt.dart';
 import 'package:armin/features/agent/services/agent_session_service.dart';
 import 'package:armin/features/hosts/models/host_config.dart';
 import 'package:armin/features/projects/models/project_path_config.dart';
+import 'package:armin/features/runtime/models/runtime_task_snapshot.dart';
+import 'package:armin/features/runtime/services/bridge_runtime.dart';
+import 'package:armin/features/runtime/services/runtime_event_bus.dart';
+import 'package:armin/features/runtime/services/runtime_task_store.dart';
 import 'package:armin/features/tasks/models/native_output_turn.dart';
 import 'package:armin/features/tasks/models/task_constraint.dart';
 import 'package:armin/features/tasks/models/task_session.dart';
@@ -164,6 +168,43 @@ void main() {
 
     expect(store.loadTasksCount, loadCountAfterInitialLoad);
     expect(state.tasks.single.shortSummary, 'stream update');
+  });
+
+  test('startTaskExecution does not block tmux execution on runtime storage',
+      () async {
+    final task = _task(status: TaskStatus.running);
+    final store = _TaskStore(null);
+    final runtimeStore = _BlockingRuntimeStore();
+    final agent = _ControlAgent();
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: agent,
+      voiceService: const _SilentVoiceService(),
+      bridgeRuntime: BridgeRuntime(
+        taskStore: runtimeStore,
+        eventBus: RuntimeEventBus(),
+      ),
+    );
+    await state.load();
+
+    await state.saveTask(task);
+    await runtimeStore.waitForBlockedLoad();
+    state.startTaskExecution(
+      task,
+      const AgentExecutionRequest(prompt: 'Task'),
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    expect(agent.lastExecuteRequest?.prompt, 'Task');
+
+    runtimeStore.releaseLoad();
+    await Future<void>.delayed(Duration.zero);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(
+      (await runtimeStore.loadTask(task.id))?.status,
+      RuntimeTaskStatus.running,
+    );
   });
 
   test('refreshTasks reloads task list from store', () async {
@@ -542,6 +583,47 @@ Apply this change?
     expect(store.task!.terminalPrompt?.options.first.label, 'Allow once');
     expect(agent.lastExecuteRequest?.attachOnly, isTrue);
     expect(agent.events, contains('captureLog'));
+  });
+
+  test('remote reconcile reuses refresh for stable running output', () async {
+    final task = _task(status: TaskStatus.running).copyWith(
+      turns: [
+        NativeOutputTurn(
+          id: 'turn-task-1-1',
+          taskId: 'task-1',
+          turnIndex: 1,
+          userInput: '输出 hello',
+          rawOutput: '',
+          cleanedOutput: '',
+          startedAt: DateTime(2026, 5, 18),
+          lastOutputAt: DateTime(2026, 5, 18),
+          status: NativeOutputTurnStatus.running,
+        ),
+      ],
+    );
+    final store = _TaskStore(task);
+    final agent = _ProbeAgent()
+      ..capturedLog = 'HELLO WORLD\n下一步可以继续补充要求'
+      ..probe = const RemoteTaskProbe(
+        sessionExists: true,
+        snapshot: 'HELLO WORLD\n下一步可以继续补充要求',
+      );
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: agent,
+      voiceService: const _SilentVoiceService(),
+      enableRemoteReconcile: true,
+      remoteReconcileInterval: const Duration(milliseconds: 10),
+    );
+    await state.load();
+
+    await _waitUntil(() => store.task!.status == TaskStatus.turnIdle);
+    state.dispose();
+
+    expect(store.task!.status, TaskStatus.turnIdle);
+    expect(store.task!.result?.summary, contains('HELLO WORLD'));
+    expect(agent.events, contains('captureLog'));
+    expect(agent.probeCount, greaterThanOrEqualTo(2));
   });
 
   test('sendFollowUp sends clean prompt and relistens current tmux session',
@@ -1101,6 +1183,22 @@ Apply this change?
   });
 }
 
+Future<void> _waitUntil(
+  bool Function() condition, {
+  Duration timeout = const Duration(milliseconds: 500),
+}) async {
+  final deadline = DateTime.now().add(timeout);
+  while (DateTime.now().isBefore(deadline)) {
+    if (condition()) {
+      return;
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+  }
+  if (!condition()) {
+    fail('Timed out waiting for condition.');
+  }
+}
+
 TaskSession _task({required TaskStatus status}) {
   final now = DateTime(2026, 5, 17);
   return TaskSession(
@@ -1178,6 +1276,30 @@ class _TaskStore implements TaskHistoryStore {
 
   @override
   Future<void> deleteProjectPath(String projectPathId) async {}
+}
+
+class _BlockingRuntimeStore extends InMemoryRuntimeTaskStore {
+  final Completer<void> _blockedLoad = Completer<void>();
+  final Completer<void> _releaseLoad = Completer<void>();
+  bool _blockedOnce = false;
+
+  Future<void> waitForBlockedLoad() => _blockedLoad.future;
+
+  void releaseLoad() {
+    if (!_releaseLoad.isCompleted) {
+      _releaseLoad.complete();
+    }
+  }
+
+  @override
+  Future<RuntimeTaskSnapshot?> loadTask(String taskId) async {
+    if (!_blockedOnce) {
+      _blockedOnce = true;
+      _blockedLoad.complete();
+      await _releaseLoad.future;
+    }
+    return super.loadTask(taskId);
+  }
 }
 
 class _ControlAgent implements AgentSessionService {
@@ -1261,6 +1383,18 @@ class _ControlAgent implements AgentSessionService {
     AgentInstructionDiscoveryRequest request,
   ) async {
     return const AgentInstructionDiscoveryResult(paths: []);
+  }
+}
+
+class _ProbeAgent extends _ControlAgent implements RemoteTaskProbeService {
+  RemoteTaskProbe probe = const RemoteTaskProbe.missingSession();
+  int probeCount = 0;
+
+  @override
+  Future<RemoteTaskProbe> probeRemoteState(AgentControlRequest request) async {
+    events.add('probeRemoteState');
+    probeCount++;
+    return probe;
   }
 }
 

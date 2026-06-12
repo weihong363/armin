@@ -1050,7 +1050,10 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
         line.startsWith('接下来') ||
         line.startsWith('下面我') ||
         line.startsWith('先看看') ||
-        line.startsWith('先检查');
+        line.startsWith('先检查') ||
+        line.startsWith('用户要求') ||
+        line.startsWith('任务要求') ||
+        line.startsWith('需求');
   }
 
   bool _looksLikeResultLine(String line) {
@@ -1074,6 +1077,9 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
   }
 
   bool _isSummaryGovernanceLine(String lower) {
+    final stripped = lower
+        .replaceFirst(RegExp(r'^[-*•]\s*'), '')
+        .trimLeft();
     const lines = [
       'only inspect files directly related to the task.',
       'never scan the entire repository.',
@@ -1090,9 +1096,10 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
       'ask before any potentially risky read operation.',
     ];
     for (final text in lines) {
-      if (lower.endsWith(text)) return true;
+      if (lower == text || stripped == text) return true;
+      if (lower.endsWith(text) || stripped.endsWith(text)) return true;
     }
-    return _isChineseConstraintLine(lower);
+    return _isChineseConstraintLine(stripped);
   }
 
   bool _isChineseConstraintLine(String lower) {

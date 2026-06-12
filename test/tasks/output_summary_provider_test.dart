@@ -921,6 +921,40 @@ You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro).
     expect(summary.displaySummary, isNot(contains('Allow once')));
     expect(summary.displaySummary, isNot(contains('print("hello")')));
   });
+
+  test('rule provider drops governance echo and thinking code from result',
+      () async {
+    const request = OutputSummaryRequest(
+      cleanedOutput: '''
+Armin context governance:
+- Only inspect files directly related to the task.
+- Keep edits minimal and focused.
+## User task
+实现审批同步修复
+Thinking
+  我需要先检查审批状态同步。
+  final prompt = "实现审批同步修复";
+  class ApprovalFix {}
+核心逻辑已完成，审批提示会在远端出现后同步到任务详情。
+下一步可以真机验证审批卡片是否自动出现。
+''',
+      status: TaskStatus.turnIdle,
+      taskTitle: '实现审批同步修复',
+      promptInputs: ['实现审批同步修复'],
+    );
+
+    final summary = await const RuleBasedOutputSummaryProvider().summarize(
+      request,
+    );
+
+    expect(summary.displaySummary, contains('核心逻辑已完成'));
+    expect(summary.displaySummary, contains('下一步可以真机验证'));
+    expect(summary.displaySummary, isNot(contains('Armin context governance')));
+    expect(summary.displaySummary, isNot(contains('Only inspect')));
+    expect(summary.displaySummary, isNot(contains('实现审批同步修复')));
+    expect(summary.displaySummary, isNot(contains('final prompt')));
+    expect(summary.displaySummary, isNot(contains('ApprovalFix')));
+  });
 }
 
 class _CapturingSummaryProvider implements OutputSummaryProvider {

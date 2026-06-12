@@ -60,6 +60,7 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
   int _resultVersion = 0;
   final ValueNotifier<RuntimeTaskSnapshot?> _progressNotifier =
       ValueNotifier<RuntimeTaskSnapshot?>(null);
+
   bool _taskPageAtTop = true;
   bool _topRefreshTracking = false;
   bool _topRefreshArmed = false;
@@ -172,7 +173,9 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
     );
     return ValueListenableBuilder<TaskSession?>(
       valueListenable: taskListenable,
-      builder: (context, task, _) => _buildTaskScaffold(context, task),
+      builder: (context, task, _) {
+        return _buildTaskScaffold(context, task);
+      },
     );
   }
 
@@ -538,10 +541,16 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
   }
 
   bool _canDelete(TaskSession task) {
-    return task.status == TaskStatus.completed ||
-        task.status == TaskStatus.failed ||
-        task.status == TaskStatus.userCompleted ||
-        task.status == TaskStatus.userFailed;
+    return switch (task.status) {
+      TaskStatus.completed ||
+      TaskStatus.failed ||
+      TaskStatus.userCompleted ||
+      TaskStatus.userFailed ||
+      TaskStatus.stopped ||
+      TaskStatus.runtimeLost =>
+        true,
+      _ => false,
+    };
   }
 
   bool _canForceStop(TaskSession task) {
@@ -1132,9 +1141,14 @@ class _LazyTurnOutputExpansionState extends State<_LazyTurnOutputExpansion> {
       childrenPadding: const EdgeInsets.only(top: 4),
       title: const Text('显示原始输出'),
       onExpansionChanged: (expanded) {
-        setState(() {
-          _expanded = expanded;
-          _fullOutput = expanded ? _buildFullOutput() : null;
+        // Defer setState — ExpansionTile may fire this during initState
+        // (PageStorage restoration) while the framework is still building.
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          setState(() {
+            _expanded = expanded;
+            _fullOutput = expanded ? _buildFullOutput() : null;
+          });
         });
       },
       children: [

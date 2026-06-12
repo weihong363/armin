@@ -57,7 +57,11 @@ class _TaskHomeScreenState extends State<TaskHomeScreen> {
     final groups = _groupTasks(snapshot.tasks);
     final attentionEvents = _attentionEventsFor(snapshot.tasks);
     final activityItems = _activityItemsFor(snapshot.tasks);
-    final completedCount = _completedSummaryCount(snapshot.tasks);
+    final completedCount = snapshot.tasks.length;
+    final state = AppStateScope.read(context);
+    final activeCount = _activeTaskCount(snapshot.tasks);
+    final maxActive = state.maxActiveTasks;
+    final atLimit = activeCount >= maxActive;
 
     return SafeArea(
       child: !snapshot.ready
@@ -117,6 +121,19 @@ class _TaskHomeScreenState extends State<TaskHomeScreen> {
                                           .textTheme
                                           .bodyMedium,
                                     ),
+                                    Text(
+                                      atLimit
+                                          ? '活跃 $activeCount/$maxActive · 已达上限'
+                                          : '活跃 $activeCount/$maxActive',
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .bodySmall
+                                          ?.copyWith(
+                                            color: atLimit
+                                                ? Colors.orange.shade700
+                                                : ArminTheme.muted,
+                                          ),
+                                    ),
                                   ],
                                 ),
                               ),
@@ -138,7 +155,8 @@ class _TaskHomeScreenState extends State<TaskHomeScreen> {
                           ),
                           const SizedBox(height: 18),
                           if (snapshot.tasks.isEmpty)
-                            _EmptyInbox(onCreate: () => _openNewTask(context))
+                            _EmptyInbox(
+                                onCreate: () => _openNewTask(context))
                           else ...[
                             _WaitingForYouSection(
                               events: attentionEvents,
@@ -328,6 +346,26 @@ class _TaskHomeScreenState extends State<TaskHomeScreen> {
     };
   }
 
+  /// Active tasks for the user-facing limit: excludes terminal AND
+  /// disconnected/idle states (paused, observerDetached, runtimeLost)
+  /// that still count for internal reconcile/bridge tracking.
+  static int _activeTaskCount(List<TaskSession> tasks) {
+    return tasks
+        .where((t) => switch (t.status) {
+              TaskStatus.completed ||
+              TaskStatus.userCompleted ||
+              TaskStatus.failed ||
+              TaskStatus.userFailed ||
+              TaskStatus.stopped ||
+              TaskStatus.paused ||
+              TaskStatus.observerDetached ||
+              TaskStatus.runtimeLost =>
+                false,
+              _ => true,
+            })
+        .length;
+  }
+
   void _openTask(BuildContext context, String taskId) {
     Navigator.of(context).push(
       MaterialPageRoute<void>(
@@ -337,6 +375,17 @@ class _TaskHomeScreenState extends State<TaskHomeScreen> {
   }
 
   void _openNewTask(BuildContext context, {String initialTaskText = ''}) {
+    final state = AppStateScope.read(context);
+    final activeCount = _activeTaskCount(state.tasks);
+    if (activeCount >= state.maxActiveTasks) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('活跃任务已达上限（$activeCount/${state.maxActiveTasks}）。'
+              '请先完成或停止一些任务后再创建新任务。'),
+        ),
+      );
+      return;
+    }
     Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (_) => TaskDraftScreen(initialTaskText: initialTaskText),
@@ -608,16 +657,6 @@ List<_ActivityItem> _activityItemsFor(List<TaskSession> tasks) {
   return items;
 }
 
-int _completedSummaryCount(List<TaskSession> tasks) {
-  return tasks
-      .where(
-        (task) =>
-            task.status == TaskStatus.completed ||
-            task.status == TaskStatus.userCompleted,
-      )
-      .length;
-}
-
 _ActivityItem? _activityItemFor(TaskSession task) {
   final attention = _attentionEventFor(task);
   if (attention != null) {
@@ -869,13 +908,13 @@ class _CompletedSummaryRow extends StatelessWidget {
           child: Row(
             children: [
               const Expanded(
-                child: Text('最近完成'),
+                child: Text('历史任务'),
               ),
-              Text('$count $noun 可查看'),
+              Text('$count $noun'),
               const SizedBox(width: 10),
               TextButton(
                 onPressed: onViewHistory,
-                child: const Text('历史'),
+                child: const Text('查看全部'),
               ),
             ],
           ),

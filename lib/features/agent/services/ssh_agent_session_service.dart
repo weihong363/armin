@@ -1028,9 +1028,18 @@ class _ExecutionOutputState {
   bool _capturingSnapshot = false;
   int _snapshotBeginMatch = 0;
   int _snapshotEndMatch = 0;
+  int _writeCount = 0;
 
   void write(String text) {
     _stream.write(text);
+    _writeCount++;
+    if (_writeCount == 1 || _writeCount % 200 == 0) {
+      print(
+        '[ArminSSHPerf] [ExecOutputState] write #$_writeCount '
+        'chunkLen=${text.length} '
+        'totalStreamLen=${_stream.length}',
+      );
+    }
     _scanSnapshotMarkers(text);
   }
 

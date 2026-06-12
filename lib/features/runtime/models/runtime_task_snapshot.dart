@@ -124,8 +124,7 @@ RuntimeTaskStatus _runtimeStatusFromTaskStatus(TaskStatus status) {
   return switch (status) {
     TaskStatus.draft || TaskStatus.pending => RuntimeTaskStatus.pending,
     TaskStatus.running ||
-    TaskStatus.observerDetached ||
-    TaskStatus.runtimeLost =>
+    TaskStatus.observerDetached =>
       RuntimeTaskStatus.running,
     TaskStatus.needApproval ||
     TaskStatus.turnIdle ||
@@ -135,7 +134,10 @@ RuntimeTaskStatus _runtimeStatusFromTaskStatus(TaskStatus status) {
     TaskStatus.completed ||
     TaskStatus.userCompleted =>
       RuntimeTaskStatus.completed,
-    TaskStatus.failed || TaskStatus.userFailed => RuntimeTaskStatus.failed,
+    TaskStatus.failed ||
+    TaskStatus.userFailed ||
+    TaskStatus.runtimeLost =>
+      RuntimeTaskStatus.failed,
     TaskStatus.stopped => RuntimeTaskStatus.cancelled,
   };
 }

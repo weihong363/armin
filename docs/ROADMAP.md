@@ -40,6 +40,14 @@
 - reconnect 异常的真机验收与更完整的历史任务延续策略
 - 接入实际 Android 端侧小模型 runner 与模型分发：只提炼已清洗输出用于展示/TTS，不执行代码任务
 
+已收口：
+
+- 活跃任务数量限制（默认 5）：超限时阻止创建新任务，首页显示活跃计数
+- 终端状态统一：`runtimeLost` 归类为终端状态，不再被 reconcile 探测或 bridge 跟踪
+- 任务删除范围扩展：`stopped` 和 `runtimeLost` 可删除
+- Reconcile 回退机制：连续 6 次 sessionMissing 后自动排除，避免无效 SSH 探测
+- 历史任务统计修正：入口显示全部任务数
+
 ### Phase 2 收口 Goals
 
 - Goal A（已完成）：多 turn 输出 + TTS 收口。确保结果卡片与时间线按 turn 隔离输出、倒序展示；小喇叭只朗读当前 turn 的清洗后连贯内容；TTS 去除工具噪音和异常空格。

@@ -47,7 +47,7 @@ Phase 2 的真实设备主链路已通过人工验收：
 - TTS 仍依赖系统语音引擎；不同 Android ROM、语音包和语言支持会影响音色、语速和英文读法。
 - 当前规则摘要可以过滤常见 TUI、tool trace、路径和命令噪音，但复杂长输出不保证抓住全部重点。
 - 端侧小模型 runner 已有接口、能力检测、脱敏和 fallback，但生产包尚未捆绑实际模型。
-- SSH 网络中断、手机后台回收或远端 shell 异常时，可能需要手动重新监听或清理远端 session。
+- SSH 网络中断、手机后台回收或远端 shell 异常时，可能进入 `observerDetached` 或 `runtimeLost` 状态。`observerDetached` 支持手动重连；`runtimeLost`（远端会话已不可用）自动归类为终端状态，不再被 reconcile 探测，避免无效 SSH 请求。
 - Codex/Qoder CLI 的 TUI 文案、ready 状态和输出格式变化，可能影响 idle 检测和结果清洗质量。
 - `turnIdle` 只表示当前轮输出暂停，不表示任务成功；最终 outcome 仍由用户标记完成或失败。
 - Armin 不是完整 terminal；复杂交互仍建议在电脑端通过 `tmux attach -t {session}` 调试。

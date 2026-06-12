@@ -15,7 +15,7 @@ class ArminScrollPhysics extends ClampingScrollPhysics {
   const ArminScrollPhysics({super.parent});
 
   @override
-  double get dragStartDistanceMotionThreshold => 0.0;
+  double? get dragStartDistanceMotionThreshold => null;
 
   @override
   ArminScrollPhysics applyTo(ScrollPhysics? ancestor) {

@@ -534,6 +534,31 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
       return;
     }
 
+    final activeCount = state.tasks
+        .where((t) => switch (t.status) {
+              TaskStatus.completed ||
+              TaskStatus.userCompleted ||
+              TaskStatus.failed ||
+              TaskStatus.userFailed ||
+              TaskStatus.stopped ||
+              TaskStatus.paused ||
+              TaskStatus.observerDetached ||
+              TaskStatus.runtimeLost =>
+                false,
+              _ => true,
+            })
+        .length;
+    if (activeCount >= state.maxActiveTasks) {
+      setState(() => _isSending = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('活跃任务已达上限（$activeCount/${state.maxActiveTasks}）。'
+              '请先完成或停止一些任务后再创建新任务。'),
+        ),
+      );
+      return;
+    }
+
     final now = DateTime.now();
     final taskId = 'task-${now.microsecondsSinceEpoch}';
     final prompt = _buildPrompt();

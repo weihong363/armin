@@ -111,6 +111,29 @@ class ArminAppState extends ChangeNotifier {
   List<TaskSession> tasks = const [];
   List<ProjectPathConfig> projectPaths = const [];
   bool ready = false;
+
+  /// Maximum concurrent active (non-terminal) tasks.
+  int maxActiveTasks = _defaultMaxActiveTasks;
+  static const int _defaultMaxActiveTasks = 5;
+
+  /// Active tasks: any task that is NOT in a terminal state.
+  /// Terminal states: completed, userCompleted, failed, userFailed, stopped.
+  List<TaskSession> get activeTasks {
+    return tasks.where((t) => !_isTerminalTask(t)).toList(growable: false);
+  }
+
+  static bool _isTerminalTask(TaskSession task) {
+    return switch (task.status) {
+      TaskStatus.completed ||
+      TaskStatus.userCompleted ||
+      TaskStatus.failed ||
+      TaskStatus.userFailed ||
+      TaskStatus.stopped ||
+      TaskStatus.runtimeLost =>
+        true,
+      _ => false,
+    };
+  }
   final Map<String, StreamSubscription<AgentExecutionUpdate>>
       _runningExecutions = {};
   final Map<String, Timer> _autoDetachTimers = {};
@@ -123,13 +146,23 @@ class ArminAppState extends ChangeNotifier {
   final Duration _remoteReconcileInterval;
   bool _notifyScheduled = false;
 
+  // ---- reconcile backoff: track consecutive sessionMissing per task ----
+  final Map<String, int> _reconcileMissStreak = {};
+  static const int _kReconcileMaxMissStreak = 6; // ~1 min at 10s interval
+
   Future<void> load() async {
     await bridgeRuntime.restoreDurableState();
     hosts = await _store.loadHosts();
     tasks = await _store.loadTasks();
+    // Dedup: ensure no duplicate task ids leaked from storage.
+    if (tasks.length > 1) {
+      final seen = <String>{};
+      tasks = tasks.where((t) => seen.add(t.id)).toList();
+    }
     projectPaths = await _store.loadProjectPaths();
     ready = true;
-    for (final task in tasks) {
+    // Only bridge active tasks — archived tasks don't need runtime tracking.
+    for (final task in activeTasks) {
       await _bridgeEnsureTaskCreated(task);
     }
     _syncTaskSnapshots();
@@ -194,13 +227,12 @@ class ArminAppState extends ChangeNotifier {
   Future<void> saveTask(TaskSession task) async {
     await _store.saveTask(task);
     final updatedTasks = [...tasks];
-    final index = updatedTasks.indexWhere((item) => item.id == task.id);
-    if (index >= 0) {
-      updatedTasks[index] = task;
-    } else {
-      updatedTasks.insert(0, task);
-    }
+    // Dedup: remove ALL existing entries with this id before inserting.
+    updatedTasks.removeWhere((item) => item.id == task.id);
+    updatedTasks.insert(0, task);
     tasks = updatedTasks;
+    // Reset reconcile backoff when task status changes.
+    _reconcileMissStreak.remove(task.id);
     unawaited(_bridgeEnsureTaskCreated(task));
     _updateTaskSnapshot(task);
     _updateHomeSnapshot();
@@ -209,7 +241,7 @@ class ArminAppState extends ChangeNotifier {
 
   Future<void> refreshTasks() async {
     tasks = await _store.loadTasks();
-    for (final task in tasks) {
+    for (final task in activeTasks) {
       await _bridgeEnsureTaskCreated(task);
     }
     _syncTaskSnapshots();
@@ -221,13 +253,9 @@ class ArminAppState extends ChangeNotifier {
     TaskSession task, {
     bool markIdleIfNoAttention = false,
   }) async {
-    tasks = await _store.loadTasks();
-    _syncTaskSnapshots();
-    _updateHomeSnapshot();
     final latest = _latestTask(task.id) ?? task;
     await _bridgeEnsureTaskCreated(latest);
     if (!_canRefreshRemoteState(latest)) {
-      notifyListeners();
       return;
     }
     final hadActiveObserver = _runningExecutions.containsKey(latest.id);
@@ -240,11 +268,17 @@ class ArminAppState extends ChangeNotifier {
         markIdleIfNoAttention: markIdleIfNoAttention,
       );
     }
+    // Only sync if something changed (remote output captured).
+    // Skip for sessionMissing probes to avoid wasted hash/signature work.
+    final changed = trimmed.isNotEmpty || hadActiveObserver;
+    if (changed) {
+      _syncTaskSnapshots(taskId: task.id);
+      _updateHomeSnapshot();
+    }
     final synced = _latestTask(task.id) ?? latest;
     if (hadActiveObserver) {
       startTaskExecution(synced, _attachRequest(synced));
     }
-    notifyListeners();
   }
 
   Future<void> updateTaskTitle(TaskSession task, String title) async {
@@ -313,7 +347,7 @@ class ArminAppState extends ChangeNotifier {
   Future<void> deleteTask(String taskId) async {
     final task = _latestTask(taskId);
     if (task != null && !_canDeleteTask(task.status)) {
-      throw StateError('Only completed or failed tasks can be deleted.');
+      throw StateError('Only terminal tasks can be deleted.');
     }
     await _store.deleteTask(taskId);
     tasks = await _store.loadTasks();
@@ -581,8 +615,10 @@ class ArminAppState extends ChangeNotifier {
     if (!ready) {
       return const [];
     }
-    return tasks
-        .where(_canAutoReconcileRemoteState)
+    final candidates = activeTasks;
+    final result = candidates
+        .where((t) => _canAutoReconcileRemoteState(t) &&
+            (_reconcileMissStreak[t.id] ?? 0) < _kReconcileMaxMissStreak)
         .map(
           (task) => RuntimeReconcileTarget(
             taskId: task.id,
@@ -595,6 +631,7 @@ class ArminAppState extends ChangeNotifier {
           ),
         )
         .toList(growable: false);
+    return result;
   }
 
   Future<RuntimeRemoteProbe> _probeRuntimeTarget(
@@ -628,7 +665,15 @@ class ArminAppState extends ChangeNotifier {
     }
     final task = _latestTask(decision.taskId);
     if (task == null || !_canRefreshRemoteState(task)) {
+      _reconcileMissStreak.remove(decision.taskId);
       return;
+    }
+    // Track consecutive sessionMissing for backoff.
+    if (decision.reason == RuntimeReconcileReason.sessionMissing) {
+      _reconcileMissStreak[decision.taskId] =
+          (_reconcileMissStreak[decision.taskId] ?? 0) + 1;
+    } else {
+      _reconcileMissStreak.remove(decision.taskId);
     }
     await refreshTaskFromRemote(
       task,
@@ -1392,18 +1437,28 @@ Apply this decision to the pending approval request.
   /// progress surfaces consume runtime events instead of rebuilding the app.
   void _updateInMemory(TaskSession task) {
     final updatedTasks = [...tasks];
-    final index = updatedTasks.indexWhere((item) => item.id == task.id);
-    if (index >= 0) {
-      updatedTasks[index] = task;
-    } else {
-      updatedTasks.insert(0, task);
-    }
+    // Dedup: remove ALL existing entries with this id before inserting.
+    updatedTasks.removeWhere((item) => item.id == task.id);
+    updatedTasks.insert(0, task);
     tasks = updatedTasks;
   }
 
-  void _syncTaskSnapshots() {
-    for (final snapshot in _taskSnapshots.entries) {
-      snapshot.value.value = _latestTask(snapshot.key);
+  void _syncTaskSnapshots({String? taskId}) {
+    if (taskId != null) {
+      final snapshot = _taskSnapshots[taskId];
+      if (snapshot != null) {
+        final latest = _latestTask(taskId);
+        if (snapshot.value != latest) {
+          snapshot.value = latest;
+        }
+      }
+    } else {
+      for (final snapshot in _taskSnapshots.entries) {
+        final latest = _latestTask(snapshot.key);
+        if (snapshot.value.value != latest) {
+          snapshot.value.value = latest;
+        }
+      }
     }
   }
 
@@ -2078,10 +2133,16 @@ Apply this decision to the pending approval request.
       bridgeRuntime.diagnostics(taskId);
 
   bool _canDeleteTask(TaskStatus status) {
-    return status == TaskStatus.completed ||
-        status == TaskStatus.failed ||
-        status == TaskStatus.userCompleted ||
-        status == TaskStatus.userFailed;
+    return switch (status) {
+      TaskStatus.completed ||
+      TaskStatus.failed ||
+      TaskStatus.userCompleted ||
+      TaskStatus.userFailed ||
+      TaskStatus.stopped ||
+      TaskStatus.runtimeLost =>
+        true,
+      _ => false,
+    };
   }
 
   Future<void> _saveApprovalDecision(

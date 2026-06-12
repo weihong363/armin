@@ -66,12 +66,9 @@ class JsonTaskHistoryStore implements TaskHistoryStore {
   @override
   Future<void> saveTask(TaskSession task) async {
     await _ensureLoaded();
-    final index = _tasks!.indexWhere((item) => item.id == task.id);
-    if (index >= 0) {
-      _tasks![index] = task;
-    } else {
-      _tasks!.insert(0, task);
-    }
+    // Dedup: remove ALL existing entries with this id before inserting.
+    _tasks!.removeWhere((item) => item.id == task.id);
+    _tasks!.insert(0, task);
     await _persist();
   }
 
@@ -133,6 +130,13 @@ class JsonTaskHistoryStore implements TaskHistoryStore {
     _tasks = _decodeList(json['tasks'], TaskSession.fromJson);
     _projectPaths =
         _decodeList(json['projectPaths'], ProjectPathConfig.fromJson);
+    // Dedup tasks by id (keep first occurrence = newest, since persisted in order).
+    if (_tasks!.length > 1) {
+      final seen = <String>{};
+      _tasks!.removeWhere((t) => !seen.add(t.id));
+      // Persist the deduped list immediately so the JSON file is cleaned.
+      await _persist();
+    }
   }
 
   Future<void> _persist() async {

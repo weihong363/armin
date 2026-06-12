@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:developer' as developer;
 
 import '../models/approval_state.dart';
 import '../models/runtime_diagnostics.dart';
@@ -144,8 +143,13 @@ class BridgeRuntime {
     required Duration probeTimeout,
   }) async {
     try {
+      final targets = await loadTargets();
+      if (targets.isEmpty) {
+        // No reconciable targets — loop is idle.
+        return;
+      }
       final decisions = await reconcileOnce(
-        targets: await loadTargets(),
+        targets: targets,
         probe: probe,
         maxTasksPerRun: maxTasksPerRun,
         probeTimeout: probeTimeout,
@@ -154,15 +158,7 @@ class BridgeRuntime {
         await onDecision(decision);
       }
     } catch (error) {
-      assert(() {
-        // Debug-only diagnostics: reconcile should never crash the timer loop.
-        developer.log(
-          'BridgeRuntime reconcile skipped',
-          name: 'BridgeRuntime',
-          error: error,
-        );
-        return true;
-      }());
+      // silently skip reconcile errors
     }
   }
 

@@ -60,11 +60,13 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
   bool _topRefreshArmed = false;
   bool _topRefreshRunning = false;
   double _topRefreshDragDistance = 0;
+  int _visibleTabIndex = 0;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _tabController.addListener(_handleTabChanged);
     final state = AppStateScope.read(context);
     _eventSubscription = state.runtimeEvents.listen(_onRuntimeEvent);
   }
@@ -73,8 +75,19 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
   void dispose() {
     _eventSubscription?.cancel();
     WidgetsBinding.instance.removeObserver(this);
+    _tabController.removeListener(_handleTabChanged);
     _tabController.dispose();
     super.dispose();
+  }
+
+  void _handleTabChanged() {
+    final nextIndex = _tabController.index;
+    if (_visibleTabIndex == nextIndex || !mounted) {
+      return;
+    }
+    setState(() {
+      _visibleTabIndex = nextIndex;
+    });
   }
 
   @override
@@ -264,17 +277,11 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
                         ),
                       ),
                     ],
-                    body: TabBarView(
-                      controller: _tabController,
-                      children: [
-                        _TimelinePanel(task: task),
-                        _ResultPanel(
-                          task: task,
-                          revealLatestTurnToken: _latestTurnRevealToken,
-                          resultVersion: _resultVersion,
-                        ),
-                        _AdvancedDebugPanel(task: task),
-                      ],
+                    body: _CurrentTaskTabPanel(
+                      index: _visibleTabIndex,
+                      task: task,
+                      revealLatestTurnToken: _latestTurnRevealToken,
+                      resultVersion: _resultVersion,
                     ),
                   ),
                 ),
@@ -551,6 +558,33 @@ class _DeliberateRefreshScrollPhysics extends AlwaysScrollableScrollPhysics {
   @override
   _DeliberateRefreshScrollPhysics applyTo(ScrollPhysics? ancestor) {
     return _DeliberateRefreshScrollPhysics(parent: buildParent(ancestor));
+  }
+}
+
+class _CurrentTaskTabPanel extends StatelessWidget {
+  const _CurrentTaskTabPanel({
+    required this.index,
+    required this.task,
+    required this.revealLatestTurnToken,
+    required this.resultVersion,
+  });
+
+  final int index;
+  final TaskSession task;
+  final int revealLatestTurnToken;
+  final int resultVersion;
+
+  @override
+  Widget build(BuildContext context) {
+    return switch (index) {
+      0 => _TimelinePanel(task: task),
+      1 => _ResultPanel(
+          task: task,
+          revealLatestTurnToken: revealLatestTurnToken,
+          resultVersion: resultVersion,
+        ),
+      _ => _AdvancedDebugPanel(task: task),
+    };
   }
 }
 
@@ -2492,12 +2526,10 @@ class _AdvancedDebugPanelState extends State<_AdvancedDebugPanel> {
                 label: '中断',
                 tone: ControlTone.danger,
                 onPressed: task.turns.isNotEmpty &&
-                        task.turns.last.status ==
-                            NativeOutputTurnStatus.running
+                        task.turns.last.status == NativeOutputTurnStatus.running
                     ? () => _runControlAction(
                           context,
-                          () => AppStateScope.read(context)
-                              .interruptTask(task),
+                          () => AppStateScope.read(context).interruptTask(task),
                         )
                     : null,
               ),
@@ -2527,8 +2559,7 @@ class _AdvancedDebugPanelState extends State<_AdvancedDebugPanel> {
                     : () => _runControlAction(
                           context,
                           () => controlState == RuntimeControlState.detached
-                              ? AppStateScope.read(context)
-                                  .reconnectTask(task)
+                              ? AppStateScope.read(context).reconnectTask(task)
                               : AppStateScope.read(context)
                                   .disconnectTask(task),
                         ),

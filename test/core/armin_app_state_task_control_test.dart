@@ -756,6 +756,7 @@ Apply this change?
     await Future<void>.delayed(Duration.zero);
 
     expect(store.task!.status, TaskStatus.turnIdle);
+    await _waitUntil(() => voice.spokenSummaries.isNotEmpty);
     expect(voice.spokenSummaries.single, contains('本轮输出已暂停'));
     expect(voice.spokenSummaries.single, contains('done'));
   });
@@ -802,6 +803,7 @@ Apply this change?
     await Future<void>.delayed(Duration.zero);
 
     expect(store.task!.status, TaskStatus.turnIdle);
+    await _waitUntil(() => voice.spokenSummaries.isNotEmpty);
     expect(voice.spokenSummaries, hasLength(1));
     expect(voice.spokenSummaries.single, contains('本轮输出已暂停'));
   });
@@ -832,6 +834,7 @@ Apply this change?
       store.task!.metricEvents.map((event) => event.eventType),
       contains('turn_idle'),
     );
+    await _waitUntil(() => voice.spokenSummaries.isNotEmpty);
     expect(voice.spokenSummaries, hasLength(1));
     expect(voice.spokenSummaries.single, contains('HELLO WORLD'));
   });
@@ -882,6 +885,29 @@ Apply this change?
     expect(logUpdates, isEmpty);
   });
 
+  test('pure progress updates do not notify home snapshot', () async {
+    final task = _task(status: TaskStatus.running);
+    final store = _TaskStore(task);
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: _RepeatedLogUpdateAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+    var homeUpdates = 0;
+    state.homeSnapshot.addListener(() => homeUpdates++);
+
+    state.startTaskExecution(
+      task,
+      const AgentExecutionRequest(prompt: 'Task'),
+    );
+    await Future<void>.delayed(Duration.zero);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(store.task!.status, TaskStatus.running);
+    expect(homeUpdates, 0);
+  });
+
   test('approval request is spoken when attention speech is enabled', () async {
     final task = _task(status: TaskStatus.running);
     final store = _TaskStore(task);
@@ -900,6 +926,7 @@ Apply this change?
     await Future<void>.delayed(Duration.zero);
 
     expect(store.task!.status, TaskStatus.needApproval);
+    await _waitUntil(() => voice.spokenSummaries.isNotEmpty);
     expect(voice.spokenSummaries.single, contains('需要你确认一个操作'));
     expect(voice.spokenSummaries.single, isNot(contains('rm -rf')));
   });
@@ -950,6 +977,7 @@ Apply this change?
 
     expect(store.task!.status, TaskStatus.needApproval);
     expect(store.task!.turns.last.turnIndex, 2);
+    await _waitUntil(() => voice.spokenSummaries.isNotEmpty);
     expect(voice.spokenSummaries.single, contains('删除临时构建产物'));
     expect(voice.spokenSummaries.single, isNot(contains('Turn 1 old result')));
   });
@@ -1152,6 +1180,7 @@ Apply this change?
     await Future<void>.delayed(Duration.zero);
 
     expect(store.task!.status, TaskStatus.failed);
+    await _waitUntil(() => voice.spokenSummaries.isNotEmpty);
     expect(voice.spokenSummaries.single, contains('任务失败'));
     expect(voice.spokenSummaries.single, contains('建议先查看失败原因'));
   });

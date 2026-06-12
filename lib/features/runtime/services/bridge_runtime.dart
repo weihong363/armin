@@ -28,12 +28,71 @@ class BridgeRuntime {
 
   /// Per-task WorkState for UI consumption.
   final Map<String, WorkState> _workStates = {};
+  final Map<String, String> _reconcileHashes = {};
+  final Map<String, int> _reconcileStableCounts = {};
+  Timer? _reconcileTimer;
+  bool _reconcileRunning = false;
 
   /// Returns diagnostic snapshot for a task.
   RuntimeDiagnostics? diagnostics(String taskId) => _diagnostics[taskId];
 
   /// Returns current WorkState for a task.
   WorkState? workState(String taskId) => _workStates[taskId];
+
+  void startReconcileLoop({
+    required Future<List<RuntimeReconcileTarget>> Function() loadTargets,
+    required Future<RuntimeRemoteProbe> Function(RuntimeReconcileTarget target)
+        probe,
+    required Future<void> Function(RuntimeReconcileDecision decision)
+        onDecision,
+    Duration interval = const Duration(seconds: 30),
+    int maxTasksPerRun = 3,
+    Duration probeTimeout = const Duration(seconds: 3),
+  }) {
+    _reconcileTimer ??= Timer.periodic(interval, (_) {
+      unawaited(_runReconcileLoop(
+        loadTargets: loadTargets,
+        probe: probe,
+        onDecision: onDecision,
+        maxTasksPerRun: maxTasksPerRun,
+        probeTimeout: probeTimeout,
+      ));
+    });
+  }
+
+  void stopReconcileLoop() {
+    _reconcileTimer?.cancel();
+    _reconcileTimer = null;
+  }
+
+  Future<List<RuntimeReconcileDecision>> reconcileOnce({
+    required List<RuntimeReconcileTarget> targets,
+    required Future<RuntimeRemoteProbe> Function(RuntimeReconcileTarget target)
+        probe,
+    int maxTasksPerRun = 3,
+    Duration probeTimeout = const Duration(seconds: 3),
+  }) async {
+    if (_reconcileRunning) {
+      return const [];
+    }
+    _reconcileRunning = true;
+    final decisions = <RuntimeReconcileDecision>[];
+    try {
+      final candidates = targets
+          .where((target) => target.status == RuntimeTaskStatus.running)
+          .take(maxTasksPerRun);
+      for (final target in candidates) {
+        final remoteProbe = await probe(target).timeout(probeTimeout);
+        final decision = _reconcileDecisionFor(target, remoteProbe);
+        if (decision.action != RuntimeReconcileAction.none) {
+          decisions.add(decision);
+        }
+      }
+      return decisions;
+    } finally {
+      _reconcileRunning = false;
+    }
+  }
 
   Future<RuntimeTaskSnapshot?> taskSnapshot(String taskId) {
     _validateTaskId(taskId);
@@ -65,6 +124,71 @@ class BridgeRuntime {
                 updatedAt: event.createdAt,
               ));
     }
+  }
+
+  Future<void> _runReconcileLoop({
+    required Future<List<RuntimeReconcileTarget>> Function() loadTargets,
+    required Future<RuntimeRemoteProbe> Function(RuntimeReconcileTarget target)
+        probe,
+    required Future<void> Function(RuntimeReconcileDecision decision)
+        onDecision,
+    required int maxTasksPerRun,
+    required Duration probeTimeout,
+  }) async {
+    final decisions = await reconcileOnce(
+      targets: await loadTargets(),
+      probe: probe,
+      maxTasksPerRun: maxTasksPerRun,
+      probeTimeout: probeTimeout,
+    );
+    for (final decision in decisions) {
+      await onDecision(decision);
+    }
+  }
+
+  RuntimeReconcileDecision _reconcileDecisionFor(
+    RuntimeReconcileTarget target,
+    RuntimeRemoteProbe probe,
+  ) {
+    if (!probe.sessionExists) {
+      return RuntimeReconcileDecision.refresh(
+        taskId: target.taskId,
+        reason: RuntimeReconcileReason.sessionMissing,
+      );
+    }
+    if (probe.needsAttention) {
+      return RuntimeReconcileDecision.refresh(
+        taskId: target.taskId,
+        reason: RuntimeReconcileReason.needsAttention,
+      );
+    }
+    if (probe.hasExitedMarker) {
+      return RuntimeReconcileDecision.refresh(
+        taskId: target.taskId,
+        reason: RuntimeReconcileReason.exited,
+      );
+    }
+    final snapshot = probe.snapshot.trim();
+    if (snapshot.isEmpty) {
+      return RuntimeReconcileDecision.none(target.taskId);
+    }
+    final hash = snapshot.hashCode.toString();
+    final previousHash = _reconcileHashes[target.taskId];
+    if (previousHash != hash) {
+      _reconcileHashes[target.taskId] = hash;
+      _reconcileStableCounts[target.taskId] = 1;
+      return RuntimeReconcileDecision.none(target.taskId);
+    }
+    final stableCount = (_reconcileStableCounts[target.taskId] ?? 1) + 1;
+    _reconcileStableCounts[target.taskId] = stableCount;
+    if (stableCount >= 2) {
+      _reconcileStableCounts.remove(target.taskId);
+      return RuntimeReconcileDecision.refreshAsIdle(
+        taskId: target.taskId,
+        reason: RuntimeReconcileReason.stableOutput,
+      );
+    }
+    return RuntimeReconcileDecision.none(target.taskId);
   }
 
   Future<RuntimeTaskSnapshot> createTask(RuntimeTaskSnapshot task) async {
@@ -560,4 +684,81 @@ class BridgeRuntime {
       await store.saveWorkState(state);
     }
   }
+}
+
+enum RuntimeReconcileAction {
+  none,
+  refresh,
+  refreshAsIdle,
+}
+
+enum RuntimeReconcileReason {
+  none,
+  sessionMissing,
+  needsAttention,
+  exited,
+  stableOutput,
+}
+
+class RuntimeReconcileTarget {
+  const RuntimeReconcileTarget({
+    required this.taskId,
+    required this.status,
+  });
+
+  final String taskId;
+  final RuntimeTaskStatus status;
+}
+
+class RuntimeRemoteProbe {
+  const RuntimeRemoteProbe({
+    required this.sessionExists,
+    this.snapshot = '',
+    this.needsAttention = false,
+    this.hasExitedMarker = false,
+  });
+
+  final bool sessionExists;
+  final String snapshot;
+  final bool needsAttention;
+  final bool hasExitedMarker;
+}
+
+class RuntimeReconcileDecision {
+  const RuntimeReconcileDecision({
+    required this.taskId,
+    required this.action,
+    this.reason = RuntimeReconcileReason.none,
+  });
+
+  const RuntimeReconcileDecision.none(String taskId)
+      : this(
+          taskId: taskId,
+          action: RuntimeReconcileAction.none,
+        );
+
+  const RuntimeReconcileDecision.refresh({
+    required String taskId,
+    required RuntimeReconcileReason reason,
+  }) : this(
+          taskId: taskId,
+          action: RuntimeReconcileAction.refresh,
+          reason: reason,
+        );
+
+  const RuntimeReconcileDecision.refreshAsIdle({
+    required String taskId,
+    required RuntimeReconcileReason reason,
+  }) : this(
+          taskId: taskId,
+          action: RuntimeReconcileAction.refreshAsIdle,
+          reason: reason,
+        );
+
+  final String taskId;
+  final RuntimeReconcileAction action;
+  final RuntimeReconcileReason reason;
+
+  bool get markIdleIfNoAttention =>
+      action == RuntimeReconcileAction.refreshAsIdle;
 }

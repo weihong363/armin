@@ -244,4 +244,94 @@ void main() {
     );
     expect(await store.loadEvents(taskId: 'task-1'), hasLength(4));
   });
+
+  test('bridge runtime returns reconcile decision for attention probe',
+      () async {
+    final runtime = BridgeRuntime(
+      taskStore: InMemoryRuntimeTaskStore(),
+      eventBus: RuntimeEventBus(),
+    );
+
+    final decisions = await runtime.reconcileOnce(
+      targets: const [
+        RuntimeReconcileTarget(
+          taskId: 'task-1',
+          status: RuntimeTaskStatus.running,
+        ),
+      ],
+      probe: (_) async => const RuntimeRemoteProbe(
+        sessionExists: true,
+        snapshot: 'Apply this change?',
+        needsAttention: true,
+      ),
+    );
+
+    expect(decisions.single.taskId, 'task-1');
+    expect(decisions.single.action, RuntimeReconcileAction.refresh);
+    expect(decisions.single.reason, RuntimeReconcileReason.needsAttention);
+  });
+
+  test('bridge runtime returns refreshAsIdle after stable output', () async {
+    final runtime = BridgeRuntime(
+      taskStore: InMemoryRuntimeTaskStore(),
+      eventBus: RuntimeEventBus(),
+    );
+    const targets = [
+      RuntimeReconcileTarget(
+        taskId: 'task-1',
+        status: RuntimeTaskStatus.running,
+      ),
+    ];
+
+    final first = await runtime.reconcileOnce(
+      targets: targets,
+      probe: (_) async => const RuntimeRemoteProbe(
+        sessionExists: true,
+        snapshot: 'HELLO WORLD',
+      ),
+    );
+    final second = await runtime.reconcileOnce(
+      targets: targets,
+      probe: (_) async => const RuntimeRemoteProbe(
+        sessionExists: true,
+        snapshot: 'HELLO WORLD',
+      ),
+    );
+
+    expect(first, isEmpty);
+    expect(second.single.action, RuntimeReconcileAction.refreshAsIdle);
+    expect(second.single.markIdleIfNoAttention, isTrue);
+  });
+
+  test('bridge runtime limits reconcile probes per run', () async {
+    final runtime = BridgeRuntime(
+      taskStore: InMemoryRuntimeTaskStore(),
+      eventBus: RuntimeEventBus(),
+    );
+    var probeCount = 0;
+
+    await runtime.reconcileOnce(
+      targets: const [
+        RuntimeReconcileTarget(
+          taskId: 'task-1',
+          status: RuntimeTaskStatus.running,
+        ),
+        RuntimeReconcileTarget(
+          taskId: 'task-2',
+          status: RuntimeTaskStatus.running,
+        ),
+        RuntimeReconcileTarget(
+          taskId: 'task-3',
+          status: RuntimeTaskStatus.running,
+        ),
+      ],
+      maxTasksPerRun: 2,
+      probe: (_) async {
+        probeCount++;
+        return const RuntimeRemoteProbe(sessionExists: true);
+      },
+    );
+
+    expect(probeCount, 2);
+  });
 }

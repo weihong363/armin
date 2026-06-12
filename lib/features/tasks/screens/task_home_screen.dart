@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../../../app_state_scope.dart';
 import '../../../core/models/task_status.dart';
+import '../../../core/services/armin_app_state.dart' show HomeTaskSnapshot;
 import '../../../shared/theme/armin_theme.dart';
 import '../../history/screens/task_detail_screen.dart';
 import '../../history/screens/task_history_screen.dart';
@@ -35,150 +36,155 @@ class _TaskHomeScreenState extends State<TaskHomeScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final state = AppStateScope.of(context);
-    final groups = _groupTasks(state.tasks);
-    final attentionEvents = _attentionEventsFor(state.tasks);
-    final activityItems = _activityItemsFor(state.tasks);
-    final completedCount = _completedSummaryCount(state.tasks);
+    final state = AppStateScope.read(context);
 
     return Scaffold(
-      body: SafeArea(
-        child: !state.ready
-            ? const Center(child: CircularProgressIndicator())
-            : Listener(
-                onPointerDown: _handlePointerDown,
-                onPointerMove: _handlePointerMove,
-                onPointerUp: (_) => _finishGesture(context),
-                onPointerCancel: (_) => _resetGesture(),
-                child: Stack(
-                  children: [
-                    Transform.translate(
-                      offset: Offset(0, _topPullOffset),
-                      child: NotificationListener<ScrollNotification>(
-                        onNotification: _handleScrollNotification,
-                        child: ListView(
-                          physics: const AlwaysScrollableScrollPhysics(),
-                          padding: const EdgeInsets.fromLTRB(20, 18, 20, 148),
-                          children: [
-                            Row(
-                              children: [
-                                Container(
-                                  width: 28,
-                                  height: 28,
-                                  decoration: const BoxDecoration(
-                                    color: ArminTheme.mint,
-                                    shape: BoxShape.circle,
-                                  ),
-                                  child: const Icon(
-                                    Icons.auto_awesome,
-                                    color: Colors.white,
-                                    size: 16,
-                                  ),
-                                ),
-                                const SizedBox(width: 10),
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        'Armin',
-                                        style: Theme.of(context)
-                                            .textTheme
-                                            .headlineSmall
-                                            ?.copyWith(fontSize: 26),
-                                      ),
-                                      Text(
-                                        _homeStatusLine(
-                                          attentionCount:
-                                              attentionEvents.length,
-                                          workingCount:
-                                              groups.inProgress.length,
-                                          activeCount: attentionEvents.length +
-                                              groups.inProgress.length,
-                                        ),
-                                        style: Theme.of(context)
-                                            .textTheme
-                                            .bodyMedium,
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                                _ActivityIconButton(
-                                  count: attentionEvents.length,
-                                  onPressed: () => _openActivityFeed(
-                                    context,
-                                    activityItems,
-                                  ),
-                                ),
-                                const SizedBox(width: 8),
-                                IconButton.filledTonal(
-                                  key: const ValueKey('home-settings-button'),
-                                  tooltip: '设置',
-                                  icon: const Icon(Icons.settings_outlined),
-                                  onPressed: () => _openSettings(context),
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 18),
-                            if (state.tasks.isEmpty)
-                              _EmptyInbox(onCreate: () => _openNewTask(context))
-                            else ...[
-                              _WaitingForYouSection(
-                                events: attentionEvents,
-                                onOpenTask: _openTask,
-                                onViewAll: () => _openTaskList(
-                                  context,
-                                  title: '等待你处理',
-                                  tasks: attentionEvents
-                                      .map((event) => event.task)
-                                      .toList(growable: false),
-                                ),
-                              ),
-                              const SizedBox(height: 18),
-                              _RunningSummarySection(
-                                tasks: groups.inProgress,
-                                onOpenTask: _openTask,
-                                onViewRunning: () => _openTaskList(
-                                  context,
-                                  title: 'Running',
-                                  tasks: groups.inProgress,
-                                ),
-                              ),
-                              if (completedCount > 0)
-                                _CompletedSummaryRow(
-                                  count: completedCount,
-                                  onViewHistory: () => _openHistory(context),
-                                ),
-                            ],
-                          ],
-                        ),
-                      ),
-                    ),
-                    if (_refreshArmed || _refreshing)
-                      const Positioned(
-                        top: 12,
-                        left: 0,
-                        right: 0,
-                        child: Center(
-                          child: SizedBox(
-                            width: 22,
-                            height: 22,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2.4,
-                              color: ArminTheme.primary,
-                            ),
-                          ),
-                        ),
-                      ),
-                  ],
-                ),
-              ),
+      body: ValueListenableBuilder<HomeTaskSnapshot>(
+        valueListenable: state.homeSnapshot,
+        builder: (context, snapshot, _) => _buildHomeBody(context, snapshot),
       ),
       bottomNavigationBar: _HomeBottomActions(
         onNewTask: () => _openNewTask(context),
         onAddContext: () => _addContextFromHome(context),
       ),
+    );
+  }
+
+  Widget _buildHomeBody(BuildContext context, HomeTaskSnapshot snapshot) {
+    final groups = _groupTasks(snapshot.tasks);
+    final attentionEvents = _attentionEventsFor(snapshot.tasks);
+    final activityItems = _activityItemsFor(snapshot.tasks);
+    final completedCount = _completedSummaryCount(snapshot.tasks);
+
+    return SafeArea(
+      child: !snapshot.ready
+          ? const Center(child: CircularProgressIndicator())
+          : Listener(
+              onPointerDown: _handlePointerDown,
+              onPointerMove: _handlePointerMove,
+              onPointerUp: (_) => _finishGesture(context),
+              onPointerCancel: (_) => _resetGesture(),
+              child: Stack(
+                children: [
+                  Transform.translate(
+                    offset: Offset(0, _topPullOffset),
+                    child: NotificationListener<ScrollNotification>(
+                      onNotification: _handleScrollNotification,
+                      child: ListView(
+                        physics: const AlwaysScrollableScrollPhysics(),
+                        padding: const EdgeInsets.fromLTRB(20, 18, 20, 148),
+                        children: [
+                          Row(
+                            children: [
+                              Container(
+                                width: 28,
+                                height: 28,
+                                decoration: const BoxDecoration(
+                                  color: ArminTheme.mint,
+                                  shape: BoxShape.circle,
+                                ),
+                                child: const Icon(
+                                  Icons.auto_awesome,
+                                  color: Colors.white,
+                                  size: 16,
+                                ),
+                              ),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      'Armin',
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .headlineSmall
+                                          ?.copyWith(fontSize: 26),
+                                    ),
+                                    Text(
+                                      _homeStatusLine(
+                                        attentionCount: attentionEvents.length,
+                                        workingCount: groups.inProgress.length,
+                                        activeCount: attentionEvents.length +
+                                            groups.inProgress.length,
+                                      ),
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .bodyMedium,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              _ActivityIconButton(
+                                count: attentionEvents.length,
+                                onPressed: () => _openActivityFeed(
+                                  context,
+                                  activityItems,
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              IconButton.filledTonal(
+                                key: const ValueKey('home-settings-button'),
+                                tooltip: '设置',
+                                icon: const Icon(Icons.settings_outlined),
+                                onPressed: () => _openSettings(context),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 18),
+                          if (snapshot.tasks.isEmpty)
+                            _EmptyInbox(onCreate: () => _openNewTask(context))
+                          else ...[
+                            _WaitingForYouSection(
+                              events: attentionEvents,
+                              onOpenTask: _openTask,
+                              onViewAll: () => _openTaskList(
+                                context,
+                                title: '等待你处理',
+                                tasks: attentionEvents
+                                    .map((event) => event.task)
+                                    .toList(growable: false),
+                              ),
+                            ),
+                            const SizedBox(height: 18),
+                            _RunningSummarySection(
+                              tasks: groups.inProgress,
+                              onOpenTask: _openTask,
+                              onViewRunning: () => _openTaskList(
+                                context,
+                                title: 'Running',
+                                tasks: groups.inProgress,
+                              ),
+                            ),
+                            if (completedCount > 0)
+                              _CompletedSummaryRow(
+                                count: completedCount,
+                                onViewHistory: () => _openHistory(context),
+                              ),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ),
+                  if (_refreshArmed || _refreshing)
+                    const Positioned(
+                      top: 12,
+                      left: 0,
+                      right: 0,
+                      child: Center(
+                        child: SizedBox(
+                          width: 22,
+                          height: 22,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2.4,
+                            color: ArminTheme.primary,
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
     );
   }
 

@@ -272,17 +272,15 @@ class TaskSpeechPolicy {
 
   TaskSpeechKind? _kindFor(TaskStatus status) {
     return switch (status) {
-      TaskStatus.completed ||
-      TaskStatus.userCompleted ||
-      TaskStatus.failed ||
-      TaskStatus.userFailed ||
-      TaskStatus.runtimeLost =>
-        TaskSpeechKind.result,
+      TaskStatus.completed || TaskStatus.userCompleted => TaskSpeechKind.result,
+      TaskStatus.needApproval => TaskSpeechKind.approval,
       TaskStatus.turnIdle ||
       TaskStatus.needAttention ||
+      TaskStatus.failed ||
+      TaskStatus.userFailed ||
+      TaskStatus.runtimeLost ||
       TaskStatus.observerDetached =>
         TaskSpeechKind.attention,
-      TaskStatus.needApproval => TaskSpeechKind.approval,
       _ => null,
     };
   }

@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../../../app_state_scope.dart';
 import '../../../core/models/task_status.dart';
 import '../../../core/services/armin_app_state.dart' show HomeTaskSnapshot;
+import '../../../shared/scroll/armin_scroll_behavior.dart';
 import '../../../shared/theme/armin_theme.dart';
 import '../../history/screens/task_detail_screen.dart';
 import '../../history/screens/task_history_screen.dart';
@@ -24,12 +25,14 @@ class _TaskHomeScreenState extends State<TaskHomeScreen> {
   static const _refreshTriggerDistance = 120.0;
   static const _topRefreshGestureHeight = 200.0;
   static const _maxTopPullOffset = 48.0;
+  static const _dragUpdateThreshold = 4.0;
 
   bool _pageAtTop = true;
   bool _refreshTracking = false;
   bool _refreshArmed = false;
   bool _refreshing = false;
   double _refreshDragDistance = 0.0;
+  double _lastRefreshPaintDistance = 0.0;
 
   double get _topPullOffset =>
       math.min(_refreshDragDistance * 0.35, _maxTopPullOffset);
@@ -71,7 +74,9 @@ class _TaskHomeScreenState extends State<TaskHomeScreen> {
                     child: NotificationListener<ScrollNotification>(
                       onNotification: _handleScrollNotification,
                       child: ListView(
-                        physics: const AlwaysScrollableScrollPhysics(),
+                        physics: const ArminScrollPhysics(
+                          parent: AlwaysScrollableScrollPhysics(),
+                        ),
                         padding: const EdgeInsets.fromLTRB(20, 18, 20, 148),
                         children: [
                           Row(
@@ -352,6 +357,7 @@ class _TaskHomeScreenState extends State<TaskHomeScreen> {
         !_refreshing;
     _refreshTracking = canStart;
     _refreshDragDistance = 0;
+    _lastRefreshPaintDistance = 0;
     _refreshArmed = false;
   }
 
@@ -359,9 +365,19 @@ class _TaskHomeScreenState extends State<TaskHomeScreen> {
     if (!_refreshTracking || event.delta.dy <= 0) {
       return;
     }
+    final nextDistance = _refreshDragDistance + event.delta.dy;
+    final wasArmed = _refreshArmed;
+    final nextArmed = nextDistance >= _refreshTriggerDistance;
+    final movedEnough = (nextDistance - _lastRefreshPaintDistance).abs() >=
+        _dragUpdateThreshold;
+    if (!movedEnough && wasArmed == nextArmed) {
+      _refreshDragDistance = nextDistance;
+      return;
+    }
     setState(() {
-      _refreshDragDistance += event.delta.dy;
-      _refreshArmed = _refreshDragDistance >= _refreshTriggerDistance;
+      _refreshDragDistance = nextDistance;
+      _lastRefreshPaintDistance = nextDistance;
+      _refreshArmed = nextArmed;
     });
   }
 
@@ -379,6 +395,7 @@ class _TaskHomeScreenState extends State<TaskHomeScreen> {
       _refreshing = true;
       _refreshArmed = true;
       _refreshDragDistance = _refreshTriggerDistance;
+      _lastRefreshPaintDistance = _refreshTriggerDistance;
     });
     try {
       await AppStateScope.read(context).refreshTasks();
@@ -397,6 +414,7 @@ class _TaskHomeScreenState extends State<TaskHomeScreen> {
       _refreshing = false;
       _refreshArmed = false;
       _refreshDragDistance = 0;
+      _lastRefreshPaintDistance = 0;
     });
   }
 
@@ -408,6 +426,7 @@ class _TaskHomeScreenState extends State<TaskHomeScreen> {
       _refreshTracking = false;
       _refreshArmed = false;
       _refreshDragDistance = 0;
+      _lastRefreshPaintDistance = 0;
     });
   }
 }

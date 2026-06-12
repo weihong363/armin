@@ -39,6 +39,7 @@ import '../storage/task_history_store.dart';
 
 class ArminAppState extends ChangeNotifier {
   static const _turnOutputSlicer = TurnOutputSlicer();
+  static const _runtimeOutputNotifyInterval = Duration(seconds: 1);
 
   ArminAppState({
     required TaskHistoryStore store,
@@ -101,6 +102,7 @@ class ArminAppState extends ChangeNotifier {
   late final BridgeRuntime bridgeRuntime;
   final Set<String> _bridgedTaskIds = {};
   final Map<String, Future<void>> _bridgeCreateFutures = {};
+  final Map<String, ValueNotifier<TaskSession?>> _taskSnapshots = {};
   final ValueNotifier<HomeTaskSnapshot> homeSnapshot =
       ValueNotifier(HomeTaskSnapshot.empty());
   String _homeSnapshotSignature = '';
@@ -114,6 +116,9 @@ class ArminAppState extends ChangeNotifier {
   final Map<String, Timer> _autoDetachTimers = {};
   final Map<String, String> _lastSpokenHashes = {};
   final Map<String, StringBuffer> _progressOutputMap = {};
+  final Map<String, DateTime> _lastRuntimeOutputNotifiedAt = {};
+  final Map<String, int> _lastRuntimeOutputHashes = {};
+  Future<void> _speechQueue = Future<void>.value();
   final bool _enableRemoteReconcile;
   final Duration _remoteReconcileInterval;
   bool _notifyScheduled = false;
@@ -127,6 +132,7 @@ class ArminAppState extends ChangeNotifier {
     for (final task in tasks) {
       await _bridgeEnsureTaskCreated(task);
     }
+    _syncTaskSnapshots();
     _updateHomeSnapshot(force: true);
     _startRemoteReconcileLoop();
     notifyListeners();
@@ -135,6 +141,9 @@ class ArminAppState extends ChangeNotifier {
   @override
   void dispose() {
     homeSnapshot.dispose();
+    for (final snapshot in _taskSnapshots.values) {
+      snapshot.dispose();
+    }
     bridgeRuntime.stopReconcileLoop();
     for (final timer in _autoDetachTimers.values) {
       timer.cancel();
@@ -193,6 +202,7 @@ class ArminAppState extends ChangeNotifier {
     }
     tasks = updatedTasks;
     unawaited(_bridgeEnsureTaskCreated(task));
+    _updateTaskSnapshot(task);
     _updateHomeSnapshot();
     _scheduleNotify();
   }
@@ -202,6 +212,7 @@ class ArminAppState extends ChangeNotifier {
     for (final task in tasks) {
       await _bridgeEnsureTaskCreated(task);
     }
+    _syncTaskSnapshots();
     _updateHomeSnapshot(force: true);
     notifyListeners();
   }
@@ -211,6 +222,7 @@ class ArminAppState extends ChangeNotifier {
     bool markIdleIfNoAttention = false,
   }) async {
     tasks = await _store.loadTasks();
+    _syncTaskSnapshots();
     _updateHomeSnapshot();
     final latest = _latestTask(task.id) ?? task;
     await _bridgeEnsureTaskCreated(latest);
@@ -218,6 +230,7 @@ class ArminAppState extends ChangeNotifier {
       notifyListeners();
       return;
     }
+    final hadActiveObserver = _runningExecutions.containsKey(latest.id);
     final snapshot = await _captureLogBestEffort(await _controlRequest(latest));
     final trimmed = snapshot.trim();
     if (trimmed.isNotEmpty) {
@@ -228,7 +241,9 @@ class ArminAppState extends ChangeNotifier {
       );
     }
     final synced = _latestTask(task.id) ?? latest;
-    startTaskExecution(synced, _attachRequest(synced));
+    if (hadActiveObserver) {
+      startTaskExecution(synced, _attachRequest(synced));
+    }
     notifyListeners();
   }
 
@@ -288,6 +303,13 @@ class ArminAppState extends ChangeNotifier {
     return true;
   }
 
+  ValueListenable<TaskSession?> taskListenable(String taskId) {
+    return _taskSnapshots.putIfAbsent(
+      taskId,
+      () => ValueNotifier<TaskSession?>(_latestTask(taskId)),
+    );
+  }
+
   Future<void> deleteTask(String taskId) async {
     final task = _latestTask(taskId);
     if (task != null && !_canDeleteTask(task.status)) {
@@ -295,6 +317,7 @@ class ArminAppState extends ChangeNotifier {
     }
     await _store.deleteTask(taskId);
     tasks = await _store.loadTasks();
+    _updateTaskSnapshotById(taskId);
     _updateHomeSnapshot(force: true);
     notifyListeners();
   }
@@ -793,7 +816,7 @@ class ArminAppState extends ChangeNotifier {
             _updateInMemory(task);
           }
           _bridgeNotifyExecutionUpdate(task, update.rawOutput);
-          await _speakTaskUpdate(previousTask, task);
+          _queueTaskSpeech(previousTask, task);
         });
       },
       onError: (Object error) async {
@@ -813,7 +836,7 @@ class ArminAppState extends ChangeNotifier {
         }
         final failedTask = await _saveFailedExecution(latest, error);
         final finalTask = await _captureAndSaveFinalLog(failedTask);
-        await _speakTaskUpdate(latest, finalTask);
+        _queueTaskSpeech(latest, finalTask);
         await _cleanupTaskSession(finalTask);
       },
       onDone: () async {
@@ -1195,10 +1218,21 @@ Apply this decision to the pending approval request.
     if (trimmed.isEmpty) {
       return;
     }
+    final now = DateTime.now();
+    final hash = trimmed.hashCode;
+    final lastHash = _lastRuntimeOutputHashes[task.id];
+    final lastAt = _lastRuntimeOutputNotifiedAt[task.id];
+    if (lastHash == hash ||
+        (lastAt != null &&
+            now.difference(lastAt) < _runtimeOutputNotifyInterval)) {
+      return;
+    }
+    _lastRuntimeOutputHashes[task.id] = hash;
+    _lastRuntimeOutputNotifiedAt[task.id] = now;
     unawaited(bridgeRuntime.observeOutput(
       taskId: task.id,
       capturedOutput: rawOutput,
-      now: DateTime.now(),
+      now: now,
     ));
   }
 
@@ -1353,8 +1387,9 @@ Apply this decision to the pending approval request.
     return task.copyWith(turns: turns, updatedAt: now);
   }
 
-  /// Replaces the task in the in-memory list and schedules a UI rebuild
-  /// WITHOUT persisting to disk (saveTask is skipped for progress).
+  /// Replaces the task in the in-memory list for pure progress updates.
+  /// This intentionally skips persistence and global notifications; visible
+  /// progress surfaces consume runtime events instead of rebuilding the app.
   void _updateInMemory(TaskSession task) {
     final updatedTasks = [...tasks];
     final index = updatedTasks.indexWhere((item) => item.id == task.id);
@@ -1364,8 +1399,26 @@ Apply this decision to the pending approval request.
       updatedTasks.insert(0, task);
     }
     tasks = updatedTasks;
-    _updateHomeSnapshot();
-    _scheduleNotify();
+  }
+
+  void _syncTaskSnapshots() {
+    for (final snapshot in _taskSnapshots.entries) {
+      snapshot.value.value = _latestTask(snapshot.key);
+    }
+  }
+
+  void _updateTaskSnapshot(TaskSession task) {
+    final snapshot = _taskSnapshots[task.id];
+    if (snapshot != null && snapshot.value != task) {
+      snapshot.value = task;
+    }
+  }
+
+  void _updateTaskSnapshotById(String taskId) {
+    final snapshot = _taskSnapshots[taskId];
+    if (snapshot != null) {
+      snapshot.value = _latestTask(taskId);
+    }
   }
 
   void _updateHomeSnapshot({bool force = false}) {
@@ -1995,6 +2048,14 @@ Apply this decision to the pending approval request.
     } catch (error) {
       debugPrint('Task speech failed: $error');
     }
+  }
+
+  void _queueTaskSpeech(TaskSession previous, TaskSession current) {
+    _speechQueue = _speechQueue
+        .then((_) => _speakTaskUpdate(previous, current))
+        .catchError((Object error) {
+      debugPrint('Task speech queue failed: $error');
+    });
   }
 
   bool _isTerminal(TaskStatus status) {

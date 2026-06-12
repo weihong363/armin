@@ -6,6 +6,7 @@ import '../../../app_state_scope.dart';
 import '../../../core/models/task_status.dart';
 import '../../runtime/services/runtime_event_bus.dart';
 import '../../runtime/models/runtime_task_snapshot.dart';
+import '../../../shared/scroll/armin_scroll_behavior.dart';
 import '../../../shared/theme/armin_theme.dart';
 import '../../agent/parsers/approval_request.dart';
 import '../../agent/parsers/task_result.dart';
@@ -30,6 +31,8 @@ enum _TaskDetailAction {
   delete,
 }
 
+const _taskDetailTabScrollPhysics = ClampingScrollPhysics();
+
 class TaskDetailScreen extends StatefulWidget {
   const TaskDetailScreen({required this.taskId, super.key});
 
@@ -45,6 +48,7 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
   static const _refreshTriggerDistance = 96.0;
   static const _topRefreshGestureHeight = 180.0;
   static const _maxTopPullOffset = 36.0;
+  static const _dragUpdateThreshold = 4.0;
 
   late final TabController _tabController =
       TabController(length: 3, vsync: this);
@@ -54,12 +58,14 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
 
   StreamSubscription<RuntimeEvent>? _eventSubscription;
   int _resultVersion = 0;
-  RuntimeTaskSnapshot? _progressSnapshot;
+  final ValueNotifier<RuntimeTaskSnapshot?> _progressNotifier =
+      ValueNotifier<RuntimeTaskSnapshot?>(null);
   bool _taskPageAtTop = true;
   bool _topRefreshTracking = false;
   bool _topRefreshArmed = false;
   bool _topRefreshRunning = false;
   double _topRefreshDragDistance = 0;
+  double _lastTopRefreshPaintDistance = 0;
   int _visibleTabIndex = 0;
 
   @override
@@ -74,6 +80,7 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
   @override
   void dispose() {
     _eventSubscription?.cancel();
+    _progressNotifier.dispose();
     WidgetsBinding.instance.removeObserver(this);
     _tabController.removeListener(_handleTabChanged);
     _tabController.dispose();
@@ -115,14 +122,8 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
     }
     switch (event.type) {
       case RuntimeEventType.taskProgress:
-        // Lightweight: only update the snapshot for progress bar / status label.
-        // No full rebuild — InheritedNotifier still drives batched frame-end
-        // rebuilds, but _resultVersion stays unchanged so _ResultPanel skips
-        // expensive _outputSummaries computation.
         if (event.snapshot != null) {
-          setState(() {
-            _progressSnapshot = event.snapshot;
-          });
+          _progressNotifier.value = event.snapshot;
         }
         break;
       case RuntimeEventType.taskCompleted:
@@ -134,8 +135,8 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
         // Terminal / low-frequency: bump version so _ResultPanel does a full
         // recomputation. Clear progress snapshot so UI switches to full
         // TaskSession data.
+        _progressNotifier.value = null;
         setState(() {
-          _progressSnapshot = null;
           _resultVersion++;
         });
       case RuntimeEventType.taskCreated:
@@ -166,8 +167,16 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
 
   @override
   Widget build(BuildContext context) {
-    final state = AppStateScope.of(context);
-    final task = _findTask(state.tasks);
+    final taskListenable = AppStateScope.read(context).taskListenable(
+      widget.taskId,
+    );
+    return ValueListenableBuilder<TaskSession?>(
+      valueListenable: taskListenable,
+      builder: (context, task, _) => _buildTaskScaffold(context, task),
+    );
+  }
+
+  Widget _buildTaskScaffold(BuildContext context, TaskSession? task) {
     if (task == null) {
       return Scaffold(
         appBar: AppBar(title: const Text('任务详情')),
@@ -233,7 +242,9 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
                 child: NotificationListener<ScrollNotification>(
                   onNotification: _handleTaskScrollNotification,
                   child: NestedScrollView(
-                    physics: const _DeliberateRefreshScrollPhysics(),
+                    physics: const ArminScrollPhysics(
+                      parent: AlwaysScrollableScrollPhysics(),
+                    ),
                     headerSliverBuilder: (context, innerBoxIsScrolled) => [
                       SliverPadding(
                         padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
@@ -243,8 +254,15 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
                       SliverPadding(
                         padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
                         sliver: SliverToBoxAdapter(
-                          child: _CurrentSituationCard(
-                              task: task, progressSnapshot: _progressSnapshot),
+                          child: ValueListenableBuilder<RuntimeTaskSnapshot?>(
+                            valueListenable: _progressNotifier,
+                            builder: (context, progressSnapshot, _) {
+                              return _CurrentSituationCard(
+                                task: task,
+                                progressSnapshot: progressSnapshot,
+                              );
+                            },
+                          ),
                         ),
                       ),
                       SliverPadding(
@@ -278,6 +296,9 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
                       ),
                     ],
                     body: _CurrentTaskTabPanel(
+                      key: ValueKey<String>(
+                        'task-detail-tab-body-${task.id}-$_visibleTabIndex',
+                      ),
                       index: _visibleTabIndex,
                       task: task,
                       revealLatestTurnToken: _latestTurnRevealToken,
@@ -318,6 +339,7 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
         !_topRefreshRunning;
     _topRefreshTracking = canStart;
     _topRefreshDragDistance = 0;
+    _lastTopRefreshPaintDistance = 0;
     _topRefreshArmed = false;
   }
 
@@ -325,9 +347,19 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
     if (!_topRefreshTracking || event.delta.dy <= 0) {
       return;
     }
+    final nextDistance = _topRefreshDragDistance + event.delta.dy;
+    final wasArmed = _topRefreshArmed;
+    final nextArmed = nextDistance >= _refreshTriggerDistance;
+    final movedEnough = (nextDistance - _lastTopRefreshPaintDistance).abs() >=
+        _dragUpdateThreshold;
+    if (!movedEnough && wasArmed == nextArmed) {
+      _topRefreshDragDistance = nextDistance;
+      return;
+    }
     setState(() {
-      _topRefreshDragDistance += event.delta.dy;
-      _topRefreshArmed = _topRefreshDragDistance >= _refreshTriggerDistance;
+      _topRefreshDragDistance = nextDistance;
+      _lastTopRefreshPaintDistance = nextDistance;
+      _topRefreshArmed = nextArmed;
     });
   }
 
@@ -348,6 +380,7 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
       _topRefreshRunning = true;
       _topRefreshArmed = true;
       _topRefreshDragDistance = _refreshTriggerDistance;
+      _lastTopRefreshPaintDistance = _refreshTriggerDistance;
     });
     try {
       await AppStateScope.read(context).refreshTaskFromRemote(task);
@@ -366,6 +399,7 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
       _topRefreshRunning = false;
       _topRefreshArmed = false;
       _topRefreshDragDistance = 0;
+      _lastTopRefreshPaintDistance = 0;
     });
   }
 
@@ -377,6 +411,7 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
       _topRefreshTracking = false;
       _topRefreshArmed = false;
       _topRefreshDragDistance = 0;
+      _lastTopRefreshPaintDistance = 0;
     });
   }
 
@@ -416,15 +451,6 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
   bool get _isTestEnvironment {
     final bindingName = WidgetsBinding.instance.runtimeType.toString();
     return bindingName.contains('Test') || bindingName.contains('Automated');
-  }
-
-  TaskSession? _findTask(List<TaskSession> tasks) {
-    for (final task in tasks) {
-      if (task.id == widget.taskId) {
-        return task;
-      }
-    }
-    return null;
   }
 
   void _rerunTask(BuildContext context, TaskSession task) {
@@ -547,22 +573,9 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
   }
 }
 
-class _DeliberateRefreshScrollPhysics extends AlwaysScrollableScrollPhysics {
-  const _DeliberateRefreshScrollPhysics({super.parent});
-
-  static const _dragStartThreshold = 36.0;
-
-  @override
-  double get dragStartDistanceMotionThreshold => _dragStartThreshold;
-
-  @override
-  _DeliberateRefreshScrollPhysics applyTo(ScrollPhysics? ancestor) {
-    return _DeliberateRefreshScrollPhysics(parent: buildParent(ancestor));
-  }
-}
-
 class _CurrentTaskTabPanel extends StatelessWidget {
   const _CurrentTaskTabPanel({
+    super.key,
     required this.index,
     required this.task,
     required this.revealLatestTurnToken,
@@ -600,7 +613,6 @@ class _TaskHeader extends StatefulWidget {
 class _TaskHeaderState extends State<_TaskHeader> {
   final _titleController = TextEditingController();
   final _titleFocusNode = FocusNode();
-  Timer? _timer;
   bool _savingTitle = false;
   bool _editingTitle = false;
 
@@ -608,7 +620,6 @@ class _TaskHeaderState extends State<_TaskHeader> {
   void initState() {
     super.initState();
     _titleController.text = widget.task.title;
-    _syncTimer();
   }
 
   @override
@@ -621,30 +632,13 @@ class _TaskHeaderState extends State<_TaskHeader> {
         _titleFocusNode.unfocus();
       }
     }
-    if (oldWidget.task.status != widget.task.status ||
-        oldWidget.task.completedAt != widget.task.completedAt) {
-      _syncTimer();
-    }
   }
 
   @override
   void dispose() {
-    _timer?.cancel();
     _titleFocusNode.dispose();
     _titleController.dispose();
     super.dispose();
-  }
-
-  void _syncTimer() {
-    _timer?.cancel();
-    _timer = null;
-    if (_isLiveTask(widget.task)) {
-      _timer = Timer.periodic(const Duration(seconds: 1), (_) {
-        if (mounted) {
-          setState(() {});
-        }
-      });
-    }
   }
 
   @override
@@ -739,27 +733,13 @@ class _TaskHeaderState extends State<_TaskHeader> {
                   color: statusColor,
                   animate: task.status == TaskStatus.running,
                 ),
-                Text(
-                  _statusTimingText(task),
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
+                _TaskTimingText(task: task),
               ],
             ),
           ],
         ),
       ),
     );
-  }
-
-  bool _isLiveTask(TaskSession task) {
-    return task.completedAt == null &&
-        (task.status == TaskStatus.running ||
-            task.status == TaskStatus.pending ||
-            task.status == TaskStatus.paused ||
-            task.status == TaskStatus.needApproval ||
-            task.status == TaskStatus.turnIdle ||
-            task.status == TaskStatus.needAttention ||
-            task.status == TaskStatus.observerDetached);
   }
 
   Future<void> _saveTitle(BuildContext context, TaskSession task) async {
@@ -802,6 +782,71 @@ class _TaskHeaderState extends State<_TaskHeader> {
         setState(() => _savingTitle = false);
       }
     }
+  }
+}
+
+class _TaskTimingText extends StatefulWidget {
+  const _TaskTimingText({required this.task});
+
+  final TaskSession task;
+
+  @override
+  State<_TaskTimingText> createState() => _TaskTimingTextState();
+}
+
+class _TaskTimingTextState extends State<_TaskTimingText> {
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _syncTimer();
+  }
+
+  @override
+  void didUpdateWidget(covariant _TaskTimingText oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.task.status != widget.task.status ||
+        oldWidget.task.completedAt != widget.task.completedAt) {
+      _syncTimer();
+    }
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  void _syncTimer() {
+    _timer?.cancel();
+    _timer = null;
+    if (_isLiveTask(widget.task)) {
+      _timer = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (mounted) {
+          setState(() {});
+        }
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Text(
+      _statusTimingText(widget.task),
+      style: Theme.of(context).textTheme.bodySmall,
+    );
+  }
+
+  bool _isLiveTask(TaskSession task) {
+    return task.completedAt == null &&
+        (task.status == TaskStatus.running ||
+            task.status == TaskStatus.pending ||
+            task.status == TaskStatus.paused ||
+            task.status == TaskStatus.needApproval ||
+            task.status == TaskStatus.turnIdle ||
+            task.status == TaskStatus.needAttention ||
+            task.status == TaskStatus.observerDetached);
   }
 }
 
@@ -910,6 +955,9 @@ class _TimelinePanelState extends State<_TimelinePanel> {
     final visibleItems = items.reversed.take(3).toList(growable: false);
 
     return ListView.separated(
+      key:
+          PageStorageKey<String>('task-detail-timeline-list-${widget.task.id}'),
+      physics: _taskDetailTabScrollPhysics,
       padding: const EdgeInsets.all(20),
       itemCount: visibleItems.length + (widget.task.turns.isEmpty ? 0 : 1),
       separatorBuilder: (_, __) => const SizedBox(height: 12),
@@ -933,27 +981,56 @@ class _TimelinePanelState extends State<_TimelinePanel> {
   }
 }
 
-class _TurnSummaryList extends StatelessWidget {
+class _TurnSummaryList extends StatefulWidget {
   const _TurnSummaryList({required this.task});
 
   final TaskSession task;
 
   @override
+  State<_TurnSummaryList> createState() => _TurnSummaryListState();
+}
+
+class _TurnSummaryListState extends State<_TurnSummaryList> {
+  static const _collapsedTurnCount = 3;
+
+  bool _expanded = false;
+
+  @override
+  void didUpdateWidget(covariant _TurnSummaryList oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.task.id != widget.task.id) {
+      _expanded = false;
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     final indexedTurns = [
-      for (var index = 0; index < task.turns.length; index++)
-        _IndexedTurn(index: index, turn: task.turns[index]),
+      for (var index = 0; index < widget.task.turns.length; index++)
+        _IndexedTurn(index: index, turn: widget.task.turns[index]),
     ]..sort((a, b) => b.turn.turnIndex.compareTo(a.turn.turnIndex));
+    final hiddenCount = indexedTurns.length - _collapsedTurnCount;
+    final visibleTurns = _expanded
+        ? indexedTurns
+        : indexedTurns.take(_collapsedTurnCount).toList(growable: false);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        for (final indexedTurn in indexedTurns)
+        for (final indexedTurn in visibleTurns)
           Padding(
             padding: const EdgeInsets.only(bottom: 12),
             child: _TurnSummaryRow(
               turn: indexedTurn.turn,
               turnIndex: indexedTurn.index,
-              turns: task.turns,
+              turns: widget.task.turns,
+            ),
+          ),
+        if (!_expanded && hiddenCount > 0)
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton(
+              onPressed: () => setState(() => _expanded = true),
+              child: Text('查看全部 $hiddenCount 条更早输出'),
             ),
           ),
       ],
@@ -1048,6 +1125,9 @@ class _LazyTurnOutputExpansionState extends State<_LazyTurnOutputExpansion> {
   @override
   Widget build(BuildContext context) {
     return ExpansionTile(
+      key: PageStorageKey<String>(
+        'turn-output-expansion-${widget.turns[widget.turnIndex].id}',
+      ),
       tilePadding: EdgeInsets.zero,
       childrenPadding: const EdgeInsets.only(top: 4),
       title: const Text('显示原始输出'),
@@ -1061,7 +1141,10 @@ class _LazyTurnOutputExpansionState extends State<_LazyTurnOutputExpansion> {
         if (_expanded)
           Align(
             alignment: Alignment.centerLeft,
-            child: SelectableText(
+            child: Text(
+              key: PageStorageKey<String>(
+                'turn-output-text-${widget.turns[widget.turnIndex].id}',
+              ),
               _fallback(_fullOutput ?? '', '无'),
               style: Theme.of(context).textTheme.bodySmall,
             ),
@@ -1245,6 +1328,7 @@ class _ResultPanelState extends State<_ResultPanel> {
     final result = widget.task.result;
     return ListView(
       key: const PageStorageKey<String>('task-detail-result-list'),
+      physics: _taskDetailTabScrollPhysics,
       padding: const EdgeInsets.fromLTRB(20, 20, 20, 96),
       children: [
         SizedBox(key: _topAnchorKey, height: 0),
@@ -1603,7 +1687,7 @@ class _OutputSegmentCardState extends State<_OutputSegmentCard> {
                 ],
               ),
               const SizedBox(height: 8),
-              SelectableText(displayText),
+              Text(displayText),
               if (needsFolding) ...[
                 const SizedBox(height: 4),
                 Align(
@@ -2486,6 +2570,8 @@ class _AdvancedDebugPanelState extends State<_AdvancedDebugPanel> {
     final controlState = _runtimeControlStateFromTask(task.status);
     final canResolveRuntimeLost = task.status == TaskStatus.runtimeLost;
     return ListView(
+      key: PageStorageKey<String>('task-detail-advanced-list-${task.id}'),
+      physics: _taskDetailTabScrollPhysics,
       padding: const EdgeInsets.all(20),
       children: [
         _InfoCard(
@@ -2569,97 +2655,15 @@ class _AdvancedDebugPanelState extends State<_AdvancedDebugPanel> {
         ),
         _InfoCard(
           title: '调试命令',
-          child: SelectableText(
+          child: Text(
             'tmux attach -t ${task.host.tmuxSessionName}\n'
             'tmux capture-pane -p -t ${task.host.tmuxSessionName} -S -200',
           ),
         ),
-        _InfoCard(
+        _LazyInfoCard(
           title: '审批历史',
-          child: task.approvalRequests.isEmpty && task.approval == null
-              ? const Text('无')
-              : Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    for (final approval in task.approvalRequests.isEmpty
-                        ? [task.approval!]
-                        : task.approvalRequests)
-                      Padding(
-                        padding: const EdgeInsets.only(bottom: 12),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            SelectableText(
-                              'reason: ${approval.reason}\n'
-                              'command: ${approval.command}\n'
-                              'risk: ${approval.risk}\n'
-                              'status: ${approval.status}',
-                            ),
-                            const SizedBox(height: 10),
-                            if (_isPendingApproval(approval.status))
-                              Wrap(
-                                spacing: 8,
-                                children: [
-                                  FilledButton.icon(
-                                    onPressed: () async {
-                                      var succeeded = false;
-                                      await _runControlAction(
-                                        context,
-                                        () async {
-                                          await AppStateScope.read(context)
-                                              .resolveApproval(task,
-                                                  approved: true);
-                                          succeeded = true;
-                                        },
-                                      );
-                                      if (succeeded && context.mounted) {
-                                        ScaffoldMessenger.of(context)
-                                            .showSnackBar(
-                                          const SnackBar(
-                                            content: Text('已允许，正在继续监听远端任务。'),
-                                          ),
-                                        );
-                                      }
-                                    },
-                                    icon: const Icon(Icons.check_outlined),
-                                    label: const Text('允许'),
-                                  ),
-                                  OutlinedButton.icon(
-                                    onPressed: () async {
-                                      var succeeded = false;
-                                      await _runControlAction(
-                                        context,
-                                        () async {
-                                          await AppStateScope.read(context)
-                                              .resolveApproval(task,
-                                                  approved: false);
-                                          succeeded = true;
-                                        },
-                                      );
-                                      if (succeeded && context.mounted) {
-                                        ScaffoldMessenger.of(context)
-                                            .showSnackBar(
-                                          const SnackBar(
-                                            content: Text('已拒绝，正在继续监听远端任务。'),
-                                          ),
-                                        );
-                                      }
-                                    },
-                                    icon: const Icon(Icons.close_outlined),
-                                    label: const Text('拒绝'),
-                                  ),
-                                ],
-                              )
-                            else
-                              _MiniBadge(
-                                label: _approvalStatusLabel(approval.status),
-                                color: _approvalStatusColor(approval.status),
-                              ),
-                          ],
-                        ),
-                      ),
-                  ],
-                ),
+          collapsedText: _approvalHistoryCollapsedText(task),
+          builder: (context) => _approvalHistoryContent(context, task),
         ),
         _InfoCard(
           title: '指标',
@@ -2680,6 +2684,111 @@ class _AdvancedDebugPanelState extends State<_AdvancedDebugPanel> {
         ),
       ],
     );
+  }
+
+  Widget _approvalHistoryContent(BuildContext context, TaskSession task) {
+    final approvals = task.approvalRequests.isEmpty
+        ? [if (task.approval != null) task.approval!]
+        : task.approvalRequests;
+    if (approvals.isEmpty) {
+      return const Text('无');
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        for (final approval in approvals)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: _approvalHistoryRow(context, task, approval),
+          ),
+      ],
+    );
+  }
+
+  Widget _approvalHistoryRow(
+    BuildContext context,
+    TaskSession task,
+    ApprovalRequest approval,
+  ) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'reason: ${approval.reason}\n'
+          'command: ${approval.command}\n'
+          'risk: ${approval.risk}\n'
+          'status: ${approval.status}',
+        ),
+        const SizedBox(height: 10),
+        if (_isPendingApproval(approval.status))
+          Wrap(
+            spacing: 8,
+            children: [
+              FilledButton.icon(
+                onPressed: () => _resolveHistoricalApproval(
+                  context,
+                  task,
+                  approved: true,
+                ),
+                icon: const Icon(Icons.check_outlined),
+                label: const Text('允许'),
+              ),
+              OutlinedButton.icon(
+                onPressed: () => _resolveHistoricalApproval(
+                  context,
+                  task,
+                  approved: false,
+                ),
+                icon: const Icon(Icons.close_outlined),
+                label: const Text('拒绝'),
+              ),
+            ],
+          )
+        else
+          _MiniBadge(
+            label: _approvalStatusLabel(approval.status),
+            color: _approvalStatusColor(approval.status),
+          ),
+      ],
+    );
+  }
+
+  Future<void> _resolveHistoricalApproval(
+    BuildContext context,
+    TaskSession task, {
+    required bool approved,
+  }) async {
+    var succeeded = false;
+    await _runControlAction(
+      context,
+      () async {
+        await AppStateScope.read(context).resolveApproval(
+          task,
+          approved: approved,
+        );
+        succeeded = true;
+      },
+    );
+    if (succeeded && context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(approved ? '已允许，正在继续监听远端任务。' : '已拒绝，正在继续监听远端任务。'),
+        ),
+      );
+    }
+  }
+
+  String _approvalHistoryCollapsedText(TaskSession task) {
+    final approvals = task.approvalRequests.isEmpty
+        ? [if (task.approval != null) task.approval!]
+        : task.approvalRequests;
+    if (approvals.isEmpty) {
+      return '无审批记录';
+    }
+    if (approvals.length == 1) {
+      return _approvalStatusLabel(approvals.single.status);
+    }
+    return '${approvals.length} 条审批记录，点开查看';
   }
 
   bool _isPendingApproval(String status) {
@@ -2754,6 +2863,67 @@ class _InfoCard extends StatelessWidget {
             const SizedBox(height: 12),
             child,
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _LazyInfoCard extends StatefulWidget {
+  const _LazyInfoCard({
+    required this.title,
+    required this.collapsedText,
+    required this.builder,
+  });
+
+  final String title;
+  final String collapsedText;
+  final WidgetBuilder builder;
+
+  @override
+  State<_LazyInfoCard> createState() => _LazyInfoCardState();
+}
+
+class _LazyInfoCardState extends State<_LazyInfoCard> {
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      margin: const EdgeInsets.only(bottom: 12),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: () => setState(() => _expanded = !_expanded),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      widget.title,
+                      style: Theme.of(context).textTheme.titleSmall,
+                    ),
+                  ),
+                  Icon(
+                    _expanded
+                        ? Icons.expand_less_outlined
+                        : Icons.expand_more_outlined,
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              if (_expanded)
+                Builder(builder: widget.builder)
+              else
+                Text(
+                  widget.collapsedText,
+                  style: Theme.of(context).textTheme.bodyMedium,
+                ),
+            ],
+          ),
         ),
       ),
     );

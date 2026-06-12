@@ -170,6 +170,28 @@ void main() {
     expect(state.tasks.single.shortSummary, 'stream update');
   });
 
+  test('saveTask notifies only matching task listenable', () async {
+    final task = _task(status: TaskStatus.running);
+    final other = _task(status: TaskStatus.running).copyWith(id: 'task-2');
+    final store = _TaskStore(task);
+    store.tasks = [task, other];
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: _ControlAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+    var taskUpdates = 0;
+    var otherUpdates = 0;
+    state.taskListenable(task.id).addListener(() => taskUpdates++);
+    state.taskListenable(other.id).addListener(() => otherUpdates++);
+
+    await state.saveTask(task.copyWith(shortSummary: 'updated task 1'));
+
+    expect(taskUpdates, 1);
+    expect(otherUpdates, 0);
+  });
+
   test('startTaskExecution does not block tmux execution on runtime storage',
       () async {
     final task = _task(status: TaskStatus.running);
@@ -581,7 +603,54 @@ Apply this change?
     expect(store.task!.approvalRequests.single.status, 'pending');
     expect(store.task!.approvalRequests.single.resolvedAt, isNull);
     expect(store.task!.terminalPrompt?.options.first.label, 'Allow once');
+    expect(agent.lastExecuteRequest, isNull);
+    expect(agent.events, contains('captureLog'));
+  });
+
+  test('refreshTaskFromRemote replaces observer only when one is active',
+      () async {
+    final task = _task(status: TaskStatus.running);
+    final store = _TaskStore(task);
+    final agent = _HangingAgent()..capturedLog = 'still running\n下一步可以继续';
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: agent,
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    state.startTaskExecution(
+      task,
+      const AgentExecutionRequest(prompt: 'Task'),
+    );
+    await Future<void>.delayed(Duration.zero);
+    final firstRequest = agent.lastExecuteRequest;
+
+    await state.refreshTaskFromRemote(task);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(agent.cancelled, isTrue);
+    expect(agent.lastExecuteRequest, isNot(same(firstRequest)));
     expect(agent.lastExecuteRequest?.attachOnly, isTrue);
+    expect(agent.events, contains('captureLog'));
+  });
+
+  test('refreshTaskFromRemote does not relisten detached tasks', () async {
+    final task = _task(status: TaskStatus.observerDetached);
+    final store = _TaskStore(task);
+    final agent = _ControlAgent()
+      ..capturedLog = 'remote output after detach\n等待继续';
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: agent,
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await state.refreshTaskFromRemote(task);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(agent.lastExecuteRequest, isNull);
     expect(agent.events, contains('captureLog'));
   });
 
@@ -906,6 +975,29 @@ Apply this change?
 
     expect(store.task!.status, TaskStatus.running);
     expect(homeUpdates, 0);
+  });
+
+  test('pure progress updates do not notify global app listeners', () async {
+    final task = _task(status: TaskStatus.running);
+    final store = _TaskStore(task);
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: _RepeatedLogUpdateAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+    var appUpdates = 0;
+    state.addListener(() => appUpdates++);
+
+    state.startTaskExecution(
+      task,
+      const AgentExecutionRequest(prompt: 'Task'),
+    );
+    await Future<void>.delayed(Duration.zero);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(store.task!.status, TaskStatus.running);
+    expect(appUpdates, 0);
   });
 
   test('approval request is spoken when attention speech is enabled', () async {
@@ -1263,22 +1355,28 @@ TaskSession _task({required TaskStatus status}) {
 }
 
 class _TaskStore implements TaskHistoryStore {
-  _TaskStore(this.task, {List<HostConfig>? hosts}) : _hosts = hosts;
+  _TaskStore(this.task, {List<HostConfig>? hosts})
+      : _hosts = hosts,
+        tasks = [if (task != null) task];
 
   TaskSession? task;
+  List<TaskSession> tasks;
   String? deletedTaskId;
   final List<HostConfig>? _hosts;
   int loadTasksCount = 0;
 
   @override
   Future<List<HostConfig>> loadHosts() async {
-    return _hosts ?? [if (task != null) task!.host];
+    return _hosts ?? [for (final task in tasks) task.host];
   }
 
   @override
   Future<List<TaskSession>> loadTasks() async {
     loadTasksCount++;
-    return [if (task != null) task!];
+    if (task != null && tasks.length <= 1) {
+      tasks = [task!];
+    }
+    return tasks;
   }
 
   @override
@@ -1287,6 +1385,12 @@ class _TaskStore implements TaskHistoryStore {
   @override
   Future<void> saveTask(TaskSession task) async {
     this.task = task;
+    final index = tasks.indexWhere((item) => item.id == task.id);
+    if (index >= 0) {
+      tasks[index] = task;
+    } else {
+      tasks.insert(0, task);
+    }
   }
 
   @override
@@ -1295,6 +1399,7 @@ class _TaskStore implements TaskHistoryStore {
     if (task?.id == taskId) {
       task = null;
     }
+    tasks = tasks.where((task) => task.id != taskId).toList();
   }
 
   @override
@@ -1602,6 +1707,7 @@ class _HangingAgent extends _ControlAgent {
 
   @override
   Stream<AgentExecutionUpdate> execute(AgentExecutionRequest request) {
+    lastExecuteRequest = request;
     final controller = StreamController<AgentExecutionUpdate>(
       onCancel: () {
         cancelled = true;

@@ -870,6 +870,15 @@ fi
   }
 
   @visibleForTesting
+  List<String> rawOutputsForSnapshotChunksForTest(List<String> chunks) {
+    final output = _ExecutionOutputState();
+    return chunks.map((chunk) {
+      output.write(chunk);
+      return output.rawOutputForLatestUpdate(fallback: '');
+    }).toList(growable: false);
+  }
+
+  @visibleForTesting
   String buildRemoteTmuxCommand({
     required String command,
     String pathPrepend = '',
@@ -1012,16 +1021,17 @@ class _ExecutionOutputState {
   static const snapshotEndForTest = _snapshotEnd;
 
   final StringBuffer _stream = StringBuffer();
+  final StringBuffer _snapshot = StringBuffer();
   String _latestSnapshot = '';
   String _lastRawOutput = '';
   String _lastRawSignature = '';
+  bool _capturingSnapshot = false;
+  int _snapshotBeginMatch = 0;
+  int _snapshotEndMatch = 0;
 
   void write(String text) {
     _stream.write(text);
-    final snapshot = _extractLatestSnapshot(_stream.toString());
-    if (snapshot != null) {
-      _latestSnapshot = snapshot;
-    }
+    _scanSnapshotMarkers(text);
   }
 
   String get streamText => _stream.toString();
@@ -1051,17 +1061,51 @@ class _ExecutionOutputState {
     return _latestSnapshot;
   }
 
-  String? _extractLatestSnapshot(String text) {
-    final end = text.lastIndexOf(_snapshotEnd);
-    if (end < 0) {
-      return null;
+  void _scanSnapshotMarkers(String text) {
+    for (var index = 0; index < text.length; index++) {
+      final codeUnit = text.codeUnitAt(index);
+      if (_capturingSnapshot) {
+        _scanSnapshotEnd(codeUnit);
+      } else {
+        _scanSnapshotBegin(codeUnit);
+      }
     }
-    final begin = text.lastIndexOf(_snapshotBegin, end);
-    if (begin < 0) {
-      return null;
+  }
+
+  void _scanSnapshotBegin(int codeUnit) {
+    if (codeUnit == _snapshotBegin.codeUnitAt(_snapshotBeginMatch)) {
+      _snapshotBeginMatch++;
+      if (_snapshotBeginMatch == _snapshotBegin.length) {
+        _capturingSnapshot = true;
+        _snapshotBeginMatch = 0;
+        _snapshotEndMatch = 0;
+        _snapshot.clear();
+      }
+      return;
     }
-    final start = begin + _snapshotBegin.length;
-    return text.substring(start, end).trim();
+    _snapshotBeginMatch = codeUnit == _snapshotBegin.codeUnitAt(0) ? 1 : 0;
+  }
+
+  void _scanSnapshotEnd(int codeUnit) {
+    if (codeUnit == _snapshotEnd.codeUnitAt(_snapshotEndMatch)) {
+      _snapshotEndMatch++;
+      if (_snapshotEndMatch == _snapshotEnd.length) {
+        _latestSnapshot = _snapshot.toString().trim();
+        _snapshot.clear();
+        _capturingSnapshot = false;
+        _snapshotEndMatch = 0;
+      }
+      return;
+    }
+    if (_snapshotEndMatch > 0) {
+      _snapshot.write(_snapshotEnd.substring(0, _snapshotEndMatch));
+      _snapshotEndMatch = 0;
+      if (codeUnit == _snapshotEnd.codeUnitAt(0)) {
+        _snapshotEndMatch = 1;
+        return;
+      }
+    }
+    _snapshot.writeCharCode(codeUnit);
   }
 
   String _semanticSignature(String snapshot) {

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:developer' as developer;
 
 import '../models/approval_state.dart';
 import '../models/runtime_diagnostics.dart';
@@ -82,7 +83,14 @@ class BridgeRuntime {
           .where((target) => target.status == RuntimeTaskStatus.running)
           .take(maxTasksPerRun);
       for (final target in candidates) {
-        final remoteProbe = await probe(target).timeout(probeTimeout);
+        final RuntimeRemoteProbe remoteProbe;
+        try {
+          remoteProbe = await probe(target).timeout(probeTimeout);
+        } on TimeoutException {
+          continue;
+        } catch (_) {
+          continue;
+        }
         final decision = _reconcileDecisionFor(target, remoteProbe);
         if (decision.action != RuntimeReconcileAction.none) {
           decisions.add(decision);
@@ -135,14 +143,26 @@ class BridgeRuntime {
     required int maxTasksPerRun,
     required Duration probeTimeout,
   }) async {
-    final decisions = await reconcileOnce(
-      targets: await loadTargets(),
-      probe: probe,
-      maxTasksPerRun: maxTasksPerRun,
-      probeTimeout: probeTimeout,
-    );
-    for (final decision in decisions) {
-      await onDecision(decision);
+    try {
+      final decisions = await reconcileOnce(
+        targets: await loadTargets(),
+        probe: probe,
+        maxTasksPerRun: maxTasksPerRun,
+        probeTimeout: probeTimeout,
+      );
+      for (final decision in decisions) {
+        await onDecision(decision);
+      }
+    } catch (error) {
+      assert(() {
+        // Debug-only diagnostics: reconcile should never crash the timer loop.
+        developer.log(
+          'BridgeRuntime reconcile skipped',
+          name: 'BridgeRuntime',
+          error: error,
+        );
+        return true;
+      }());
     }
   }
 

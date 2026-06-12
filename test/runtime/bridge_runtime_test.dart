@@ -334,4 +334,62 @@ void main() {
 
     expect(probeCount, 2);
   });
+
+  test('bridge runtime skips timed out probe and continues candidates',
+      () async {
+    final runtime = BridgeRuntime(
+      taskStore: InMemoryRuntimeTaskStore(),
+      eventBus: RuntimeEventBus(),
+    );
+
+    final decisions = await runtime.reconcileOnce(
+      targets: const [
+        RuntimeReconcileTarget(
+          taskId: 'slow-task',
+          status: RuntimeTaskStatus.running,
+        ),
+        RuntimeReconcileTarget(
+          taskId: 'attention-task',
+          status: RuntimeTaskStatus.running,
+        ),
+      ],
+      probeTimeout: const Duration(milliseconds: 1),
+      probe: (target) async {
+        if (target.taskId == 'slow-task') {
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+          return const RuntimeRemoteProbe(sessionExists: true);
+        }
+        return const RuntimeRemoteProbe(
+          sessionExists: true,
+          needsAttention: true,
+        );
+      },
+    );
+
+    expect(decisions, hasLength(1));
+    expect(decisions.single.taskId, 'attention-task');
+    expect(decisions.single.reason, RuntimeReconcileReason.needsAttention);
+  });
+
+  test('bridge runtime reconcile loop catches load target failures', () async {
+    final runtime = BridgeRuntime(
+      taskStore: InMemoryRuntimeTaskStore(),
+      eventBus: RuntimeEventBus(),
+    );
+    var loadAttempts = 0;
+
+    runtime.startReconcileLoop(
+      interval: const Duration(milliseconds: 1),
+      loadTargets: () async {
+        loadAttempts++;
+        throw StateError('storage temporarily unavailable');
+      },
+      probe: (_) async => const RuntimeRemoteProbe(sessionExists: true),
+      onDecision: (_) async {},
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    runtime.stopReconcileLoop();
+
+    expect(loadAttempts, greaterThan(0));
+  });
 }

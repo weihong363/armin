@@ -408,6 +408,21 @@ void main() {
     expect(outputs.last, contains('执行中断测试完成'));
   });
 
+  test('raw snapshot output detects markers split across chunks', () {
+    final service = SSHAgentSessionService();
+    final outputs = service.rawOutputsForSnapshotChunksForTest([
+      'noise\n__ARMIN_SNA',
+      'PSHOT_BEGIN__\nfirst line',
+      '\nsecond line\n__ARMIN_SNAPSHOT_',
+      'END__\n',
+    ]);
+
+    expect(outputs.take(3).every((output) => output.isEmpty), isTrue);
+    expect(outputs.last, contains('first line'));
+    expect(outputs.last, contains('second line'));
+    expect(outputs.last, isNot(contains('noise')));
+  });
+
   test('approval decision is sent without runtime update wrapper', () async {
     final service = SSHAgentSessionService();
 

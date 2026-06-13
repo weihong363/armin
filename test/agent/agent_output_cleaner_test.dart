@@ -1,4 +1,4 @@
-import 'package:armin/features/agent/services/codex_output_cleaner.dart';
+import 'package:armin/features/agent/services/agent_output_cleaner.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -9,7 +9,7 @@ void main() {
         'Explored\n'
         'Search (^|/)Pets/|pets|Pet\n';
 
-    final cleaned = const CodexOutputCleaner().clean(raw);
+    final cleaned = const AgentOutputCleaner().clean(raw);
 
     expect(raw, contains('\x1B[32m'));
     expect(cleaned, contains('hello'));
@@ -34,7 +34,7 @@ Explain this codebase
 hello
 ''';
 
-    final cleaned = const CodexOutputCleaner().clean(raw);
+    final cleaned = const AgentOutputCleaner().clean(raw);
 
     expect(cleaned, isNot(contains('Armin context governance')));
     expect(cleaned, isNot(contains('Never scan')));
@@ -69,7 +69,7 @@ You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), v
 hello
 ''';
 
-    final cleaned = const CodexOutputCleaner().clean(raw);
+    final cleaned = const AgentOutputCleaner().clean(raw);
 
     expect(cleaned, contains('额度已用完，请稍后重试。'));
     expect(cleaned, contains('hello'));
@@ -96,7 +96,7 @@ Edited lib/login.dart
 Checked test/login_test.dart
 ''';
 
-    final cleaned = const CodexOutputCleaner().clean(raw);
+    final cleaned = const AgentOutputCleaner().clean(raw);
 
     expect(cleaned, contains('1. 已检查登录页面'));
     expect(cleaned, contains('2. 已定位问题'));
@@ -117,7 +117,7 @@ Thinking...
 pin-up 风格，含 9 个动画状态（idle/running/failed/review 等）。
 ''';
 
-    final cleaned = const CodexOutputCleaner().clean(raw);
+    final cleaned = const AgentOutputCleaner().clean(raw);
 
     expect(cleaned, isNot(contains('█')));
     expect(cleaned, isNot(contains('Signed in Browser Login')));
@@ -134,7 +134,7 @@ Shift+Tab to Auto-accept Edits
 AGENTS.md file · 12 skills
 ''';
 
-    final cleaned = const CodexOutputCleaner().clean(raw);
+    final cleaned = const AgentOutputCleaner().clean(raw);
 
     expect(cleaned, 'hello');
     expect(cleaned, isNot(contains('Type your message or @path/to/file')));
@@ -154,7 +154,7 @@ Armin context governance (aggressive):
 hello world
 ''';
 
-    final cleaned = const CodexOutputCleaner().clean(raw);
+    final cleaned = const AgentOutputCleaner().clean(raw);
 
     expect(cleaned, isNot(contains('Armin context governance')));
     expect(cleaned, isNot(contains('full authority')));
@@ -176,7 +176,7 @@ Armin context governance (safe):
 登录模块位于 lib/login/login_service.dart，主要处理 JWT token 验证。
 ''';
 
-    final cleaned = const CodexOutputCleaner().clean(raw);
+    final cleaned = const AgentOutputCleaner().clean(raw);
 
     expect(cleaned, isNot(contains('Armin context governance')));
     expect(cleaned, isNot(contains('analysis and reporting only')));
@@ -207,7 +207,7 @@ Thinking
 Credits exhausted.
 ''';
 
-    final cleaned = const CodexOutputCleaner().clean(raw);
+    final cleaned = const AgentOutputCleaner().clean(raw);
 
     expect(cleaned, isNot(contains('Thinking')));
     expect(cleaned, isNot(contains('The user wants me to')));
@@ -218,6 +218,67 @@ Credits exhausted.
     expect(cleaned, contains('已创建 hello.py，输出验证正常。'));
     expect(cleaned, contains('创建一个输出hello world的py文件'));
     expect(cleaned, contains('Credits exhausted'));
+  });
+
+  test('removes unindented thinking blocks before deliverable output', () {
+    const raw = '''
+Thinking
+The user wants me to write a README with all usage examples.
+Write(/Users/test/armin-test/README.md)
+└ Accepted README.md (Ctrl+O to expand)
+
+Thinking
+Done. README.md created with all usage examples.
+README.md 已写入，包含三种模式的完整使用示例、公共参数表和安全机制说明。
+Credits exhausted. Use /usage for details or /upgrade for more.
+''';
+
+    final cleaned = const AgentOutputCleaner().clean(raw);
+
+    expect(cleaned, isNot(contains('Thinking')));
+    expect(cleaned, isNot(contains('The user wants me')));
+    expect(cleaned, isNot(contains('Write(')));
+    expect(cleaned, isNot(contains('Accepted README.md')));
+    expect(cleaned, isNot(contains('Done. README.md created')));
+    expect(cleaned, contains('README.md 已写入'));
+    expect(cleaned, contains('公共参数表'));
+    expect(cleaned, contains('Credits exhausted'));
+  });
+
+  test('uses black small square line as post-thinking output boundary', () {
+    const raw = '''
+Thinking
+- Internal plan should stay hidden.
+• Another thinking bullet should stay hidden.
+▪ hello world
+''';
+
+    final cleaned = const AgentOutputCleaner().clean(raw);
+
+    expect(cleaned, 'hello world');
+    expect(cleaned, isNot(contains('Internal plan')));
+    expect(cleaned, isNot(contains('Another thinking bullet')));
+  });
+
+  test('removes approval decision echo before latest deliverable output', () {
+    const raw = '''
+> APPROVAL_DECISION:
+decision: rejected
+Apply this decision to the pending approval request.
+
+Thinking
+The user rejected something. I should report the current state.
+README.md 已写入，包含三种模式的完整使用示例、公共参数表和安全机制说明。
+''';
+
+    final cleaned = const AgentOutputCleaner().clean(raw);
+
+    expect(cleaned, isNot(contains('APPROVAL_DECISION')));
+    expect(cleaned, isNot(contains('decision: rejected')));
+    expect(cleaned, isNot(contains('pending approval request')));
+    expect(cleaned, isNot(contains('The user rejected')));
+    expect(cleaned, contains('README.md 已写入'));
+    expect(cleaned, contains('公共参数表'));
   });
 
   test('removes Chinese constraint lines from prompt template', () {
@@ -242,7 +303,7 @@ lib/login/ 目录包含所有登录相关代码
 3. 登录成功后跳转到主页
 ''';
 
-    final cleaned = const CodexOutputCleaner().clean(raw);
+    final cleaned = const AgentOutputCleaner().clean(raw);
 
     expect(cleaned, isNot(contains('Armin context governance')));
     expect(cleaned, isNot(contains('只分析不修改')));

@@ -167,7 +167,7 @@ turnIdle / needAttention → running (continue/followUp)
 - `TerminalPromptParser` — Detects interactive CLI prompts (numbered options with cursor)
 - `ApprovalParser` — Wraps TerminalPromptParser to produce ApprovalRequest
 - `TaskResultParser` — Parses task completion results
-- `CodexOutputCleaner` — Cleans thinking blocks, ANSI codes, noise
+- `AgentOutputCleaner` — Cleans thinking blocks, ANSI codes, noise
 
 **Current Dependencies**:
 - SSH stream → `_buildStreamingUpdate()` → `ApprovalParser`, `TerminalPromptParser`, `NativeOutputObserver`

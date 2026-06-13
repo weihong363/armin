@@ -423,6 +423,20 @@ void main() {
     expect(outputs.last, isNot(contains('noise')));
   });
 
+  test('stream buffer keeps only a bounded tail window', () {
+    final service = SSHAgentSessionService();
+    final limit = service.streamTextLimitForTest;
+    final prefix = 'head${List.filled(limit + 64, 'a').join()}';
+    final output = service.streamTextForChunksForTest([
+      prefix,
+      'tail',
+    ]);
+
+    expect(output.length, limit);
+    expect(output, endsWith('tail'));
+    expect(output, isNot(contains('head')));
+  });
+
   test('approval decision is sent without runtime update wrapper', () async {
     final service = SSHAgentSessionService();
 

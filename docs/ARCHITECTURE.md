@@ -43,7 +43,7 @@ AgentExecutionUpdate(
 3. 在任务选择的 project path 中启动配置的 Agent：Codex 使用 `-C`，Qoder 使用 `-w`。
 4. 发送经 `PromptGovernor` 处理的用户提示。
 5. 按 `RuntimePolicy` 轮询有限范围的 `tmux capture-pane`，将收到的 raw output 写入历史；终态另取更完整的 final capture。
-6. 用 `CodexOutputCleaner` 生成展示/观察用输出，并由 `NativeOutputObserver` 判断 `outputQuieting`、`needAttention` 或 `runtimeLost`。
+6. 用 `AgentOutputCleaner` 生成展示/观察用输出，并由 `NativeOutputObserver` 判断 `outputQuieting`、`needAttention` 或 `runtimeLost`。
 7. `turnIdle` 保留 session 等待用户继续；暂停会停止手机端 observer 而保留 session，恢复会重新监听同一 session；用户标记完成、失败、停止或达到最长运行时限时，先 capture 最终日志，再 cleanup session。
 
 Armin 不负责代理的推理、规划、代码合并或调度。它仅管理 shell 级别的通信和可审计性。
@@ -54,7 +54,7 @@ Armin 不负责代理的推理、规划、代码合并或调度。它仅管理 s
 
 纯 Dart 服务保持行为可测试：
 
-- `CodexOutputCleaner`
+- `AgentOutputCleaner`
 - `NativeOutputObserver`
 - `SecretRedactor`
 - `PromptTemplateBuilder`

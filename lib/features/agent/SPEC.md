@@ -7,7 +7,7 @@
 - `services/agent_session_service.dart`：执行、追加、暂停、恢复、停止、cleanup、日志捕获等统一接口。
 - `services/ssh_agent_session_service.dart`：真实 SSH/tmux 执行链路。
 - `services/native_output_observer.dart`：从原生输出判断 running、idle、need attention、runtime lost。
-- `services/codex_output_cleaner.dart`：清洗终端控制字符和 CLI 噪音。
+- `services/agent_output_cleaner.dart`：清洗终端控制字符和 CLI 噪音。
 - `parsers/*`：解析结构化结果、批准请求、终端选项请求。
 
 ## 边界
@@ -31,6 +31,6 @@
 
 - `flutter test test/agent/ssh_agent_session_service_test.dart`
 - `flutter test test/agent/native_output_observer_test.dart`
-- `flutter test test/agent/codex_output_cleaner_test.dart`
+- `flutter test test/agent/agent_output_cleaner_test.dart`
 - `flutter test test/agent/terminal_prompt_parser_test.dart`
 - `flutter test test/agent/approval_parser_test.dart`

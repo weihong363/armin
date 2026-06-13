@@ -91,6 +91,29 @@ hello world
     expect(summary.displaySummary, isNot(contains('最小改动')));
   });
 
+  test('rule provider keeps simple post-thinking output', () async {
+    const simpleOutput = OutputSummaryRequest(
+      cleanedOutput: '''
+> 输出hello world
+▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+
+Thinking
+│ Simple request, just print hello world.
+▪ hello world
+''',
+      status: TaskStatus.turnIdle,
+      taskTitle: '输出hello world',
+      promptInputs: ['输出hello world'],
+    );
+
+    final summary =
+        await const RuleBasedOutputSummaryProvider().summarize(simpleOutput);
+
+    expect(summary.displaySummary, 'hello world');
+    expect(summary.speechSummary, 'hello world');
+    expect(summary.displaySummary, isNot(contains('Simple request')));
+  });
+
   test('rule provider strips governance prefix but keeps the actual result',
       () async {
     const noisyPrefix = OutputSummaryRequest(
@@ -686,6 +709,63 @@ pin-up 风格，含 9 个动画状态（idle/running/waving/jumping/failed/waiti
     expect(summary.displaySummary, isNot(contains('│')));
   });
 
+  test('rule provider merges wrapped feature table cells', () async {
+    const tableOutput = OutputSummaryRequest(
+      cleanedOutput: '''
+▪ ┌──────────┬────────────┬─────────────────────────────────────────┬────────────┐
+   │ 功能分类 │ 功能名称   │ 说明                                    │ 参数/用法  │
+   ├──────────┼────────────┼─────────────────────────────────────────┼────────────┤
+   │ 重命名模 │ replace    │ 正则表达式查找并替换文件名              │ --find /   │
+   │ 式       │            │                                         │ --with     │
+   │          │ affix      │ 给文件名添加前缀和/或后缀，自动保留扩展 │ --prefix / │
+   │          │            │ 名                                      │ --suffix   │
+   │          │ sequence   │ 按序号批量重命名，支持自定义格式模板    │ --start /  │
+   │          │            │                                         │ --step /   │
+   │          │            │                                         │ --fmt      │
+   │ 文件筛选 │ 递归遍历   │ 递归处理所有子目录中的文件              │ --recursiv │
+   │          │            │                                         │ e / -r     │
+   │          │ 正则过滤   │ 用正则表达式过滤，只处理匹配的文件      │ --match /  │
+   │          │            │                                         │ -m         │
+   │          │ 仅处理文件 │ 自动跳过目录，只处理文件                │ 内置       │
+   │          │ 排序处理   │ 文件按名称排序后依次处理，保证序号稳定  │ 内置       │
+   │ 预览模式 │ dry-run    │ 只显示变更，不实际执行重命名            │ --dry-run  │
+   │          │            │                                         │ / -n       │
+   │ 安全机制 │ 冲突检测   │ 目标文件名已存在时自动跳过，不覆盖      │ 内置       │
+   │          │ 目录校验   │ 路径不存在或非目录时报错退出            │ 内置       │
+   │          │ 空匹配提示 │ 无匹配文件或无需重命名时给出提示        │ 内置       │
+   │ CLI 入口 │ argparse   │ 三种模式各自独立子命令，带独立 --help   │ 内置       │
+   │          │ 子命令     │                                         │            │
+   │          │ 帮助系统   │ 主命令和各子命令均有 --help 说明        │ -h /       │
+   │          │            │                                         │ --help     │
+   │ 格式模板 │ 序号格式化 │ 支持 {seq:03d} 等 Python 格式化语法     │ sequence   │
+   │          │            │                                         │ --fmt      │
+   │          │ 原文件名保 │ 模板中 {name}                           │ sequence   │
+   │          │ 留         │ 代表原文件名（不含扩展名）              │ --fmt      │
+   └──────────┴────────────┴─────────────────────────────────────────┴────────────┘
+''',
+      status: TaskStatus.turnIdle,
+      taskTitle: '输出功能表',
+    );
+
+    final summary =
+        await const RuleBasedOutputSummaryProvider().summarize(tableOutput);
+
+    expect(summary.displaySummary,
+        contains('重命名模式，replace，正则表达式查找并替换文件名，--find / --with'));
+    expect(summary.displaySummary,
+        contains('affix，给文件名添加前缀和/或后缀，自动保留扩展名，--prefix / --suffix'));
+    expect(summary.displaySummary,
+        contains('递归遍历，递归处理所有子目录中的文件，--recursive / -r'));
+    expect(summary.displaySummary, contains('argparse子命令，三种模式各自独立子命令'));
+    expect(summary.displaySummary,
+        contains('原文件名保留，模板中 {name}代表原文件名（不含扩展名），sequence --fmt'));
+    expect(summary.displaySummary, isNot(contains('功能分类，功能名称')));
+    expect(summary.displaySummary, isNot(contains('重命名模，replace')));
+    expect(summary.displaySummary, isNot(contains('--recursiv e')));
+    expect(summary.displaySummary, isNot(contains('原文件名保，模板中')));
+    expect(summary.displaySummary, isNot(contains('│')));
+  });
+
   test('local model provider falls back when unavailable', () async {
     final summary = await const LocalSmallModelSummaryProvider().summarize(
       request,
@@ -954,6 +1034,42 @@ Thinking
     expect(summary.displaySummary, isNot(contains('实现审批同步修复')));
     expect(summary.displaySummary, isNot(contains('final prompt')));
     expect(summary.displaySummary, isNot(contains('ApprovalFix')));
+  });
+
+  test('rule provider ignores approval decision and uses latest deliverable',
+      () async {
+    const request = OutputSummaryRequest(
+      cleanedOutput: '''
+> APPROVAL_DECISION:
+decision: rejected
+Apply this decision to the pending approval request.
+
+Thinking
+The user rejected something, but README writing already finished.
+Write(/Users/test/armin-test/README.md)
+└ Accepted README.md
+
+Thinking
+Done. README.md created with all usage examples.
+README.md 已写入，包含三种模式的完整使用示例、公共参数表和安全机制说明。
+''',
+      status: TaskStatus.turnIdle,
+      taskTitle: '写 readme，包含所有使用事例',
+      promptInputs: ['写 readme，包含所有使用事例'],
+    );
+
+    final summary = await const RuleBasedOutputSummaryProvider().summarize(
+      request,
+    );
+
+    expect(summary.displaySummary, contains('README.md 已写入'));
+    expect(summary.displaySummary, contains('公共参数表'));
+    expect(summary.displaySummary, isNot(contains('APPROVAL_DECISION')));
+    expect(summary.displaySummary, isNot(contains('decision: rejected')));
+    expect(summary.displaySummary, isNot(contains('pending approval request')));
+    expect(summary.displaySummary, isNot(contains('The user rejected')));
+    expect(summary.displaySummary, isNot(contains('Write(')));
+    expect(summary.displaySummary, isNot(contains('Done. README.md created')));
   });
 }
 

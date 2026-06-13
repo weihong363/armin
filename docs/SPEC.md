@@ -109,7 +109,7 @@ Armin 拥有 shell 级别的会话抽象，而不是代理运行时：
 - `MockAgentSessionService`
 - `SSHAgentSessionService`
 
-`MockAgentSessionService` 仅用于测试。真实 Phase 2 连接到 Host，按任务创建短 session（`armin-{taskId片段}`），并在用户选择的 project path 中启动 Agent。Codex CLI 使用 `codex -C {projectPath}`；Qoder CLI 使用 `qodercli -w {projectPath}`。`CodexOutputCleaner` 和 `NativeOutputObserver` 清洗并观察原生输出；安静输出进入 `turnIdle`，并不代表任务已经完成。
+`MockAgentSessionService` 仅用于测试。真实 Phase 2 连接到 Host，按任务创建短 session（`armin-{taskId片段}`），并在用户选择的 project path 中启动 Agent。Codex CLI 使用 `codex -C {projectPath}`；Qoder CLI 使用 `qodercli -w {projectPath}`。`AgentOutputCleaner` 和 `NativeOutputObserver` 清洗并观察原生输出；安静输出进入 `turnIdle`，并不代表任务已经完成。
 
 长期 Runtime 方向中，`tmux capture-pane` 只能作为观察输入，不能作为状态权威。短时间无新增输出或 pane 稳定只能表示 `outputQuieting` / `no visible update`；`turnIdle`、结果卡片和 TTS 播报应由 Runtime Event、SQLite 中的 durable state、明确等待用户输入、审批状态或 adapter 识别的强完成信号驱动。
 

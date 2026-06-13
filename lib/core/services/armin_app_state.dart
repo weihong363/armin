@@ -10,7 +10,7 @@ import '../../features/agent/parsers/approval_request.dart';
 import '../../features/agent/parsers/task_result.dart';
 import '../../features/agent/parsers/terminal_prompt.dart';
 import '../../features/agent/parsers/terminal_prompt_parser.dart';
-import '../../features/agent/services/codex_output_cleaner.dart';
+import '../../features/agent/services/agent_output_cleaner.dart';
 import '../../features/agent/services/ssh_agent_session_service.dart';
 import '../../features/hosts/models/host_config.dart';
 import '../../features/projects/models/project_path_config.dart';
@@ -134,6 +134,7 @@ class ArminAppState extends ChangeNotifier {
       _ => false,
     };
   }
+
   final Map<String, StreamSubscription<AgentExecutionUpdate>>
       _runningExecutions = {};
   final Map<String, Timer> _autoDetachTimers = {};
@@ -617,7 +618,8 @@ class ArminAppState extends ChangeNotifier {
     }
     final candidates = activeTasks;
     final result = candidates
-        .where((t) => _canAutoReconcileRemoteState(t) &&
+        .where((t) =>
+            _canAutoReconcileRemoteState(t) &&
             (_reconcileMissStreak[t.id] ?? 0) < _kReconcileMaxMissStreak)
         .map(
           (task) => RuntimeReconcileTarget(
@@ -713,7 +715,7 @@ class ArminAppState extends ChangeNotifier {
     final shouldMarkIdle = markIdleIfNoAttention && !hasAttention;
     final update = AgentExecutionUpdate(
       rawOutput: snapshot,
-      cleanedOutput: const CodexOutputCleaner().clean(snapshot),
+      cleanedOutput: const AgentOutputCleaner().clean(snapshot),
       needsAttention: hasAttention,
       approval: approval,
       terminalPrompt: terminalPrompt,
@@ -1189,6 +1191,7 @@ Apply this decision to the pending approval request.
         ),
       ),
     );
+    await _bridgeEnsureTaskCreated(_latestTask(task.id) ?? taskWithTurn);
     _bridgeSyncTerminalStatus(
         task.id, status, now, shortSummary ?? task.shortSummary);
   }

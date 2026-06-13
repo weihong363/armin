@@ -11,7 +11,7 @@ import '../../../shared/theme/armin_theme.dart';
 import '../../agent/parsers/approval_request.dart';
 import '../../agent/parsers/task_result.dart';
 import '../../agent/parsers/terminal_prompt.dart';
-import '../../agent/services/codex_output_cleaner.dart';
+import '../../agent/services/agent_output_cleaner.dart';
 import '../../voice/services/device_voice_service.dart';
 import '../../voice/services/voice_service.dart';
 import '../../tasks/models/native_output_turn.dart';
@@ -803,12 +803,20 @@ class _TaskTimingText extends StatefulWidget {
   State<_TaskTimingText> createState() => _TaskTimingTextState();
 }
 
-class _TaskTimingTextState extends State<_TaskTimingText> {
+class _TaskTimingTextState extends State<_TaskTimingText>
+    with WidgetsBindingObserver {
   Timer? _timer;
+  bool _appActive = true;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
     _syncTimer();
   }
 
@@ -823,14 +831,27 @@ class _TaskTimingTextState extends State<_TaskTimingText> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _timer?.cancel();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final active = state == AppLifecycleState.resumed;
+    if (_appActive == active) {
+      return;
+    }
+    _appActive = active;
+    _syncTimer();
   }
 
   void _syncTimer() {
     _timer?.cancel();
     _timer = null;
-    if (_isLiveTask(widget.task)) {
+    if (_appActive &&
+        TickerMode.valuesOf(context).enabled &&
+        _isLiveTask(widget.task)) {
       _timer = Timer.periodic(const Duration(seconds: 1), (_) {
         if (mounted) {
           setState(() {});
@@ -902,7 +923,7 @@ class _TimelinePanelState extends State<_TimelinePanel> {
   static String _computeReadableSummary(TaskSession task) {
     return const SemanticSnippetBuilder()
         .build(
-          const CodexOutputCleaner().clean(task.shortSummary),
+          const AgentOutputCleaner().clean(task.shortSummary),
           contentType: SnippetContentType.agentSummary,
           maxChars: 220,
         )
@@ -1325,11 +1346,12 @@ class _ResultPanelState extends State<_ResultPanel> {
   void didUpdateWidget(covariant _ResultPanel oldWidget) {
     super.didUpdateWidget(oldWidget);
     final deepChanged = oldWidget.resultVersion != widget.resultVersion;
-    if (deepChanged &&
-        (oldWidget.task.id != widget.task.id ||
-            oldWidget.task.summary != widget.task.summary ||
-            oldWidget.task.result?.summary != widget.task.result?.summary ||
-            _turnsSignature(oldWidget.task) != _turnsSignature(widget.task))) {
+    if (deepChanged ||
+        oldWidget.task.id != widget.task.id ||
+        oldWidget.task.summary != widget.task.summary ||
+        oldWidget.task.shortSummary != widget.task.shortSummary ||
+        oldWidget.task.result?.summary != widget.task.result?.summary ||
+        _turnsSignature(oldWidget.task) != _turnsSignature(widget.task)) {
       _summariesFuture = _outputSummaries(widget.task);
     }
     if (oldWidget.revealLatestTurnToken != widget.revealLatestTurnToken) {
@@ -1456,28 +1478,31 @@ class _ResultPanelState extends State<_ResultPanel> {
     if (summaries.isNotEmpty) {
       return summaries;
     }
-    final explicitResult = _explicitResultSummary(task);
-    if (explicitResult.isEmpty) {
+    final legacySource = _legacyOutputSource(task);
+    if (legacySource.isEmpty) {
       return const [];
     }
-    final resultSummary = await provider.summarize(
+    final legacy = await provider.summarize(
       OutputSummaryRequest(
-        cleanedOutput: explicitResult,
+        cleanedOutput: legacySource,
         status: task.status,
         taskTitle: task.title,
-        promptInputs: [task.userText],
+        promptInputs: [
+          task.userText,
+          ...task.turns.map((turn) => turn.userInput),
+        ],
         agentCommand: task.host.agentCommand,
       ),
     );
-    final text = resultSummary.displaySummary.trim();
+    final text = legacy.displaySummary.trim();
     return text.isEmpty
         ? const []
         : [
             _TurnOutputSummary(
               title: '结果',
               text: text,
-              speechText: resultSummary.speechSummary.trim().isNotEmpty
-                  ? resultSummary.speechSummary.trim()
+              speechText: legacy.speechSummary.trim().isNotEmpty
+                  ? legacy.speechSummary.trim()
                   : DeviceVoiceService.cleanSpeechText(text),
               fullOutputForSpeech: text,
             ),
@@ -1524,13 +1549,15 @@ class _ResultPanelState extends State<_ResultPanel> {
 
   String _turnsSignature(TaskSession task) {
     return task.turns
-        .map((t) => '${t.turnIndex}:${t.status.name}:'
-            '${t.rawOutput.hashCode}:${t.lastOutputAt.microsecondsSinceEpoch}')
+        .map((t) => [
+              t.turnIndex,
+              t.status.name,
+              t.userInput.hashCode,
+              t.cleanedOutput.hashCode,
+              t.rawOutput.hashCode,
+              t.lastOutputAt.microsecondsSinceEpoch,
+            ].join(':'))
         .join('|');
-  }
-
-  String _explicitResultSummary(TaskSession task) {
-    return const CodexOutputCleaner().clean(task.result?.summary ?? '').trim();
   }
 }
 
@@ -2124,27 +2151,30 @@ class _TaskNeedsPanelState extends State<_TaskNeedsPanel> {
       }
     }
 
-    final explicitResult = _explicitResultSummary(task);
-    if (explicitResult.isEmpty) {
+    final legacySource = _legacyOutputSource(task);
+    if (legacySource.isEmpty) {
       return '';
     }
-    final resultSummary = await provider.summarize(
+    final legacy = await provider.summarize(
       OutputSummaryRequest(
-        cleanedOutput: explicitResult,
+        cleanedOutput: legacySource,
         status: task.status,
         taskTitle: task.title,
-        promptInputs: [task.userText],
+        promptInputs: [
+          task.userText,
+          ...task.turns.map((turn) => turn.userInput),
+        ],
         agentCommand: task.host.agentCommand,
       ),
     );
-    final resultText = resultSummary.displaySummary.trim();
-    if (resultText.isEmpty) {
+    final legacyText = legacy.displaySummary.trim();
+    if (legacyText.isEmpty) {
       return '';
     }
-    final speechText = resultSummary.speechSummary.trim();
+    final speechText = legacy.speechSummary.trim();
     return speechText.isNotEmpty
         ? speechText
-        : DeviceVoiceService.cleanSpeechText(resultText);
+        : DeviceVoiceService.cleanSpeechText(legacyText);
   }
 
   _IndexedTurn? _latestResultTurn(TaskSession task) {
@@ -2171,10 +2201,20 @@ class _TaskNeedsPanelState extends State<_TaskNeedsPanel> {
         true,
     };
   }
+}
 
-  String _explicitResultSummary(TaskSession task) {
-    return const CodexOutputCleaner().clean(task.result?.summary ?? '').trim();
+String _legacyOutputSource(TaskSession task) {
+  final candidates = [
+    task.result?.summary ?? '',
+    task.summary ?? '',
+    task.shortSummary,
+  ];
+  for (final candidate in candidates) {
+    if (const AgentOutputCleaner().clean(candidate).trim().isNotEmpty) {
+      return candidate;
+    }
   }
+  return '';
 }
 
 class _AddContextEntry extends StatelessWidget {
@@ -3238,7 +3278,7 @@ bool _isAttentionRequired(TaskStatus status) {
 }
 
 String _cleanSnippet(String value, {int maxChars = 160}) {
-  final cleaned = const CodexOutputCleaner().clean(value);
+  final cleaned = const AgentOutputCleaner().clean(value);
   return const SemanticSnippetBuilder()
       .build(
         cleaned,
@@ -3281,11 +3321,11 @@ String _currentSituationText(TaskSession task) {
 
 bool _hasMeaningfulOutput(TaskSession task) {
   if (task.shortSummary.isNotEmpty &&
-      const CodexOutputCleaner().clean(task.shortSummary).trim().isNotEmpty) {
+      const AgentOutputCleaner().clean(task.shortSummary).trim().isNotEmpty) {
     return true;
   }
   if (task.result?.summary != null &&
-      const CodexOutputCleaner()
+      const AgentOutputCleaner()
           .clean(task.result!.summary)
           .trim()
           .isNotEmpty) {

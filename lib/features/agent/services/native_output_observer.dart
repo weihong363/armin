@@ -1,5 +1,5 @@
 import 'agent_runtime_config.dart';
-import 'codex_output_cleaner.dart';
+import 'agent_output_cleaner.dart';
 
 enum NativeOutputObserverState {
   running,
@@ -30,12 +30,12 @@ class NativeOutputSnapshot {
 
 class NativeOutputObserver {
   NativeOutputObserver({
-    CodexOutputCleaner cleaner = const CodexOutputCleaner(),
+    AgentOutputCleaner cleaner = const AgentOutputCleaner(),
     this.idleThreshold = AgentRuntimeConfig.turnIdleThreshold,
     this.reconnectThreshold = AgentRuntimeConfig.reconnectThreshold,
   }) : _cleaner = cleaner;
 
-  final CodexOutputCleaner _cleaner;
+  final AgentOutputCleaner _cleaner;
   final Duration idleThreshold;
   final Duration reconnectThreshold;
   String? _lastSemanticHash;

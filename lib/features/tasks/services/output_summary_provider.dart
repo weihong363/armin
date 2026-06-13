@@ -1,5 +1,5 @@
 import '../../../core/models/task_status.dart';
-import '../../agent/services/codex_output_cleaner.dart';
+import '../../agent/services/agent_output_cleaner.dart';
 import '../../voice/services/device_voice_service.dart';
 import 'secret_redactor.dart';
 
@@ -53,7 +53,7 @@ abstract class OutputSummaryProvider {
 
 class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
   const RuleBasedOutputSummaryProvider({
-    CodexOutputCleaner cleaner = const CodexOutputCleaner(),
+    AgentOutputCleaner cleaner = const AgentOutputCleaner(),
     SecretRedactor redactor = const SecretRedactor(),
     this.maxDisplayLines = 20,
     this.maxDisplayChars = 420,
@@ -62,7 +62,7 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
   })  : _cleaner = cleaner,
         _redactor = redactor;
 
-  final CodexOutputCleaner _cleaner;
+  final AgentOutputCleaner _cleaner;
   final SecretRedactor _redactor;
   final int maxDisplayLines;
   final int maxDisplayChars;
@@ -90,6 +90,16 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
         importantLines: structuredLines,
       );
     }
+    final bulletLines = _bulletDeliverableLines(cleaned, request);
+    if (bulletLines.isNotEmpty) {
+      final display = _compactDisplay(bulletLines.take(maxDisplayLines));
+      final speech = DeviceVoiceService.cleanSpeechSummary(display);
+      return OutputSummary(
+        displaySummary: display,
+        speechSummary: speech,
+        importantLines: bulletLines,
+      );
+    }
     final importantLines = _importantLines(cleaned, request);
     final display = _compactDisplay(importantLines.take(maxDisplayLines));
     final speech = DeviceVoiceService.cleanSpeechSummary(display);
@@ -98,6 +108,31 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
       speechSummary: speech,
       importantLines: importantLines,
     );
+  }
+
+  List<String> _bulletDeliverableLines(
+    String cleaned,
+    OutputSummaryRequest request,
+  ) {
+    final promptInputs = {
+      request.taskTitle,
+      ...request.promptInputs,
+    }.where((input) => input.trim().isNotEmpty).toList(growable: false);
+    return cleaned
+        .split('\n')
+        .map((line) => line.trim())
+        .where((line) => line.startsWith('▪'))
+        .map((line) => line.substring(1).trim())
+        .where((line) => line.isNotEmpty)
+        .where((line) => !_looksLikePromptEcho(line, promptInputs))
+        .where((line) => !_isPureTableDecorator(line))
+        .toList(growable: false);
+  }
+
+  bool _isPureTableDecorator(String line) {
+    final compact = line.replaceAll(RegExp(r'\s+'), '');
+    if (compact.isEmpty) return true;
+    return RegExp(r'^[┌┬┐├┼┤└┴┘─━│]+\$').hasMatch(compact);
   }
 
   List<String> _importantLines(String cleaned, OutputSummaryRequest request) {
@@ -337,12 +372,12 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
         seenStructured = true;
         continue;
       }
-      if (_scoreLine(line) < 20) {
-        continue;
-      }
       if (seenStructured) {
         after.add(line);
       } else {
+        if (_scoreLine(line) < 20) {
+          continue;
+        }
         before.add(line);
       }
     }
@@ -400,12 +435,26 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
     if (_onlyFirstCellHasValue(cells)) {
       return true;
     }
+    if (_firstColumnsAreEmpty(cells, 2) &&
+        cells.skip(2).any((cell) => cell.isNotEmpty)) {
+      return true;
+    }
     if (cells.length < 2) {
       return false;
+    }
+    if (_singleContinuationCell(cells, rows.last) != null) {
+      return true;
     }
     final previous = rows.last;
     final currentSecond = cells.length > 1 ? cells[1] : '';
     final previousSecond = previous.length > 1 ? previous[1] : '';
+    if (currentSecond.isEmpty &&
+        _looksLikeWrappedFragment(cells.first, previous.first)) {
+      return true;
+    }
+    if (_looksLikeWrappedFragment(currentSecond, previousSecond)) {
+      return true;
+    }
     if (_looksLikePathCell(previousSecond) &&
         !_startsRootedPath(currentSecond)) {
       return true;
@@ -413,11 +462,47 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
     return _looksLikeInteger(previousSecond) && currentSecond.isEmpty;
   }
 
+  int? _singleContinuationCell(List<String> cells, List<String> previous) {
+    final indexes = <int>[
+      for (var index = 0; index < cells.length; index++)
+        if (cells[index].isNotEmpty) index,
+    ];
+    if (indexes.length != 1) {
+      return null;
+    }
+    final index = indexes.single;
+    if (index == 0) {
+      return null;
+    }
+    final previousValue = index < previous.length ? previous[index] : '';
+    return previousValue.isEmpty ? null : index;
+  }
+
+  bool _looksLikeWrappedFragment(String current, String previous) {
+    if (current.isEmpty || previous.isEmpty) {
+      return false;
+    }
+    if (current.length <= 2 && _startsWithCjk(current)) {
+      return true;
+    }
+    if (_looksLikeSplitOption(previous, current)) {
+      return true;
+    }
+    return false;
+  }
+
   bool _onlyFirstCellHasValue(List<String> cells) {
     if (cells.isEmpty || cells.first.isEmpty) {
       return false;
     }
     return cells.skip(1).every((cell) => cell.isEmpty);
+  }
+
+  bool _firstColumnsAreEmpty(List<String> cells, int count) {
+    if (cells.length <= count) {
+      return false;
+    }
+    return cells.take(count).every((cell) => cell.isEmpty);
   }
 
   List<String> _mergeTableCells(List<String> previous, List<String> current) {
@@ -439,6 +524,12 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
     if (previous.isEmpty) {
       return current;
     }
+    if (previous.endsWith('/') && current.startsWith('-')) {
+      return '$previous $current';
+    }
+    if (_looksLikeSplitOption(previous, current)) {
+      return '$previous$current';
+    }
     if (previous.endsWith('/') ||
         previous.endsWith('_') ||
         current.startsWith('.') ||
@@ -452,6 +543,11 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
       return '$previous$current';
     }
     return '$previous $current';
+  }
+
+  bool _looksLikeSplitOption(String previous, String current) {
+    return RegExp(r'^--[A-Za-z][A-Za-z-]*$').hasMatch(previous) &&
+        RegExp(r'^[A-Za-z]').hasMatch(current);
   }
 
   bool _endsWithCjk(String value) {
@@ -508,9 +604,12 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
       '模块',
       '文件',
       '测试文件',
+      '功能分类',
+      '功能名称',
       '路径',
       '状态',
       '说明',
+      '参数/用法',
       '用例',
       '覆盖模块',
       '核心职责',
@@ -701,6 +800,9 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
         .replaceAll(RegExp(r'[▪■●•]+'), ' ')
         .replaceAll(RegExp(r'\s+'), ' ')
         .trim();
+    if (_hasTableDelimiter(value)) {
+      return value;
+    }
     value = _dropToolTracePrefix(value);
     value = _stripPromptNoisePrefix(value);
     return _normalizePetDescription(value);
@@ -996,10 +1098,15 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
         lower.contains('update successful') ||
         lower.startsWith('tool:') ||
         lower.startsWith('command:') ||
+        lower.startsWith('approval_decision:') ||
+        lower.startsWith('decision:') ||
+        lower.startsWith('apply this decision') ||
+        lower.contains('pending approval request') ||
         lower.startsWith('run ') ||
         lower.startsWith('bash(') ||
         lower.startsWith('python -m ') ||
         lower.startsWith('cd ') ||
+        lower.startsWith('write(') ||
         lower.startsWith('allow this command to run') ||
         lower.startsWith('allow execution of') ||
         lower.startsWith('would you like to run') ||
@@ -1026,9 +1133,12 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
         lower.startsWith('read ') ||
         lower.startsWith('read(') ||
         lower.startsWith('edited ') ||
+        lower.startsWith('accepted ') ||
         lower.startsWith('opened ') ||
         lower.startsWith('checked ') ||
         lower.startsWith('shift+tab ') ||
+        lower.startsWith('the user ') ||
+        lower.startsWith('done.') ||
         lower.startsWith('let me ') ||
         lower.startsWith('i will ') ||
         lower.startsWith("i'll ") ||
@@ -1077,9 +1187,7 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
   }
 
   bool _isSummaryGovernanceLine(String lower) {
-    final stripped = lower
-        .replaceFirst(RegExp(r'^[-*•]\s*'), '')
-        .trimLeft();
+    final stripped = lower.replaceFirst(RegExp(r'^[-*•]\s*'), '').trimLeft();
     const lines = [
       'only inspect files directly related to the task.',
       'never scan the entire repository.',

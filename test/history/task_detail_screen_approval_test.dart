@@ -109,7 +109,7 @@ void main() {
     await _tapDetailTab(tester, '日志');
 
     expect(find.text('重新监听'), findsOneWidget);
-    expect(find.text('断开监听'), findsOneWidget);
+    expect(find.text('断开监听'), findsNothing);
     expect(find.text('断开连接'), findsNothing);
   });
 
@@ -884,11 +884,10 @@ Allow this command to run? Redirection detected.
     expect(find.text('暂无结果'), findsOneWidget);
   });
 
-  testWidgets('result panel ignores summary and shortSummary fallback',
-      (tester) async {
+  testWidgets('result panel uses legacy summary fallback', (tester) async {
     final task = _task().copyWith(
       status: TaskStatus.turnIdle,
-      summary: 'LEGACY_SUMMARY_SHOULD_NOT_RENDER',
+      summary: '旧结果摘要已生成。',
       shortSummary: 'LEGACY_SHORT_SUMMARY_SHOULD_NOT_RENDER',
     );
     final state = ArminAppState(
@@ -906,11 +905,9 @@ Allow this command to run? Redirection detected.
     );
     await _tapDetailTab(tester, '结果');
 
-    expect(
-        find.textContaining('LEGACY_SUMMARY_SHOULD_NOT_RENDER'), findsNothing);
+    expect(find.textContaining('旧结果摘要已生成'), findsWidgets);
     expect(find.textContaining('LEGACY_SHORT_SUMMARY_SHOULD_NOT_RENDER'),
         findsNothing);
-    expect(find.text('暂无结果'), findsOneWidget);
   });
 
   testWidgets('result panel uses explicit TaskResult summary', (tester) async {
@@ -947,6 +944,56 @@ Allow this command to run? Redirection detected.
         find.textContaining('LEGACY_SUMMARY_SHOULD_NOT_RENDER'), findsNothing);
     expect(find.textContaining('LEGACY_SHORT_SUMMARY_SHOULD_NOT_RENDER'),
         findsNothing);
+  });
+
+  testWidgets('result panel filters approval decision fallback to deliverable',
+      (tester) async {
+    final task = _task().copyWith(
+      status: TaskStatus.turnIdle,
+      result: const TaskResult(
+        status: 'turn_idle',
+        summary: '''
+> APPROVAL_DECISION:
+decision: rejected
+Apply this decision to the pending approval request.
+
+Thinking
+The user rejected something, but README writing already finished.
+Write(/Users/test/armin-test/README.md)
+└ Accepted README.md
+
+Thinking
+Done. README.md created with all usage examples.
+README.md 已写入，包含三种模式的完整使用示例、公共参数表和安全机制说明。
+''',
+        changedFiles: [],
+        validation: [],
+        risks: [],
+        nextActions: [],
+      ),
+    );
+    final state = ArminAppState(
+      store: _TaskStore(task),
+      agentSessionService: const _NoopAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await tester.pumpWidget(
+      AppStateScope(
+        state: state,
+        child: const MaterialApp(home: TaskDetailScreen(taskId: 'task-1')),
+      ),
+    );
+    await _tapDetailTab(tester, '结果');
+
+    expect(find.textContaining('README.md 已写入'), findsWidgets);
+    expect(find.textContaining('公共参数表'), findsWidgets);
+    expect(find.textContaining('APPROVAL_DECISION'), findsNothing);
+    expect(find.textContaining('decision: rejected'), findsNothing);
+    expect(find.textContaining('The user rejected'), findsNothing);
+    expect(find.textContaining('Write('), findsNothing);
+    expect(find.textContaining('Done. README.md created'), findsNothing);
   });
 
   testWidgets('result refreshes after reloading updated turns', (tester) async {

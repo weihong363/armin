@@ -957,6 +957,7 @@ Apply this change?
     );
     await state.load();
 
+    state.setActiveDetailTaskId(task.id);
     state.startTaskExecution(
       task,
       const AgentExecutionRequest(prompt: 'Task'),
@@ -1026,6 +1027,7 @@ Apply this change?
     );
     await state.load();
 
+    state.setActiveDetailTaskId(task.id);
     state.startTaskExecution(
       task,
       const AgentExecutionRequest(prompt: 'Task'),
@@ -1049,6 +1051,7 @@ Apply this change?
     );
     await state.load();
 
+    state.setActiveDetailTaskId(task.id);
     state.startTaskExecution(
       task,
       const AgentExecutionRequest(prompt: 'Task'),
@@ -1172,6 +1175,7 @@ Apply this change?
     );
     await state.load();
 
+    state.setActiveDetailTaskId(task.id);
     state.startTaskExecution(
       task,
       const AgentExecutionRequest(prompt: 'Task'),
@@ -1222,6 +1226,7 @@ Apply this change?
     );
     await state.load();
 
+    state.setActiveDetailTaskId(task.id);
     state.startTaskExecution(
       task,
       const AgentExecutionRequest(prompt: 'Task'),
@@ -1426,6 +1431,7 @@ Apply this change?
     );
     await state.load();
 
+    state.setActiveDetailTaskId(task.id);
     state.startTaskExecution(
       task,
       const AgentExecutionRequest(prompt: 'Task'),

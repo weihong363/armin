@@ -148,6 +148,7 @@ class ArminAppState extends ChangeNotifier {
   final Map<String, DateTime> _lastRuntimeOutputNotifiedAt = {};
   final Map<String, int> _lastRuntimeOutputHashes = {};
   Future<void> _speechQueue = Future<void>.value();
+  String? _activeDetailTaskId;
   final bool _enableRemoteReconcile;
   final Duration _remoteReconcileInterval;
   bool _notifyScheduled = false;
@@ -891,6 +892,7 @@ class ArminAppState extends ChangeNotifier {
             task = _taskWithExecutionUpdate(previousTask, update);
             await saveTask(task);
             _bridgeSyncStreamStatus(task, previousTask);
+            _queueTaskSpeech(previousTask, task);
           } else {
             // Pure progress: accumulate output, skip JSON persistence.
             _progressOutputMap
@@ -900,7 +902,6 @@ class ArminAppState extends ChangeNotifier {
             _updateInMemory(task);
           }
           _bridgeNotifyExecutionUpdate(task, update.rawOutput);
-          _queueTaskSpeech(previousTask, task);
         });
       },
       onError: (Object error) async {
@@ -2124,6 +2125,17 @@ Apply this decision to the pending approval request.
         text.contains('connection closed');
   }
 
+  /// Sets the task whose detail page is currently visible, so that
+  /// auto-speech only plays when the user is viewing that task.
+  void setActiveDetailTaskId(String taskId) {
+    _activeDetailTaskId = taskId;
+  }
+
+  /// Clears the active detail task id, e.g. when the user navigates away.
+  void clearActiveDetailTaskId() {
+    _activeDetailTaskId = null;
+  }
+
   Future<void> _speakTaskUpdate(
     TaskSession previous,
     TaskSession current,
@@ -2135,7 +2147,8 @@ Apply this decision to the pending approval request.
       outputSummaryProvider: outputSummaryProvider,
     );
     if (!decision.shouldSpeak ||
-        _lastSpokenHashes[current.id] == decision.hash) {
+        _lastSpokenHashes[current.id] == decision.hash ||
+        _activeDetailTaskId != current.id) {
       return;
     }
     _lastSpokenHashes[current.id] = decision.hash;

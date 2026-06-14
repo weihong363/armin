@@ -105,7 +105,7 @@ class TaskSpeechPolicy {
       shouldSpeak: true,
       text: speechText,
       hash:
-          '${current.status.name}:${_latestTurnIndex(current)}:${_normalize(speechText)}',
+          '${current.status.name}:${current.turns.isEmpty ? 'noturn' : current.turns.last.id}',
       kind: kind,
       turnId: current.turns.isEmpty ? null : current.turns.last.id,
       turnIndex: current.turns.isEmpty ? null : _latestTurnIndex(current),

@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import '../../../app_state_scope.dart';
+import '../../../core/services/armin_app_state.dart';
 import '../../../core/models/task_status.dart';
 import '../../runtime/services/runtime_event_bus.dart';
 import '../../runtime/models/runtime_task_snapshot.dart';
@@ -68,6 +69,7 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
   double _topRefreshDragDistance = 0;
   double _lastTopRefreshPaintDistance = 0;
   int _visibleTabIndex = 0;
+  ArminAppState? _appState;
 
   @override
   void initState() {
@@ -75,7 +77,9 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
     WidgetsBinding.instance.addObserver(this);
     _tabController.addListener(_handleTabChanged);
     final state = AppStateScope.read(context);
+    _appState = state;
     _eventSubscription = state.runtimeEvents.listen(_onRuntimeEvent);
+    state.setActiveDetailTaskId(widget.taskId);
   }
 
   @override
@@ -85,6 +89,8 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
     WidgetsBinding.instance.removeObserver(this);
     _tabController.removeListener(_handleTabChanged);
     _tabController.dispose();
+    _appState?.voiceService.stopSpeaking();
+    _appState?.clearActiveDetailTaskId();
     super.dispose();
   }
 

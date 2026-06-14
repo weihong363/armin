@@ -1,5 +1,5 @@
 import 'agent_runtime_config.dart';
-import 'codex_output_cleaner.dart';
+import 'agent_output_cleaner.dart';
 
 enum NativeOutputObserverState {
   running,
@@ -30,12 +30,12 @@ class NativeOutputSnapshot {
 
 class NativeOutputObserver {
   NativeOutputObserver({
-    CodexOutputCleaner cleaner = const CodexOutputCleaner(),
+    AgentOutputCleaner cleaner = const AgentOutputCleaner(),
     this.idleThreshold = AgentRuntimeConfig.turnIdleThreshold,
     this.reconnectThreshold = AgentRuntimeConfig.reconnectThreshold,
   }) : _cleaner = cleaner;
 
-  final CodexOutputCleaner _cleaner;
+  final AgentOutputCleaner _cleaner;
   final Duration idleThreshold;
   final Duration reconnectThreshold;
   String? _lastSemanticHash;
@@ -52,7 +52,19 @@ class NativeOutputObserver {
     }
 
     final statusLines = _recentStatusLines(cleaned);
+    final rawStatusLines = _recentStatusLines(output);
     if (_containsAttention(statusLines)) {
+      return NativeOutputSnapshot(
+        rawOutput: output,
+        cleanedOutput: cleaned,
+        state: NativeOutputObserverState.needAttention,
+        turnIdle: false,
+        runtimeLost: false,
+        needsAttention: true,
+      );
+    }
+
+    if (_containsQuotaExhausted([...statusLines, ...rawStatusLines])) {
       return NativeOutputSnapshot(
         rawOutput: output,
         cleanedOutput: cleaned,
@@ -80,7 +92,7 @@ class NativeOutputObserver {
     }
     _reconnectStartedAt = null;
 
-    if (_containsActiveWork(statusLines)) {
+    if (_containsActiveWork([...statusLines, ...rawStatusLines])) {
       return NativeOutputSnapshot(
         rawOutput: output,
         cleanedOutput: cleaned,
@@ -116,6 +128,7 @@ class NativeOutputObserver {
     final lines = cleaned
         .split('\n')
         .map((line) => line.trim().toLowerCase())
+        .map((line) => line.replaceAll(RegExp(r'\x1B\[[0-?]*[ -/]*[@-~]'), ''))
         .where((line) => line.isNotEmpty)
         .toList(growable: false);
     final start = lines.length > 5 ? lines.length - 5 : 0;
@@ -127,7 +140,20 @@ class NativeOutputObserver {
       final normalized = _statusWord(line);
       return normalized == 'working' ||
           normalized == 'thinking' ||
-          normalized == 'running';
+          normalized == 'running' ||
+          normalized.contains('thinking') ||
+          normalized.contains('yolo') ||
+          normalized.contains('auto mode') ||
+          normalized.contains('bash(');
+    });
+  }
+
+  bool _containsQuotaExhausted(List<String> lines) {
+    return lines.any((line) {
+      return line.contains('credits exhausted') ||
+          line.contains('usage limit') ||
+          line.contains('quota exhausted') ||
+          line.contains('额度已用完');
     });
   }
 

@@ -5,12 +5,56 @@ class CodexOutputCleaner {
     final withoutAnsi = output
         .replaceAll(RegExp(r'\x1B\[[0-?]*[ -/]*[@-~]'), '')
         .replaceAll('\r', '\n');
-    final lines = withoutAnsi
-        .split('\n')
+
+    final rawLines = withoutAnsi.split('\n');
+    final withoutThinking = _removeThinkingBlocks(rawLines);
+    final lines = withoutThinking
         .map(_cleanLine)
         .where((line) => line.isNotEmpty && !_isNoiseLine(line))
         .toList();
     return _squashEmptyLines(lines).join('\n').trim();
+  }
+
+  List<String> _removeThinkingBlocks(List<String> lines) {
+    // Find all thinking block boundaries.
+    final blockStarts = <int>[];
+    final blockEnds = <int>[];
+    for (var i = 0; i < lines.length; i++) {
+      final trimmed = lines[i].trim().toLowerCase();
+      if (trimmed == 'thinking' ||
+          trimmed == 'thinking...' ||
+          trimmed == 'thinking\u2026') {
+        blockStarts.add(i);
+        var end = i;
+        for (var j = i + 1; j < lines.length; j++) {
+          if (lines[j].trim().isEmpty ||
+              lines[j].startsWith(' ') ||
+              lines[j].startsWith('\t')) {
+            end = j;
+          } else {
+            break;
+          }
+        }
+        blockEnds.add(end);
+        i = end;
+      }
+    }
+    if (blockStarts.isEmpty) return List.of(lines);
+
+    final result = <String>[];
+    for (var i = 0; i < lines.length; i++) {
+      var inRemovedBlock = false;
+      for (var b = 0; b < blockStarts.length; b++) {
+        if (i >= blockStarts[b] && i <= blockEnds[b]) {
+          inRemovedBlock = true;
+          break;
+        }
+      }
+      if (!inRemovedBlock) {
+        result.add(lines[i]);
+      }
+    }
+    return result;
   }
 
   String semanticHashInput(String output) {
@@ -27,9 +71,11 @@ class CodexOutputCleaner {
       return '额度已用完，请稍后重试。';
     }
     final preserveTableLine = _looksLikeDelimitedTableLine(line);
-    return line
-        .replaceFirst(
-            preserveTableLine ? RegExp(r'(?!)') : RegExp(r'^[│|]\s*'), '')
+    var cleaned = line;
+    if (!preserveTableLine) {
+      cleaned = cleaned.replaceFirst(RegExp(r'^[│|]\s*'), '');
+    }
+    return cleaned
         .replaceFirst(RegExp(r'^[›]\s*'), '')
         .replaceFirst(RegExp(r'^[✨⚠]\s*'), '')
         .replaceFirst(RegExp(r'^[•*-]\s+'), '')
@@ -75,7 +121,7 @@ class CodexOutputCleaner {
         lower.startsWith('gpt-') ||
         lower.startsWith('tip:') ||
         lower.startsWith('use /skills ') ||
-        lower.startsWith('armin context governance:') ||
+        lower.startsWith('armin context governance') ||
         lower.startsWith('## user task') ||
         lower.startsWith('## user constraints') ||
         lower.startsWith('## context chunk') ||
@@ -89,6 +135,7 @@ class CodexOutputCleaner {
         lower.startsWith('press enter to continue') ||
         lower.startsWith('run npm install') ||
         lower.startsWith('see full release notes') ||
+        lower == 'thinking' ||
         lower == 'thinking...' ||
         lower == 'thinking…' ||
         lower.contains('signed in browser login') ||
@@ -119,21 +166,37 @@ class CodexOutputCleaner {
         ).hasMatch(compact);
   }
 
+  static const _governanceLines = [
+    // Balanced (default) mode
+    'only inspect files directly related to the task.',
+    'never scan the entire repository.',
+    'avoid reading docs/ and readme unless necessary.',
+    'keep edits minimal and focused.',
+    'do not analyze unrelated architecture.',
+    'run only targeted tests.',
+    'keep command output short.',
+    // Aggressive mode
+    'you have full authority to create, modify, and delete files without asking.',
+    'run any commands, tests, or builds needed to complete the task.',
+    'do not interrupt the user — proceed autonomously unless you encounter a hard blocker.',
+    // Safe mode
+    'never modify any file — analysis and reporting only.',
+    'do not run commands that alter state.',
+    'ask before any potentially risky read operation.',
+    // Chinese constraints (cleaned of '- ' prefix by _cleanLine)
+    '只分析不修改',
+    '最小改动',
+    '允许修改',
+    '修改后运行测试',
+    '不要提交 git',
+    '高风险操作先确认',
+  ];
+
   bool _isGovernanceRule(String lower) {
-    return lower == 'only inspect files directly related to the task.' ||
-        lower == 'never scan the entire repository.' ||
-        lower == 'avoid reading docs/ and readme unless necessary.' ||
-        lower == 'keep edits minimal and focused.' ||
-        lower == 'do not analyze unrelated architecture.' ||
-        lower == 'run only targeted tests.' ||
-        lower == 'keep command output short.' ||
-        lower == '- only inspect files directly related to the task.' ||
-        lower == '- never scan the entire repository.' ||
-        lower == '- avoid reading docs/ and readme unless necessary.' ||
-        lower == '- keep edits minimal and focused.' ||
-        lower == '- do not analyze unrelated architecture.' ||
-        lower == '- run only targeted tests.' ||
-        lower == '- keep command output short.';
+    for (final text in _governanceLines) {
+      if (lower.endsWith(text)) return true;
+    }
+    return false;
   }
 
   List<String> _squashEmptyLines(List<String> lines) {

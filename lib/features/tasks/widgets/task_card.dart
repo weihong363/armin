@@ -5,7 +5,7 @@ import 'package:flutter/material.dart';
 import '../../../core/models/task_status.dart';
 import '../../../shared/theme/armin_theme.dart';
 import '../../../shared/widgets/status_badge.dart';
-import '../../agent/services/codex_output_cleaner.dart';
+import '../../agent/services/agent_output_cleaner.dart';
 import '../models/task_session.dart';
 import '../services/semantic_snippet_builder.dart';
 
@@ -263,7 +263,7 @@ class _FeaturedTaskCardState extends State<_FeaturedTaskCard> {
 }
 
 String _readableSummary(TaskSession task) {
-  final summary = const CodexOutputCleaner().clean(task.shortSummary);
+  final summary = const AgentOutputCleaner().clean(task.shortSummary);
   final text = summary.isEmpty ? task.userText : summary;
   return const SemanticSnippetBuilder()
       .build(text, contentType: SnippetContentType.agentSummary, maxChars: 140)

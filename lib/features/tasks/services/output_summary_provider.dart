@@ -1,5 +1,5 @@
 import '../../../core/models/task_status.dart';
-import '../../agent/services/codex_output_cleaner.dart';
+import '../../agent/services/agent_output_cleaner.dart';
 import '../../voice/services/device_voice_service.dart';
 import 'secret_redactor.dart';
 
@@ -53,7 +53,7 @@ abstract class OutputSummaryProvider {
 
 class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
   const RuleBasedOutputSummaryProvider({
-    CodexOutputCleaner cleaner = const CodexOutputCleaner(),
+    AgentOutputCleaner cleaner = const AgentOutputCleaner(),
     SecretRedactor redactor = const SecretRedactor(),
     this.maxDisplayLines = 20,
     this.maxDisplayChars = 420,
@@ -62,7 +62,7 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
   })  : _cleaner = cleaner,
         _redactor = redactor;
 
-  final CodexOutputCleaner _cleaner;
+  final AgentOutputCleaner _cleaner;
   final SecretRedactor _redactor;
   final int maxDisplayLines;
   final int maxDisplayChars;
@@ -78,12 +78,26 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
         _redactor.redactInlineSecrets(_cleaner.clean(withoutPromptBlocks));
     final structuredLines = _structuredLines(cleaned, request);
     if (structuredLines.isNotEmpty) {
-      final display = _structuredNaturalSummary(structuredLines);
+      final display = _structuredDisplaySummary(
+        cleaned,
+        request,
+        structuredLines,
+      );
       final speech = DeviceVoiceService.cleanSpeechSummary(display);
       return OutputSummary(
         displaySummary: display,
         speechSummary: speech,
         importantLines: structuredLines,
+      );
+    }
+    final bulletLines = _bulletDeliverableLines(cleaned, request);
+    if (bulletLines.isNotEmpty) {
+      final display = _compactDisplay(bulletLines.take(maxDisplayLines));
+      final speech = DeviceVoiceService.cleanSpeechSummary(display);
+      return OutputSummary(
+        displaySummary: display,
+        speechSummary: speech,
+        importantLines: bulletLines,
       );
     }
     final importantLines = _importantLines(cleaned, request);
@@ -94,6 +108,31 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
       speechSummary: speech,
       importantLines: importantLines,
     );
+  }
+
+  List<String> _bulletDeliverableLines(
+    String cleaned,
+    OutputSummaryRequest request,
+  ) {
+    final promptInputs = {
+      request.taskTitle,
+      ...request.promptInputs,
+    }.where((input) => input.trim().isNotEmpty).toList(growable: false);
+    return cleaned
+        .split('\n')
+        .map((line) => line.trim())
+        .where((line) => line.startsWith('▪'))
+        .map((line) => line.substring(1).trim())
+        .where((line) => line.isNotEmpty)
+        .where((line) => !_looksLikePromptEcho(line, promptInputs))
+        .where((line) => !_isPureTableDecorator(line))
+        .toList(growable: false);
+  }
+
+  bool _isPureTableDecorator(String line) {
+    final compact = line.replaceAll(RegExp(r'\s+'), '');
+    if (compact.isEmpty) return true;
+    return RegExp(r'^[┌┬┐├┼┤└┴┘─━│]+\$').hasMatch(compact);
   }
 
   List<String> _importantLines(String cleaned, OutputSummaryRequest request) {
@@ -282,6 +321,69 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
     return intro;
   }
 
+  String _structuredDisplaySummary(
+    String cleaned,
+    OutputSummaryRequest request,
+    List<String> structuredLines,
+  ) {
+    final tableSummary = _structuredNaturalSummary(structuredLines);
+    final context = _structuredContext(
+      cleaned,
+      request,
+      structuredLines,
+    );
+    if (context.before.isEmpty && context.after.isEmpty) {
+      return tableSummary;
+    }
+
+    return _compactDisplay([
+      ...context.before,
+      tableSummary,
+      ...context.after,
+    ].take(maxDisplayLines));
+  }
+
+  _StructuredContext _structuredContext(
+    String cleaned,
+    OutputSummaryRequest request,
+    List<String> structuredLines,
+  ) {
+    final promptInputs = {
+      request.taskTitle,
+      ...request.promptInputs,
+    }.where((input) => input.trim().isNotEmpty).toList(growable: false);
+    final lines = _semanticLines(_removeTerminalPromptBlocks(cleaned))
+        .where((line) => line.isNotEmpty)
+        .where((line) => !_looksLikePromptEcho(line, promptInputs))
+        .where((line) => !_looksLikeLowValueLine(line))
+        .toList(growable: false);
+    final structuredSet = structuredLines.toSet();
+    final before = <String>[];
+    final after = <String>[];
+    var seenStructured = false;
+    for (final line in lines) {
+      if (structuredSet.contains(line) ||
+          _looksLikeTableLine(line) ||
+          _looksLikeTableContinuation(line)) {
+        seenStructured = true;
+        continue;
+      }
+      if (_looksLikeStructuredIntroLine(line)) {
+        seenStructured = true;
+        continue;
+      }
+      if (seenStructured) {
+        after.add(line);
+      } else {
+        if (_scoreLine(line) < 20) {
+          continue;
+        }
+        before.add(line);
+      }
+    }
+    return _StructuredContext(before: before, after: after);
+  }
+
   List<String> _extractTableRows(List<String> lines) {
     final rows = <String>[];
     for (final cells in _logicalTableRows(lines)) {
@@ -333,12 +435,26 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
     if (_onlyFirstCellHasValue(cells)) {
       return true;
     }
+    if (_firstColumnsAreEmpty(cells, 2) &&
+        cells.skip(2).any((cell) => cell.isNotEmpty)) {
+      return true;
+    }
     if (cells.length < 2) {
       return false;
+    }
+    if (_singleContinuationCell(cells, rows.last) != null) {
+      return true;
     }
     final previous = rows.last;
     final currentSecond = cells.length > 1 ? cells[1] : '';
     final previousSecond = previous.length > 1 ? previous[1] : '';
+    if (currentSecond.isEmpty &&
+        _looksLikeWrappedFragment(cells.first, previous.first)) {
+      return true;
+    }
+    if (_looksLikeWrappedFragment(currentSecond, previousSecond)) {
+      return true;
+    }
     if (_looksLikePathCell(previousSecond) &&
         !_startsRootedPath(currentSecond)) {
       return true;
@@ -346,11 +462,47 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
     return _looksLikeInteger(previousSecond) && currentSecond.isEmpty;
   }
 
+  int? _singleContinuationCell(List<String> cells, List<String> previous) {
+    final indexes = <int>[
+      for (var index = 0; index < cells.length; index++)
+        if (cells[index].isNotEmpty) index,
+    ];
+    if (indexes.length != 1) {
+      return null;
+    }
+    final index = indexes.single;
+    if (index == 0) {
+      return null;
+    }
+    final previousValue = index < previous.length ? previous[index] : '';
+    return previousValue.isEmpty ? null : index;
+  }
+
+  bool _looksLikeWrappedFragment(String current, String previous) {
+    if (current.isEmpty || previous.isEmpty) {
+      return false;
+    }
+    if (current.length <= 2 && _startsWithCjk(current)) {
+      return true;
+    }
+    if (_looksLikeSplitOption(previous, current)) {
+      return true;
+    }
+    return false;
+  }
+
   bool _onlyFirstCellHasValue(List<String> cells) {
     if (cells.isEmpty || cells.first.isEmpty) {
       return false;
     }
     return cells.skip(1).every((cell) => cell.isEmpty);
+  }
+
+  bool _firstColumnsAreEmpty(List<String> cells, int count) {
+    if (cells.length <= count) {
+      return false;
+    }
+    return cells.take(count).every((cell) => cell.isEmpty);
   }
 
   List<String> _mergeTableCells(List<String> previous, List<String> current) {
@@ -372,6 +524,12 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
     if (previous.isEmpty) {
       return current;
     }
+    if (previous.endsWith('/') && current.startsWith('-')) {
+      return '$previous $current';
+    }
+    if (_looksLikeSplitOption(previous, current)) {
+      return '$previous$current';
+    }
     if (previous.endsWith('/') ||
         previous.endsWith('_') ||
         current.startsWith('.') ||
@@ -385,6 +543,11 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
       return '$previous$current';
     }
     return '$previous $current';
+  }
+
+  bool _looksLikeSplitOption(String previous, String current) {
+    return RegExp(r'^--[A-Za-z][A-Za-z-]*$').hasMatch(previous) &&
+        RegExp(r'^[A-Za-z]').hasMatch(current);
   }
 
   bool _endsWithCjk(String value) {
@@ -441,13 +604,17 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
       '模块',
       '文件',
       '测试文件',
+      '功能分类',
+      '功能名称',
       '路径',
       '状态',
       '说明',
+      '参数/用法',
       '用例',
       '覆盖模块',
       '核心职责',
       '职责',
+      '函数',
       'name',
       'status',
     };
@@ -569,11 +736,13 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
   bool _isTerminalPromptStart(String line) {
     final lower = line.toLowerCase();
     return lower == 'asking user' ||
+        lower == 'permission required' ||
         lower.startsWith('allow this command to run') ||
         lower.startsWith('allow execution of') ||
         lower.startsWith('allow command execution') ||
         lower.startsWith('would you like to run') ||
-        lower.startsWith('approve this command');
+        lower.startsWith('approve this command') ||
+        lower.startsWith('apply this change');
   }
 
   bool _isTerminalPromptOption(String line) {
@@ -631,6 +800,9 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
         .replaceAll(RegExp(r'[▪■●•]+'), ' ')
         .replaceAll(RegExp(r'\s+'), ' ')
         .trim();
+    if (_hasTableDelimiter(value)) {
+      return value;
+    }
     value = _dropToolTracePrefix(value);
     value = _stripPromptNoisePrefix(value);
     return _normalizePetDescription(value);
@@ -799,6 +971,9 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
         clause.contains('精灵图') ||
         clause.contains('成功') ||
         clause.contains('失败') ||
+        clause.contains('下一步') ||
+        clause.contains('建议') ||
+        clause.contains('可以') ||
         lower.contains('error') ||
         lower.contains('failed') ||
         lower.contains('success');
@@ -815,6 +990,9 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
         line.contains('最终') ||
         line.contains('输出') ||
         line.contains('摘要')) {
+      score += 25;
+    }
+    if (line.contains('下一步') || line.contains('建议')) {
       score += 25;
     }
     if (RegExp(r'^[A-Za-z0-9_\-\u4e00-\u9fff]+[:：]').hasMatch(line)) {
@@ -852,6 +1030,9 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
           (compactLine == compactInput || compactLine.contains(compactInput))) {
         return true;
       }
+      if (_looksLikeChinesePromptEcho(compactLine, compactInput)) {
+        return true;
+      }
       final taskWords = _taskWords(input);
       if (taskWords.isNotEmpty) {
         final lower = line.toLowerCase();
@@ -859,6 +1040,28 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
         if (hits >= 3 && line.length <= 120) {
           return true;
         }
+      }
+    }
+    return false;
+  }
+
+  bool _looksLikeChinesePromptEcho(String compactLine, String compactInput) {
+    if (compactInput.length < 12 ||
+        !RegExp(r'[\u4e00-\u9fff]').hasMatch(compactInput)) {
+      return false;
+    }
+    final lineHasChinese = RegExp(r'[\u4e00-\u9fff]').hasMatch(compactLine);
+    if (lineHasChinese &&
+        compactInput.contains(compactLine) &&
+        compactLine.length >= 8) {
+      return true;
+    }
+    final sampleLength = compactInput.length < 12 ? compactInput.length : 12;
+    for (var start = 0; start + sampleLength <= compactInput.length; start++) {
+      final sample = compactInput.substring(start, start + sampleLength);
+      if (RegExp(r'[\u4e00-\u9fff]').hasMatch(sample) &&
+          compactLine.contains(sample)) {
+        return true;
       }
     }
     return false;
@@ -886,19 +1089,29 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
         lower.startsWith('风险信息') ||
         lower.startsWith('user constraints') ||
         lower.startsWith('## user constraints') ||
+        lower.startsWith('armin context governance') ||
+        _isSummaryGovernanceLine(lower) ||
         lower.startsWith('## user task') ||
         lower.startsWith('## context chunk') ||
         lower.startsWith('## secret placeholders') ||
         lower.startsWith('completion: tls handshake eof') ||
+        lower.contains('update successful') ||
         lower.startsWith('tool:') ||
         lower.startsWith('command:') ||
+        lower.startsWith('approval_decision:') ||
+        lower.startsWith('decision:') ||
+        lower.startsWith('apply this decision') ||
+        lower.contains('pending approval request') ||
         lower.startsWith('run ') ||
         lower.startsWith('bash(') ||
         lower.startsWith('python -m ') ||
         lower.startsWith('cd ') ||
+        lower.startsWith('write(') ||
         lower.startsWith('allow this command to run') ||
         lower.startsWith('allow execution of') ||
         lower.startsWith('would you like to run') ||
+        lower.startsWith('apply this change') ||
+        lower == 'permission required' ||
         RegExp(r'^\d+[.)]\s+(?:allow once|always allow|reject and type something|no)\b')
             .hasMatch(lower) ||
         RegExp(r'^\d+[.)]\s+(?:允许|始终允许|拒绝|不允许|否)\b').hasMatch(lower) ||
@@ -907,9 +1120,7 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
         lower.startsWith('turn ') ||
         lower.startsWith('结果为：turn ') ||
         lower.startsWith('result: turn ') ||
-        (lower.contains('最小改动') &&
-            lower.contains('不要提交') &&
-            lower.contains('高风险操作先确认')) ||
+        _isChineseConstraintLine(lower) ||
         lower == 'explored' ||
         lower == 'thinking' ||
         lower == 'thinking...' ||
@@ -922,9 +1133,12 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
         lower.startsWith('read ') ||
         lower.startsWith('read(') ||
         lower.startsWith('edited ') ||
+        lower.startsWith('accepted ') ||
         lower.startsWith('opened ') ||
         lower.startsWith('checked ') ||
         lower.startsWith('shift+tab ') ||
+        lower.startsWith('the user ') ||
+        lower.startsWith('done.') ||
         lower.startsWith('let me ') ||
         lower.startsWith('i will ') ||
         lower.startsWith("i'll ") ||
@@ -936,6 +1150,7 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
         line.startsWith('继续从') ||
         line.startsWith('我先看一下') ||
         line.startsWith('我先检查') ||
+        line.startsWith('我需要先') ||
         line.startsWith('我会先') ||
         line.startsWith('我将先') ||
         line.startsWith('让我先') ||
@@ -945,7 +1160,10 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
         line.startsWith('接下来') ||
         line.startsWith('下面我') ||
         line.startsWith('先看看') ||
-        line.startsWith('先检查');
+        line.startsWith('先检查') ||
+        line.startsWith('用户要求') ||
+        line.startsWith('任务要求') ||
+        line.startsWith('需求');
   }
 
   bool _looksLikeResultLine(String line) {
@@ -967,6 +1185,45 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
             .hasMatch(lower) ||
         RegExp(r'\b(?:error|failed|success)\s*[:：-]').hasMatch(lower);
   }
+
+  bool _isSummaryGovernanceLine(String lower) {
+    final stripped = lower.replaceFirst(RegExp(r'^[-*•]\s*'), '').trimLeft();
+    const lines = [
+      'only inspect files directly related to the task.',
+      'never scan the entire repository.',
+      'avoid reading docs/ and readme unless necessary.',
+      'keep edits minimal and focused.',
+      'do not analyze unrelated architecture.',
+      'run only targeted tests.',
+      'keep command output short.',
+      'you have full authority to create, modify, and delete files without asking.',
+      'run any commands, tests, or builds needed to complete the task.',
+      'do not interrupt the user',
+      'never modify any file',
+      'do not run commands that alter state.',
+      'ask before any potentially risky read operation.',
+    ];
+    for (final text in lines) {
+      if (lower == text || stripped == text) return true;
+      if (lower.endsWith(text) || stripped.endsWith(text)) return true;
+    }
+    return _isChineseConstraintLine(stripped);
+  }
+
+  bool _isChineseConstraintLine(String lower) {
+    const lines = [
+      '只分析不修改',
+      '最小改动',
+      '允许修改',
+      '修改后运行测试',
+      '不要提交 git',
+      '高风险操作先确认',
+    ];
+    for (final text in lines) {
+      if (lower.endsWith(text)) return true;
+    }
+    return false;
+  }
 }
 
 typedef LocalSmallModelSummaryRunner = Future<OutputSummary> Function(
@@ -983,6 +1240,16 @@ class _ScoredLine {
   final String line;
   final int index;
   final int score;
+}
+
+class _StructuredContext {
+  const _StructuredContext({
+    required this.before,
+    required this.after,
+  });
+
+  final List<String> before;
+  final List<String> after;
 }
 
 typedef LocalSmallModelAvailabilityCheck = Future<bool> Function();

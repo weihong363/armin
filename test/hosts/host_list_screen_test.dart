@@ -1,4 +1,5 @@
 import 'package:armin/app_state_scope.dart';
+import 'package:armin/core/models/task_status.dart';
 import 'package:armin/core/services/armin_app_state.dart';
 import 'package:armin/core/storage/task_history_store.dart';
 import '../features/agent/services/mock_agent_session_service.dart';
@@ -36,14 +37,34 @@ void main() {
     expect(
         find.widgetWithText(TextFormField, 'secret-password'), findsOneWidget);
   });
+
+  testWidgets('host delete is blocked while active task uses host',
+      (tester) async {
+    final host = _host(password: 'secret-password');
+    await _pumpHostList(
+      tester,
+      host: host,
+      tasks: [_task(host: host, status: TaskStatus.running)],
+    );
+
+    await tester.drag(find.byType(Dismissible), const Offset(-500, 0));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, '删除'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('无法删除主机'), findsOneWidget);
+    expect(find.textContaining('请先将它们停止或完成'), findsOneWidget);
+    expect(find.text('Dev'), findsOneWidget);
+  });
 }
 
 Future<void> _pumpHostList(
   WidgetTester tester, {
   required HostConfig host,
+  List<TaskSession> tasks = const [],
 }) async {
   final state = ArminAppState(
-    store: _HostStore(host),
+    store: _HostStore(host, tasks: tasks),
     agentSessionService: MockAgentSessionService(),
     voiceService: MockVoiceService(),
   );
@@ -75,19 +96,49 @@ HostConfig _host({required String password}) {
   );
 }
 
+TaskSession _task({
+  required HostConfig host,
+  required TaskStatus status,
+}) {
+  final now = DateTime(2026, 5, 17);
+  return TaskSession(
+    id: 'task-1',
+    host: host,
+    title: 'Active Task',
+    status: status,
+    createdAt: now,
+    updatedAt: now,
+    startedAt: now,
+    rawSttText: '',
+    cleanedDraft: 'Active Task',
+    userText: 'Active Task',
+    context: '',
+    constraints: const {},
+    finalPrompt: 'Active Task',
+    secretRecords: const [],
+    rawLog: '',
+  );
+}
+
 class _HostStore implements TaskHistoryStore {
-  _HostStore(this.host);
+  _HostStore(HostConfig host, {this.tasks = const []}) : hosts = [host];
 
-  final HostConfig host;
-
-  @override
-  Future<List<HostConfig>> loadHosts() async => [host];
+  final List<HostConfig> hosts;
+  final List<TaskSession> tasks;
 
   @override
-  Future<List<TaskSession>> loadTasks() async => [];
+  Future<List<HostConfig>> loadHosts() async => List.unmodifiable(hosts);
+
+  @override
+  Future<List<TaskSession>> loadTasks() async => List.unmodifiable(tasks);
 
   @override
   Future<void> saveHost(HostConfig host) async {}
+
+  @override
+  Future<void> deleteHost(String hostId) async {
+    hosts.removeWhere((item) => item.id == hostId);
+  }
 
   @override
   Future<void> saveTask(TaskSession task) async {}

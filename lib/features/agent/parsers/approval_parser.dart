@@ -1,54 +1,25 @@
 import 'approval_request.dart';
+import 'terminal_prompt_parser.dart';
 
+/// Detects approval requests from CLI output by recognising interactive
+/// terminal prompts and converting them to [ApprovalRequest].
+///
+/// Relies on [TerminalPromptParser] for structural detection of the
+/// prompt block — no CLI-specific keywords or NEED_APPROVAL markers
+/// are required.
 class ApprovalParser {
+  const ApprovalParser();
+
   ApprovalRequest? parse(String output) {
-    final blocks = RegExp(
-      r'NEED_APPROVAL_START([\s\S]*?)NEED_APPROVAL_END',
-    ).allMatches(output).toList().reversed;
-
-    for (final match in blocks) {
-      final block = match.group(1)?.trim() ?? '';
-      final reason = _singleLine(block, 'reason') ?? '';
-      final command = _singleLine(block, 'command') ?? '';
-      final risk = _singleLine(block, 'risk') ?? 'medium';
-      if (!_isRealApproval(reason: reason, command: command, risk: risk)) {
-        continue;
-      }
-
-      return ApprovalRequest(
-        reason: reason,
-        command: command,
-        risk: risk,
-      );
-    }
-
-    return null;
+    final prompt = _promptParser.parse(output);
+    if (prompt == null) return null;
+    return ApprovalRequest(
+      reason: prompt.question,
+      command:
+          prompt.command.trim().isEmpty ? 'plan_approval' : prompt.command,
+      risk: 'medium',
+    );
   }
 
-  String? _singleLine(String block, String key) {
-    final match = RegExp(
-      '^${RegExp.escape(key)}:\\s*(.*)\$',
-      multiLine: true,
-    ).firstMatch(block);
-    return match?.group(1)?.trim();
-  }
-
-  bool _isRealApproval({
-    required String reason,
-    required String command,
-    required String risk,
-  }) {
-    final normalizedRisk = risk.trim().toLowerCase();
-    return !_isPlaceholder(reason) &&
-        !_isPlaceholder(command) &&
-        const {'low', 'medium', 'high'}.contains(normalizedRisk);
-  }
-
-  bool _isPlaceholder(String value) {
-    final trimmed = value.trim();
-    return trimmed.isEmpty ||
-        trimmed == '...' ||
-        trimmed == '<...>' ||
-        trimmed.contains('|');
-  }
+  static const _promptParser = TerminalPromptParser();
 }

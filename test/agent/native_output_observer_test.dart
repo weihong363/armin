@@ -42,6 +42,51 @@ void main() {
     expect(snapshot.turnIdle, isFalse);
   });
 
+  test('does not settle yolo thinking spinner as turn idle', () {
+    final observer = NativeOutputObserver(
+      idleThreshold: const Duration(seconds: 1),
+    );
+    const output = '''
+▪ 测试文件已创建，运行 pytest。
+
+▫ Bash(cd /Users/ironion/workspace/armin-test/file-renamer && python -m pytest test_renamer.py -v 2>&1)
+
+⠸ Thinking... (esc to cancel, 1m 2s)
+──────────────────────────────────────────────────────────────────────────
+ YOLO Shift+Tab to Auto Mode
+''';
+
+    final snapshot = observer.observeSettled(
+      output,
+      now: DateTime(2026, 5, 23, 12),
+    );
+
+    expect(snapshot.state, NativeOutputObserverState.running);
+    expect(snapshot.turnIdle, isFalse);
+  });
+
+  test('credits exhausted requires attention instead of result idle', () {
+    final observer = NativeOutputObserver(
+      idleThreshold: const Duration(seconds: 1),
+    );
+    const output = '''
+▪ 测试文件已创建，运行 pytest。
+
+Credits exhausted. Use /usage for details or /upgrade for more.
+⠸ Thinking... (esc to cancel, 1m 2s)
+ YOLO Shift+Tab to Auto Mode
+''';
+
+    final snapshot = observer.observeSettled(
+      output,
+      now: DateTime(2026, 5, 23, 12),
+    );
+
+    expect(snapshot.state, NativeOutputObserverState.needAttention);
+    expect(snapshot.needsAttention, isTrue);
+    expect(snapshot.turnIdle, isFalse);
+  });
+
   test('marks runtime lost after reconnect threshold', () {
     final observer = NativeOutputObserver(
       reconnectThreshold: const Duration(seconds: 2),

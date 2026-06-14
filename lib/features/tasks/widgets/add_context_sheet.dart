@@ -325,7 +325,7 @@ class _AddContextSheetBodyState extends State<_AddContextSheetBody> {
           keyboardType: TextInputType.multiline,
           minLines: 3,
           maxLines: 5,
-          decoration: InputDecoration(hintText: '输入指令...'),
+          decoration: const InputDecoration(hintText: '输入指令...'),
         ),
         if (_partial.trim().isNotEmpty) ...[
           const SizedBox(height: 8),

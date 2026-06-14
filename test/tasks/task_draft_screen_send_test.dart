@@ -133,6 +133,7 @@ void main() {
       agent: agent,
       screen: const TaskDraftScreen(
         initialTaskText: '继续历史任务',
+        initialTaskTitle: '历史任务标题',
         selectedHostId: 'host-2',
         initialProjectPath: '~workspace/momo',
       ),
@@ -144,6 +145,55 @@ void main() {
     expect(agent.lastRequest?.hostId, 'host-2');
     expect(agent.lastRequest?.agentCommand, 'qodercli');
     expect(agent.lastRequest?.projectPath, '~/workspace/momo');
+    expect(store.savedTasks.last.title, '历史任务标题');
+  });
+
+  testWidgets('send stores custom task title', (tester) async {
+    final store = _TaskStore(hosts: [_host(password: 'secret-password')]);
+    final agent = _CaptureAgentSessionService();
+    await _pumpScreen(tester, store: store, agent: agent);
+
+    await tester.enterText(find.byType(TextField).first, '执行真实任务');
+    await tester.enterText(
+      find.byKey(const ValueKey('task-title-field')),
+      '自定义任务名',
+    );
+    await tester.tap(find.text('发送任务'));
+    await tester.pumpAndSettle();
+
+    expect(store.savedTasks.last.title, '自定义任务名');
+  });
+
+  testWidgets('empty task title falls back to generated title', (tester) async {
+    final store = _TaskStore(hosts: [_host(password: 'secret-password')]);
+    final agent = _CaptureAgentSessionService();
+    await _pumpScreen(tester, store: store, agent: agent);
+
+    await tester.enterText(find.byType(TextField).first, '执行真实任务');
+    await tester.enterText(find.byKey(const ValueKey('task-title-field')), '');
+    await tester.pump();
+    await tester.tap(find.text('发送任务'));
+    await tester.pumpAndSettle();
+
+    expect(store.savedTasks.last.title, '执行真实任务');
+  });
+
+  testWidgets('task title follows description until manually edited',
+      (tester) async {
+    final store = _TaskStore(hosts: [_host(password: 'secret-password')]);
+    final agent = _CaptureAgentSessionService();
+    await _pumpScreen(tester, store: store, agent: agent);
+    final titleField = find.byKey(const ValueKey('task-title-field'));
+
+    await tester.enterText(find.byType(TextField).first, '第一版任务描述');
+    await tester.pump();
+    expect(_textFieldController(tester, titleField).text, '第一版任务描述');
+
+    await tester.enterText(titleField, '手动任务名');
+    await tester.enterText(find.byType(TextField).first, '第二版任务描述');
+    await tester.pump();
+
+    expect(_textFieldController(tester, titleField).text, '手动任务名');
   });
 
   testWidgets('send creates first native output turn', (tester) async {
@@ -312,6 +362,15 @@ Future<void> _pumpScreen(
   await tester.pump();
 }
 
+TextEditingController _textFieldController(WidgetTester tester, Finder finder) {
+  final textField = tester.widget<TextField>(finder);
+  final controller = textField.controller;
+  if (controller == null) {
+    throw StateError('Expected text field to have a controller.');
+  }
+  return controller;
+}
+
 HostConfig _host({
   String id = 'host-1',
   String name = 'Dev',
@@ -361,6 +420,11 @@ class _TaskStore implements TaskHistoryStore {
       return;
     }
     _hosts.add(host);
+  }
+
+  @override
+  Future<void> deleteHost(String hostId) async {
+    _hosts.removeWhere((item) => item.id == hostId);
   }
 
   @override
@@ -491,6 +555,9 @@ class _CaptureAgentSessionService implements AgentSessionService {
 
   @override
   Future<void> resume(AgentControlRequest request) async {}
+
+  @override
+  Future<void> interrupt(AgentControlRequest request) async {}
 
   @override
   Future<void> sendFollowUp(AgentControlRequest request) async {}

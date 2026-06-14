@@ -3,6 +3,8 @@ class AgentRuntimeConfig {
 
   static const pollInterval = Duration(milliseconds: 500);
   static const turnIdleThreshold = Duration(seconds: 2);
+  static const balancedTurnIdleThreshold = Duration(seconds: 10);
+  static const aggressiveTurnIdleThreshold = Duration(seconds: 60);
   static const reconnectThreshold = Duration(seconds: 60);
   static const maxRuntime = Duration(minutes: 20);
   static const monitorCaptureLines = 80;

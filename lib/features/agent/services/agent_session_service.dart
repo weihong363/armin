@@ -101,6 +101,35 @@ class AgentControlRequest {
   final String instruction;
 }
 
+class RemoteTaskProbe {
+  const RemoteTaskProbe({
+    required this.sessionExists,
+    this.snapshot = '',
+    this.hasApprovalPrompt = false,
+    this.hasTerminalPrompt = false,
+    this.hasExitedMarker = false,
+  });
+
+  const RemoteTaskProbe.missingSession()
+      : sessionExists = false,
+        snapshot = '',
+        hasApprovalPrompt = false,
+        hasTerminalPrompt = false,
+        hasExitedMarker = false;
+
+  final bool sessionExists;
+  final String snapshot;
+  final bool hasApprovalPrompt;
+  final bool hasTerminalPrompt;
+  final bool hasExitedMarker;
+
+  bool get needsAttention => hasApprovalPrompt || hasTerminalPrompt;
+}
+
+abstract class RemoteTaskProbeService {
+  Future<RemoteTaskProbe> probeRemoteState(AgentControlRequest request);
+}
+
 class AgentConnectionTestRequest {
   const AgentConnectionTestRequest({
     required this.host,
@@ -174,6 +203,8 @@ abstract class AgentSessionService {
   Future<void> pause(AgentControlRequest request);
 
   Future<void> resume(AgentControlRequest request);
+
+  Future<void> interrupt(AgentControlRequest request);
 
   Future<void> stop(AgentControlRequest request);
 

@@ -4,11 +4,14 @@ import 'package:flutter/material.dart';
 
 import '../../../app_state_scope.dart';
 import '../../../core/models/task_status.dart';
+import '../../runtime/services/runtime_event_bus.dart';
+import '../../runtime/models/runtime_task_snapshot.dart';
+import '../../../shared/scroll/armin_scroll_behavior.dart';
 import '../../../shared/theme/armin_theme.dart';
 import '../../agent/parsers/approval_request.dart';
 import '../../agent/parsers/task_result.dart';
 import '../../agent/parsers/terminal_prompt.dart';
-import '../../agent/services/codex_output_cleaner.dart';
+import '../../agent/services/agent_output_cleaner.dart';
 import '../../voice/services/device_voice_service.dart';
 import '../../voice/services/voice_service.dart';
 import '../../tasks/models/native_output_turn.dart';
@@ -28,6 +31,8 @@ enum _TaskDetailAction {
   delete,
 }
 
+const _taskDetailTabScrollPhysics = ClampingScrollPhysics();
+
 class TaskDetailScreen extends StatefulWidget {
   const TaskDetailScreen({required this.taskId, super.key});
 
@@ -40,6 +45,10 @@ class TaskDetailScreen extends StatefulWidget {
 class _TaskDetailScreenState extends State<TaskDetailScreen>
     with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   static const _resultTabIndex = 1;
+  static const _refreshTriggerDistance = 96.0;
+  static const _topRefreshGestureHeight = 180.0;
+  static const _maxTopPullOffset = 36.0;
+  static const _dragUpdateThreshold = 4.0;
 
   late final TabController _tabController =
       TabController(length: 3, vsync: this);
@@ -47,17 +56,46 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
   int _latestTurnRevealToken = 0;
   String _handledAttentionRevealSignature = '';
 
+  StreamSubscription<RuntimeEvent>? _eventSubscription;
+  int _resultVersion = 0;
+  final ValueNotifier<RuntimeTaskSnapshot?> _progressNotifier =
+      ValueNotifier<RuntimeTaskSnapshot?>(null);
+
+  bool _taskPageAtTop = true;
+  bool _topRefreshTracking = false;
+  bool _topRefreshArmed = false;
+  bool _topRefreshRunning = false;
+  double _topRefreshDragDistance = 0;
+  double _lastTopRefreshPaintDistance = 0;
+  int _visibleTabIndex = 0;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _tabController.addListener(_handleTabChanged);
+    final state = AppStateScope.read(context);
+    _eventSubscription = state.runtimeEvents.listen(_onRuntimeEvent);
   }
 
   @override
   void dispose() {
+    _eventSubscription?.cancel();
+    _progressNotifier.dispose();
     WidgetsBinding.instance.removeObserver(this);
+    _tabController.removeListener(_handleTabChanged);
     _tabController.dispose();
     super.dispose();
+  }
+
+  void _handleTabChanged() {
+    final nextIndex = _tabController.index;
+    if (_visibleTabIndex == nextIndex || !mounted) {
+      return;
+    }
+    setState(() {
+      _visibleTabIndex = nextIndex;
+    });
   }
 
   @override
@@ -79,10 +117,69 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
     }
   }
 
+  void _onRuntimeEvent(RuntimeEvent event) {
+    if (event.taskId != widget.taskId || !mounted) {
+      return;
+    }
+    switch (event.type) {
+      case RuntimeEventType.taskProgress:
+        if (event.snapshot != null) {
+          _progressNotifier.value = event.snapshot;
+        }
+        break;
+      case RuntimeEventType.taskCompleted:
+      case RuntimeEventType.taskFailed:
+      case RuntimeEventType.taskCancelled:
+      case RuntimeEventType.taskStopped:
+      case RuntimeEventType.taskWaitingUser:
+      case RuntimeEventType.taskPaused:
+        // Terminal / low-frequency: bump version so _ResultPanel does a full
+        // recomputation. Clear progress snapshot so UI switches to full
+        // TaskSession data.
+        _progressNotifier.value = null;
+        setState(() {
+          _resultVersion++;
+        });
+      case RuntimeEventType.taskCreated:
+      case RuntimeEventType.taskStarted:
+      case RuntimeEventType.taskResumed:
+      case RuntimeEventType.connectionRestored:
+        setState(() {
+          _resultVersion++;
+        });
+      case RuntimeEventType.outputUpdated:
+      case RuntimeEventType.deliverableUpdated:
+      case RuntimeEventType.approvalRequested:
+      case RuntimeEventType.approvalResolving:
+      case RuntimeEventType.approvalResolved:
+      case RuntimeEventType.approvalRejected:
+      case RuntimeEventType.approvalFailed:
+      case RuntimeEventType.observerAttached:
+      case RuntimeEventType.observerDetached:
+      case RuntimeEventType.connectionLost:
+      case RuntimeEventType.reviewSubmitted:
+      case RuntimeEventType.waitingForInstruction:
+      case RuntimeEventType.waitingForReview:
+      case RuntimeEventType.waitingForApproval:
+        // New event types: no special handling needed for detail screen yet.
+        break;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    final state = AppStateScope.of(context);
-    final task = _findTask(state.tasks);
+    final taskListenable = AppStateScope.read(context).taskListenable(
+      widget.taskId,
+    );
+    return ValueListenableBuilder<TaskSession?>(
+      valueListenable: taskListenable,
+      builder: (context, task, _) {
+        return _buildTaskScaffold(context, task);
+      },
+    );
+  }
+
+  Widget _buildTaskScaffold(BuildContext context, TaskSession? task) {
     if (task == null) {
       return Scaffold(
         appBar: AppBar(title: const Text('任务详情')),
@@ -136,62 +233,196 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
       ),
       body: SafeArea(
         top: false,
-        child: NestedScrollView(
-          headerSliverBuilder: (context, innerBoxIsScrolled) => [
-            SliverPadding(
-              padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
-              sliver: SliverToBoxAdapter(child: _TaskHeader(task: task)),
-            ),
-            SliverPadding(
-              padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
-              sliver: SliverToBoxAdapter(
-                child: _CurrentSituationCard(task: task),
-              ),
-            ),
-            SliverPadding(
-              padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
-              sliver: SliverToBoxAdapter(
-                child: KeyedSubtree(
-                  key: _attentionAnchorKey,
-                  child: _TaskNeedsPanel(
-                    task: task,
-                    onViewResult: _revealLatestResult,
+        child: Listener(
+          onPointerDown: _handleTopRefreshPointerDown,
+          onPointerMove: _handleTopRefreshPointerMove,
+          onPointerUp: (_) => _finishTopRefreshGesture(context, task),
+          onPointerCancel: (_) => _resetTopRefreshGesture(),
+          child: Stack(
+            children: [
+              Transform.translate(
+                offset: Offset(0, _topPullOffset),
+                child: NotificationListener<ScrollNotification>(
+                  onNotification: _handleTaskScrollNotification,
+                  child: NestedScrollView(
+                    physics: const ArminScrollPhysics(
+                      parent: AlwaysScrollableScrollPhysics(),
+                    ),
+                    headerSliverBuilder: (context, innerBoxIsScrolled) => [
+                      SliverPadding(
+                        padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
+                        sliver:
+                            SliverToBoxAdapter(child: _TaskHeader(task: task)),
+                      ),
+                      SliverPadding(
+                        padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
+                        sliver: SliverToBoxAdapter(
+                          child: ValueListenableBuilder<RuntimeTaskSnapshot?>(
+                            valueListenable: _progressNotifier,
+                            builder: (context, progressSnapshot, _) {
+                              return _CurrentSituationCard(
+                                task: task,
+                                progressSnapshot: progressSnapshot,
+                              );
+                            },
+                          ),
+                        ),
+                      ),
+                      SliverPadding(
+                        padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
+                        sliver: SliverToBoxAdapter(
+                          child: KeyedSubtree(
+                            key: _attentionAnchorKey,
+                            child: _TaskNeedsPanel(
+                              task: task,
+                              onViewResult: _revealLatestResult,
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SliverToBoxAdapter(child: SizedBox(height: 8)),
+                      SliverPersistentHeader(
+                        pinned: true,
+                        delegate: _TabBarHeaderDelegate(
+                          TabBar(
+                            controller: _tabController,
+                            isScrollable: false,
+                            labelColor: ArminTheme.ink,
+                            indicatorColor: ArminTheme.primary,
+                            tabs: const [
+                              Tab(text: '动态'),
+                              Tab(text: '产出'),
+                              Tab(text: '高级'),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                    body: _CurrentTaskTabPanel(
+                      key: ValueKey<String>(
+                        'task-detail-tab-body-${task.id}-$_visibleTabIndex',
+                      ),
+                      index: _visibleTabIndex,
+                      task: task,
+                      revealLatestTurnToken: _latestTurnRevealToken,
+                      resultVersion: _resultVersion,
+                    ),
                   ),
                 ),
               ),
-            ),
-            const SliverToBoxAdapter(child: SizedBox(height: 8)),
-            SliverPersistentHeader(
-              pinned: true,
-              delegate: _TabBarHeaderDelegate(
-                TabBar(
-                  controller: _tabController,
-                  isScrollable: false,
-                  labelColor: ArminTheme.ink,
-                  indicatorColor: ArminTheme.primary,
-                  tabs: const [
-                    Tab(text: '动态'),
-                    Tab(text: '产出'),
-                    Tab(text: '高级'),
-                  ],
+              if (_topRefreshArmed || _topRefreshRunning)
+                const Positioned(
+                  top: 12,
+                  left: 0,
+                  right: 0,
+                  child: Center(
+                    child: SizedBox(
+                      width: 22,
+                      height: 22,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2.4,
+                        color: ArminTheme.primary,
+                      ),
+                    ),
+                  ),
                 ),
-              ),
-            ),
-          ],
-          body: TabBarView(
-            controller: _tabController,
-            children: [
-              _TimelinePanel(task: task),
-              _ResultPanel(
-                task: task,
-                revealLatestTurnToken: _latestTurnRevealToken,
-              ),
-              _AdvancedDebugPanel(task: task),
             ],
           ),
         ),
       ),
     );
+  }
+
+  double get _topPullOffset =>
+      math.min(_topRefreshDragDistance * 0.35, _maxTopPullOffset);
+
+  void _handleTopRefreshPointerDown(PointerDownEvent event) {
+    final canStart = _taskPageAtTop &&
+        event.localPosition.dy <= _topRefreshGestureHeight &&
+        !_topRefreshRunning;
+    _topRefreshTracking = canStart;
+    _topRefreshDragDistance = 0;
+    _lastTopRefreshPaintDistance = 0;
+    _topRefreshArmed = false;
+  }
+
+  void _handleTopRefreshPointerMove(PointerMoveEvent event) {
+    if (!_topRefreshTracking || event.delta.dy <= 0) {
+      return;
+    }
+    final nextDistance = _topRefreshDragDistance + event.delta.dy;
+    final wasArmed = _topRefreshArmed;
+    final nextArmed = nextDistance >= _refreshTriggerDistance;
+    final movedEnough = (nextDistance - _lastTopRefreshPaintDistance).abs() >=
+        _dragUpdateThreshold;
+    if (!movedEnough && wasArmed == nextArmed) {
+      _topRefreshDragDistance = nextDistance;
+      return;
+    }
+    setState(() {
+      _topRefreshDragDistance = nextDistance;
+      _lastTopRefreshPaintDistance = nextDistance;
+      _topRefreshArmed = nextArmed;
+    });
+  }
+
+  Future<void> _finishTopRefreshGesture(
+    BuildContext context,
+    TaskSession task,
+  ) async {
+    if (!_topRefreshTracking) {
+      return;
+    }
+    final shouldRefresh = _topRefreshDragDistance >= _refreshTriggerDistance;
+    _topRefreshTracking = false;
+    if (!shouldRefresh) {
+      _resetTopRefreshGesture();
+      return;
+    }
+    setState(() {
+      _topRefreshRunning = true;
+      _topRefreshArmed = true;
+      _topRefreshDragDistance = _refreshTriggerDistance;
+      _lastTopRefreshPaintDistance = _refreshTriggerDistance;
+    });
+    try {
+      await AppStateScope.read(context).refreshTaskFromRemote(task);
+    } catch (error) {
+      if (!context.mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('同步远端状态失败：$error')),
+      );
+    }
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _topRefreshRunning = false;
+      _topRefreshArmed = false;
+      _topRefreshDragDistance = 0;
+      _lastTopRefreshPaintDistance = 0;
+    });
+  }
+
+  void _resetTopRefreshGesture() {
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _topRefreshTracking = false;
+      _topRefreshArmed = false;
+      _topRefreshDragDistance = 0;
+      _lastTopRefreshPaintDistance = 0;
+    });
+  }
+
+  bool _handleTaskScrollNotification(ScrollNotification notification) {
+    if (notification.depth == 0 && notification.metrics.axis == Axis.vertical) {
+      _taskPageAtTop = notification.metrics.extentBefore == 0;
+    }
+    return false;
   }
 
   void _maybeRevealAttentionAction(TaskSession task) {
@@ -225,20 +456,12 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
     return bindingName.contains('Test') || bindingName.contains('Automated');
   }
 
-  TaskSession? _findTask(List<TaskSession> tasks) {
-    for (final task in tasks) {
-      if (task.id == widget.taskId) {
-        return task;
-      }
-    }
-    return null;
-  }
-
   void _rerunTask(BuildContext context, TaskSession task) {
     Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (_) => TaskDraftScreen(
           initialTaskText: task.userText,
+          initialTaskTitle: task.title,
           selectedHostId: task.host.id,
           initialProjectPath: task.host.projectPath,
         ),
@@ -319,10 +542,16 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
   }
 
   bool _canDelete(TaskSession task) {
-    return task.status == TaskStatus.completed ||
-        task.status == TaskStatus.failed ||
-        task.status == TaskStatus.userCompleted ||
-        task.status == TaskStatus.userFailed;
+    return switch (task.status) {
+      TaskStatus.completed ||
+      TaskStatus.failed ||
+      TaskStatus.userCompleted ||
+      TaskStatus.userFailed ||
+      TaskStatus.stopped ||
+      TaskStatus.runtimeLost =>
+        true,
+      _ => false,
+    };
   }
 
   bool _canForceStop(TaskSession task) {
@@ -354,6 +583,34 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
   }
 }
 
+class _CurrentTaskTabPanel extends StatelessWidget {
+  const _CurrentTaskTabPanel({
+    super.key,
+    required this.index,
+    required this.task,
+    required this.revealLatestTurnToken,
+    required this.resultVersion,
+  });
+
+  final int index;
+  final TaskSession task;
+  final int revealLatestTurnToken;
+  final int resultVersion;
+
+  @override
+  Widget build(BuildContext context) {
+    return switch (index) {
+      0 => _TimelinePanel(task: task),
+      1 => _ResultPanel(
+          task: task,
+          revealLatestTurnToken: revealLatestTurnToken,
+          resultVersion: resultVersion,
+        ),
+      _ => _AdvancedDebugPanel(task: task),
+    };
+  }
+}
+
 class _TaskHeader extends StatefulWidget {
   const _TaskHeader({required this.task});
 
@@ -366,7 +623,6 @@ class _TaskHeader extends StatefulWidget {
 class _TaskHeaderState extends State<_TaskHeader> {
   final _titleController = TextEditingController();
   final _titleFocusNode = FocusNode();
-  Timer? _timer;
   bool _savingTitle = false;
   bool _editingTitle = false;
 
@@ -374,7 +630,6 @@ class _TaskHeaderState extends State<_TaskHeader> {
   void initState() {
     super.initState();
     _titleController.text = widget.task.title;
-    _syncTimer();
   }
 
   @override
@@ -387,30 +642,13 @@ class _TaskHeaderState extends State<_TaskHeader> {
         _titleFocusNode.unfocus();
       }
     }
-    if (oldWidget.task.status != widget.task.status ||
-        oldWidget.task.completedAt != widget.task.completedAt) {
-      _syncTimer();
-    }
   }
 
   @override
   void dispose() {
-    _timer?.cancel();
     _titleFocusNode.dispose();
     _titleController.dispose();
     super.dispose();
-  }
-
-  void _syncTimer() {
-    _timer?.cancel();
-    _timer = null;
-    if (_isLiveTask(widget.task)) {
-      _timer = Timer.periodic(const Duration(seconds: 1), (_) {
-        if (mounted) {
-          setState(() {});
-        }
-      });
-    }
   }
 
   @override
@@ -441,23 +679,52 @@ class _TaskHeaderState extends State<_TaskHeader> {
                       style: Theme.of(context).textTheme.titleLarge,
                       decoration: InputDecoration(
                         labelText: '标题',
-                        hintText: task.displayTitle,
+                        hintText: '输入任务标题',
+                        hintStyle:
+                            Theme.of(context).textTheme.titleLarge?.copyWith(
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .onSurface
+                                      .withValues(alpha: 0.22),
+                                ),
                         isDense: true,
                         border: const UnderlineInputBorder(),
-                        suffixIcon: IconButton(
-                          tooltip: '保存标题',
-                          icon: _savingTitle
-                              ? const SizedBox(
-                                  width: 18,
-                                  height: 18,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                  ),
-                                )
-                              : const Icon(Icons.save_outlined),
-                          onPressed: _savingTitle
-                              ? null
-                              : () => _saveTitle(context, task),
+                        suffixIcon: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            ValueListenableBuilder<TextEditingValue>(
+                              valueListenable: _titleController,
+                              builder: (context, value, _) {
+                                if (value.text.isEmpty) {
+                                  return const SizedBox.shrink();
+                                }
+                                return IconButton(
+                                  tooltip: '清除标题',
+                                  icon: const Icon(Icons.close),
+                                  onPressed: _savingTitle
+                                      ? null
+                                      : () {
+                                          _titleController.clear();
+                                        },
+                                );
+                              },
+                            ),
+                            IconButton(
+                              tooltip: '保存标题',
+                              icon: _savingTitle
+                                  ? const SizedBox(
+                                      width: 18,
+                                      height: 18,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                      ),
+                                    )
+                                  : const Icon(Icons.save_outlined),
+                              onPressed: _savingTitle
+                                  ? null
+                                  : () => _saveTitle(context, task),
+                            ),
+                          ],
                         ),
                       ),
                       onSubmitted: (_) => _saveTitle(context, task),
@@ -505,10 +772,7 @@ class _TaskHeaderState extends State<_TaskHeader> {
                   color: statusColor,
                   animate: task.status == TaskStatus.running,
                 ),
-                Text(
-                  _statusTimingText(task),
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
+                _TaskTimingText(task: task),
               ],
             ),
           ],
@@ -517,24 +781,12 @@ class _TaskHeaderState extends State<_TaskHeader> {
     );
   }
 
-  bool _isLiveTask(TaskSession task) {
-    return task.completedAt == null &&
-        (task.status == TaskStatus.running ||
-            task.status == TaskStatus.pending ||
-            task.status == TaskStatus.paused ||
-            task.status == TaskStatus.needApproval ||
-            task.status == TaskStatus.turnIdle ||
-            task.status == TaskStatus.needAttention ||
-            task.status == TaskStatus.observerDetached);
-  }
-
   Future<void> _saveTitle(BuildContext context, TaskSession task) async {
     final trimmed = _titleController.text.trim();
     if (trimmed.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('标题不能为空。')),
       );
-      _titleController.text = task.title;
       return;
     }
     if (trimmed == task.title.trim()) {
@@ -571,17 +823,107 @@ class _TaskHeaderState extends State<_TaskHeader> {
   }
 }
 
-class _CurrentSituationCard extends StatelessWidget {
-  const _CurrentSituationCard({required this.task});
+class _TaskTimingText extends StatefulWidget {
+  const _TaskTimingText({required this.task});
 
   final TaskSession task;
 
   @override
+  State<_TaskTimingText> createState() => _TaskTimingTextState();
+}
+
+class _TaskTimingTextState extends State<_TaskTimingText>
+    with WidgetsBindingObserver {
+  Timer? _timer;
+  bool _appActive = true;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _syncTimer();
+  }
+
+  @override
+  void didUpdateWidget(covariant _TaskTimingText oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.task.status != widget.task.status ||
+        oldWidget.task.completedAt != widget.task.completedAt) {
+      _syncTimer();
+    }
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final active = state == AppLifecycleState.resumed;
+    if (_appActive == active) {
+      return;
+    }
+    _appActive = active;
+    _syncTimer();
+  }
+
+  void _syncTimer() {
+    _timer?.cancel();
+    _timer = null;
+    if (_appActive &&
+        TickerMode.valuesOf(context).enabled &&
+        _isLiveTask(widget.task)) {
+      _timer = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (mounted) {
+          setState(() {});
+        }
+      });
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
+    return Text(
+      _statusTimingText(widget.task),
+      style: Theme.of(context).textTheme.bodySmall,
+    );
+  }
+
+  bool _isLiveTask(TaskSession task) {
+    return task.completedAt == null &&
+        (task.status == TaskStatus.running ||
+            task.status == TaskStatus.pending ||
+            task.status == TaskStatus.paused ||
+            task.status == TaskStatus.needApproval ||
+            task.status == TaskStatus.turnIdle ||
+            task.status == TaskStatus.needAttention ||
+            task.status == TaskStatus.observerDetached);
+  }
+}
+
+class _CurrentSituationCard extends StatelessWidget {
+  const _CurrentSituationCard({required this.task, this.progressSnapshot});
+
+  final TaskSession task;
+  final RuntimeTaskSnapshot? progressSnapshot;
+
+  @override
+  Widget build(BuildContext context) {
+    final text = progressSnapshot != null && task.status == TaskStatus.running
+        ? _progressSituationText(task, progressSnapshot!)
+        : _currentSituationText(task);
     return _InfoCard(
       title: '当前状况',
       child: Text(
-        _currentSituationText(task),
+        text,
         maxLines: 3,
         overflow: TextOverflow.ellipsis,
       ),
@@ -589,64 +931,102 @@ class _CurrentSituationCard extends StatelessWidget {
   }
 }
 
-class _TimelinePanel extends StatelessWidget {
+class _TimelinePanel extends StatefulWidget {
   const _TimelinePanel({required this.task});
 
   final TaskSession task;
 
   @override
-  Widget build(BuildContext context) {
-    final readableSummary = const SemanticSnippetBuilder()
+  State<_TimelinePanel> createState() => _TimelinePanelState();
+}
+
+class _TimelinePanelState extends State<_TimelinePanel> {
+  String _cachedReadableSummary = '';
+  String _cachedSignature = '';
+
+  static String _computeSignature(TaskSession task) {
+    return '${task.id}:${task.status.name}:${task.shortSummary}:'
+        '${task.completedAt?.microsecondsSinceEpoch}';
+  }
+
+  static String _computeReadableSummary(TaskSession task) {
+    return const SemanticSnippetBuilder()
         .build(
-          const CodexOutputCleaner().clean(task.shortSummary),
+          const AgentOutputCleaner().clean(task.shortSummary),
           contentType: SnippetContentType.agentSummary,
           maxChars: 220,
         )
         .visibleText;
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _cachedSignature = _computeSignature(widget.task);
+    _cachedReadableSummary = _computeReadableSummary(widget.task);
+  }
+
+  @override
+  void didUpdateWidget(covariant _TimelinePanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final newSignature = _computeSignature(widget.task);
+    if (newSignature != _cachedSignature) {
+      _cachedSignature = newSignature;
+      _cachedReadableSummary = _computeReadableSummary(widget.task);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final readableSummary = _cachedReadableSummary;
     final items = [
       _TimelineItem(
         icon: Icons.add_task_outlined,
-        time: _timeLabel(task.createdAt),
-        title: '任务已创建',
-        subtitle: _cleanSnippet(task.userText, maxChars: 120),
+        time: _timeLabel(widget.task.createdAt),
+        title: '\u4efb\u52a1\u5df2\u521b\u5efa',
+        subtitle: _cleanSnippet(widget.task.userText, maxChars: 120),
       ),
       _TimelineItem(
         icon: Icons.send_outlined,
-        time: _timeLabel(task.updatedAt),
-        title: '工作已开始',
-        subtitle: '从任务简述开始工作',
+        time: _timeLabel(widget.task.updatedAt),
+        title: '\u5de5\u4f5c\u5df2\u5f00\u59cb',
+        subtitle: '\u4ece\u4efb\u52a1\u7b80\u8ff0\u5f00\u59cb\u5de5\u4f5c',
       ),
-      for (final input in _followUpVoiceInputs(task))
+      for (final input in _followUpVoiceInputs(widget.task))
         _TimelineItem(
           icon: Icons.add_comment_outlined,
           time: _timeLabel(input.createdAt),
-          title: '上下文已添加',
+          title: '\u4e0a\u4e0b\u6587\u5df2\u6dfb\u52a0',
           subtitle: _cleanSnippet(input.rawSttText, maxChars: 120),
         ),
       _TimelineItem(
-        icon: _timelineResultIcon(task.status),
-        time:
-            task.completedAt == null ? '--:--' : _timeLabel(task.completedAt!),
-        title: _timelineResultTitle(task.status),
+        icon: _timelineResultIcon(widget.task.status),
+        time: widget.task.completedAt == null
+            ? '--:--'
+            : _timeLabel(widget.task.completedAt!),
+        title: _timelineResultTitle(widget.task.status),
         subtitle: readableSummary.isEmpty
-            ? _currentSituationText(task)
+            ? _currentSituationText(widget.task)
             : readableSummary,
-        color: _timelineResultColor(task.status),
+        color: _timelineResultColor(widget.task.status),
       ),
     ];
     final visibleItems = items.reversed.take(3).toList(growable: false);
 
     return ListView.separated(
+      key:
+          PageStorageKey<String>('task-detail-timeline-list-${widget.task.id}'),
+      physics: _taskDetailTabScrollPhysics,
       padding: const EdgeInsets.all(20),
-      itemCount: visibleItems.length + (task.turns.isEmpty ? 0 : 1),
+      itemCount: visibleItems.length + (widget.task.turns.isEmpty ? 0 : 1),
       separatorBuilder: (_, __) => const SizedBox(height: 12),
       itemBuilder: (context, index) {
         if (index < visibleItems.length) {
           return visibleItems[index];
         }
         return _InfoCard(
-          title: '任务输出历史',
-          child: _TurnSummaryList(task: task),
+          title: '\u4efb\u52a1\u8f93\u51fa\u5386\u53f2',
+          child: _TurnSummaryList(task: widget.task),
         );
       },
     );
@@ -660,27 +1040,56 @@ class _TimelinePanel extends StatelessWidget {
   }
 }
 
-class _TurnSummaryList extends StatelessWidget {
+class _TurnSummaryList extends StatefulWidget {
   const _TurnSummaryList({required this.task});
 
   final TaskSession task;
 
   @override
+  State<_TurnSummaryList> createState() => _TurnSummaryListState();
+}
+
+class _TurnSummaryListState extends State<_TurnSummaryList> {
+  static const _collapsedTurnCount = 3;
+
+  bool _expanded = false;
+
+  @override
+  void didUpdateWidget(covariant _TurnSummaryList oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.task.id != widget.task.id) {
+      _expanded = false;
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     final indexedTurns = [
-      for (var index = 0; index < task.turns.length; index++)
-        _IndexedTurn(index: index, turn: task.turns[index]),
+      for (var index = 0; index < widget.task.turns.length; index++)
+        _IndexedTurn(index: index, turn: widget.task.turns[index]),
     ]..sort((a, b) => b.turn.turnIndex.compareTo(a.turn.turnIndex));
+    final hiddenCount = indexedTurns.length - _collapsedTurnCount;
+    final visibleTurns = _expanded
+        ? indexedTurns
+        : indexedTurns.take(_collapsedTurnCount).toList(growable: false);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        for (final indexedTurn in indexedTurns)
+        for (final indexedTurn in visibleTurns)
           Padding(
             padding: const EdgeInsets.only(bottom: 12),
             child: _TurnSummaryRow(
               turn: indexedTurn.turn,
               turnIndex: indexedTurn.index,
-              turns: task.turns,
+              turns: widget.task.turns,
+            ),
+          ),
+        if (!_expanded && hiddenCount > 0)
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton(
+              onPressed: () => setState(() => _expanded = true),
+              child: Text('查看全部 $hiddenCount 条更早输出'),
             ),
           ),
       ],
@@ -701,9 +1110,7 @@ class _TurnSummaryRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final title = turn.turnIndex == 1
-        ? '初始任务输出'
-        : '上下文更新输出 ${turn.turnIndex}';
+    final title = turn.turnIndex == 1 ? '初始任务输出' : '上下文更新输出 ${turn.turnIndex}';
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -734,9 +1141,7 @@ class _TurnSummaryRow extends StatelessWidget {
           const SizedBox(height: 6),
           _LazyTurnOutputExpansion(
             key: ValueKey(
-              '${turn.id}:${turn.lastOutputAt.microsecondsSinceEpoch}:'
-              '${turn.rawOutput.length}:${turn.cleanedOutput.length}',
-            ),
+                '${turn.id}:${turn.lastOutputAt.microsecondsSinceEpoch}'),
             turns: turns,
             turnIndex: turnIndex,
           ),
@@ -779,20 +1184,31 @@ class _LazyTurnOutputExpansionState extends State<_LazyTurnOutputExpansion> {
   @override
   Widget build(BuildContext context) {
     return ExpansionTile(
+      key: PageStorageKey<String>(
+        'turn-output-expansion-${widget.turns[widget.turnIndex].id}',
+      ),
       tilePadding: EdgeInsets.zero,
       childrenPadding: const EdgeInsets.only(top: 4),
       title: const Text('显示原始输出'),
       onExpansionChanged: (expanded) {
-        setState(() {
-          _expanded = expanded;
-          _fullOutput = expanded ? _buildFullOutput() : null;
+        // Defer setState — ExpansionTile may fire this during initState
+        // (PageStorage restoration) while the framework is still building.
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          setState(() {
+            _expanded = expanded;
+            _fullOutput = expanded ? _buildFullOutput() : null;
+          });
         });
       },
       children: [
         if (_expanded)
           Align(
             alignment: Alignment.centerLeft,
-            child: SelectableText(
+            child: Text(
+              key: PageStorageKey<String>(
+                'turn-output-text-${widget.turns[widget.turnIndex].id}',
+              ),
               _fallback(_fullOutput ?? '', '无'),
               style: Theme.of(context).textTheme.bodySmall,
             ),
@@ -863,10 +1279,12 @@ class _ResultPanel extends StatefulWidget {
   const _ResultPanel({
     required this.task,
     required this.revealLatestTurnToken,
+    required this.resultVersion,
   });
 
   final TaskSession task;
   final int revealLatestTurnToken;
+  final int resultVersion;
 
   @override
   State<_ResultPanel> createState() => _ResultPanelState();
@@ -956,9 +1374,11 @@ class _ResultPanelState extends State<_ResultPanel> {
   @override
   void didUpdateWidget(covariant _ResultPanel oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.task.id != widget.task.id ||
-        oldWidget.task.updatedAt != widget.task.updatedAt ||
+    final deepChanged = oldWidget.resultVersion != widget.resultVersion;
+    if (deepChanged ||
+        oldWidget.task.id != widget.task.id ||
         oldWidget.task.summary != widget.task.summary ||
+        oldWidget.task.shortSummary != widget.task.shortSummary ||
         oldWidget.task.result?.summary != widget.task.result?.summary ||
         _turnsSignature(oldWidget.task) != _turnsSignature(widget.task)) {
       _summariesFuture = _outputSummaries(widget.task);
@@ -973,7 +1393,7 @@ class _ResultPanelState extends State<_ResultPanel> {
     final result = widget.task.result;
     return ListView(
       key: const PageStorageKey<String>('task-detail-result-list'),
-      physics: const AlwaysScrollableScrollPhysics(),
+      physics: _taskDetailTabScrollPhysics,
       padding: const EdgeInsets.fromLTRB(20, 20, 20, 96),
       children: [
         SizedBox(key: _topAnchorKey, height: 0),
@@ -1087,14 +1507,18 @@ class _ResultPanelState extends State<_ResultPanel> {
     if (summaries.isNotEmpty) {
       return summaries;
     }
+    final legacySource = _legacyOutputSource(task);
+    if (legacySource.isEmpty) {
+      return const [];
+    }
     final legacy = await provider.summarize(
       OutputSummaryRequest(
-        cleanedOutput: _legacyOutputSource(task),
+        cleanedOutput: legacySource,
         status: task.status,
         taskTitle: task.title,
         promptInputs: [
           task.userText,
-          ...task.turns.map((turn) => turn.userInput)
+          ...task.turns.map((turn) => turn.userInput),
         ],
         agentCommand: task.host.agentCommand,
       ),
@@ -1154,31 +1578,15 @@ class _ResultPanelState extends State<_ResultPanel> {
 
   String _turnsSignature(TaskSession task) {
     return task.turns
-        .map(
-          (turn) => [
-            turn.turnIndex,
-            turn.status.name,
-            turn.userInput,
-            turn.rawOutput,
-            turn.cleanedOutput,
-            turn.lastOutputAt.microsecondsSinceEpoch,
-          ].join('|'),
-        )
-        .join('\n---\n');
-  }
-
-  String _legacyOutputSource(TaskSession task) {
-    final candidates = [
-      task.result?.summary ?? '',
-      task.summary ?? '',
-      task.shortSummary,
-    ];
-    for (final candidate in candidates) {
-      if (const CodexOutputCleaner().clean(candidate).trim().isNotEmpty) {
-        return candidate;
-      }
-    }
-    return '';
+        .map((t) => [
+              t.turnIndex,
+              t.status.name,
+              t.userInput.hashCode,
+              t.cleanedOutput.hashCode,
+              t.rawOutput.hashCode,
+              t.lastOutputAt.microsecondsSinceEpoch,
+            ].join(':'))
+        .join('|');
   }
 }
 
@@ -1260,7 +1668,10 @@ class _ResultDetailsSectionState extends State<_ResultDetailsSection> {
     return values.isEmpty ||
         values.every((v) {
           final trimmed = v.trim();
-          return trimmed.isEmpty || trimmed == '-' || trimmed == '无' || trimmed == 'None';
+          return trimmed.isEmpty ||
+              trimmed == '-' ||
+              trimmed == '无' ||
+              trimmed == 'None';
         });
   }
 }
@@ -1346,7 +1757,7 @@ class _OutputSegmentCardState extends State<_OutputSegmentCard> {
                 ],
               ),
               const SizedBox(height: 8),
-              SelectableText(displayText),
+              Text(displayText),
               if (needsFolding) ...[
                 const SizedBox(height: 4),
                 Align(
@@ -1432,7 +1843,10 @@ class _DetailList extends StatelessWidget {
 
   static bool _isEmpty(String value) {
     final trimmed = value.trim();
-    return trimmed.isEmpty || trimmed == '-' || trimmed == '无' || trimmed == 'None';
+    return trimmed.isEmpty ||
+        trimmed == '-' ||
+        trimmed == '无' ||
+        trimmed == 'None';
   }
 
   bool get _allEmpty => values.every(_isEmpty);
@@ -1531,7 +1945,8 @@ class _TaskNeedsPanelState extends State<_TaskNeedsPanel> {
             ),
             const SizedBox(height: 12),
           ],
-          if (task.terminalPrompt != null) ...[
+          if (task.terminalPrompt != null &&
+              _pendingApproval(task) == null) ...[
             _TerminalPromptCard(
               prompt: task.terminalPrompt!,
               onSelect: (option) => _selectTerminalPromptOption(
@@ -1742,9 +2157,10 @@ class _TaskNeedsPanelState extends State<_TaskNeedsPanel> {
     TaskSession task,
   ) async {
     final provider = AppStateScope.of(context).outputSummaryProvider;
-    if (task.turns.isNotEmpty) {
-      final latestIndex = task.turns.length - 1;
-      final latestTurn = task.turns.last;
+    final latestResult = _latestResultTurn(task);
+    if (latestResult != null) {
+      final latestIndex = latestResult.index;
+      final latestTurn = latestResult.turn;
       final summary = await provider.summarize(
         OutputSummaryRequest(
           cleanedOutput:
@@ -1764,41 +2180,70 @@ class _TaskNeedsPanelState extends State<_TaskNeedsPanel> {
       }
     }
 
-    final legacySummary = await provider.summarize(
+    final legacySource = _legacyOutputSource(task);
+    if (legacySource.isEmpty) {
+      return '';
+    }
+    final legacy = await provider.summarize(
       OutputSummaryRequest(
-        cleanedOutput: _legacyOutputSource(task),
+        cleanedOutput: legacySource,
         status: task.status,
         taskTitle: task.title,
         promptInputs: [
           task.userText,
-          ...task.turns.map((turn) => turn.userInput)
+          ...task.turns.map((turn) => turn.userInput),
         ],
         agentCommand: task.host.agentCommand,
       ),
     );
-    final legacyText = legacySummary.displaySummary.trim();
+    final legacyText = legacy.displaySummary.trim();
     if (legacyText.isEmpty) {
       return '';
     }
-    final speechText = legacySummary.speechSummary.trim();
+    final speechText = legacy.speechSummary.trim();
     return speechText.isNotEmpty
         ? speechText
         : DeviceVoiceService.cleanSpeechText(legacyText);
   }
 
-  String _legacyOutputSource(TaskSession task) {
-    final candidates = [
-      task.result?.summary ?? '',
-      task.summary ?? '',
-      task.shortSummary,
-    ];
-    for (final candidate in candidates) {
-      if (const CodexOutputCleaner().clean(candidate).trim().isNotEmpty) {
-        return candidate;
+  _IndexedTurn? _latestResultTurn(TaskSession task) {
+    for (var index = task.turns.length - 1; index >= 0; index--) {
+      final turn = task.turns[index];
+      if (_isReadableResultTurn(turn.status)) {
+        return _IndexedTurn(index: index, turn: turn);
       }
     }
-    return '';
+    return null;
   }
+
+  bool _isReadableResultTurn(NativeOutputTurnStatus status) {
+    return switch (status) {
+      NativeOutputTurnStatus.needAttention ||
+      NativeOutputTurnStatus.running =>
+        false,
+      NativeOutputTurnStatus.turnIdle ||
+      NativeOutputTurnStatus.runtimeLost ||
+      NativeOutputTurnStatus.failed ||
+      NativeOutputTurnStatus.completedByUser ||
+      NativeOutputTurnStatus.failedByUser ||
+      NativeOutputTurnStatus.stopped =>
+        true,
+    };
+  }
+}
+
+String _legacyOutputSource(TaskSession task) {
+  final candidates = [
+    task.result?.summary ?? '',
+    task.summary ?? '',
+    task.shortSummary,
+  ];
+  for (final candidate in candidates) {
+    if (const AgentOutputCleaner().clean(candidate).trim().isNotEmpty) {
+      return candidate;
+    }
+  }
+  return '';
 }
 
 class _AddContextEntry extends StatelessWidget {
@@ -2208,6 +2653,8 @@ class _AdvancedDebugPanelState extends State<_AdvancedDebugPanel> {
     final controlState = _runtimeControlStateFromTask(task.status);
     final canResolveRuntimeLost = task.status == TaskStatus.runtimeLost;
     return ListView(
+      key: PageStorageKey<String>('task-detail-advanced-list-${task.id}'),
+      physics: _taskDetailTabScrollPhysics,
       padding: const EdgeInsets.all(20),
       children: [
         _InfoCard(
@@ -2244,20 +2691,16 @@ class _AdvancedDebugPanelState extends State<_AdvancedDebugPanel> {
                         ),
               ),
               _ControlButton(
-                icon: controlState == RuntimeControlState.paused
-                    ? Icons.play_arrow_outlined
-                    : Icons.pause_outlined,
-                label: controlState == RuntimeControlState.paused ? '恢复' : '暂停',
-                tone: ControlTone.neutral,
-                onPressed: controlState == RuntimeControlState.stopped ||
-                        controlState == RuntimeControlState.detached
-                    ? null
-                    : () => _runControlAction(
+                icon: Icons.not_interested_outlined,
+                label: '中断',
+                tone: ControlTone.danger,
+                onPressed: task.turns.isNotEmpty &&
+                        task.turns.last.status == NativeOutputTurnStatus.running
+                    ? () => _runControlAction(
                           context,
-                          () => controlState == RuntimeControlState.paused
-                              ? AppStateScope.read(context).resumeTask(task)
-                              : AppStateScope.read(context).pauseTask(task),
-                        ),
+                          () => AppStateScope.read(context).interruptTask(task),
+                        )
+                    : null,
               ),
               _ControlButton(
                 icon: Icons.stop_rounded,
@@ -2271,27 +2714,23 @@ class _AdvancedDebugPanelState extends State<_AdvancedDebugPanel> {
                         ),
               ),
               _ControlButton(
-                icon: Icons.sensors_outlined,
-                label: '重新监听',
-                tone: ControlTone.neutral,
-                onPressed: controlState == RuntimeControlState.detached
-                    ? () => _runControlAction(
-                          context,
-                          () => AppStateScope.read(context).reconnectTask(task),
-                        )
-                    : null,
-              ),
-              _ControlButton(
-                icon: Icons.link_off_outlined,
-                label: '断开监听',
-                tone: ControlTone.danger,
-                onPressed: controlState == RuntimeControlState.stopped ||
-                        controlState == RuntimeControlState.detached
+                icon: controlState == RuntimeControlState.detached
+                    ? Icons.sensors_outlined
+                    : Icons.link_off_outlined,
+                label: controlState == RuntimeControlState.detached
+                    ? '重新监听'
+                    : '断开监听',
+                tone: controlState == RuntimeControlState.detached
+                    ? ControlTone.neutral
+                    : ControlTone.danger,
+                onPressed: controlState == RuntimeControlState.stopped
                     ? null
                     : () => _runControlAction(
                           context,
-                          () =>
-                              AppStateScope.read(context).disconnectTask(task),
+                          () => controlState == RuntimeControlState.detached
+                              ? AppStateScope.read(context).reconnectTask(task)
+                              : AppStateScope.read(context)
+                                  .disconnectTask(task),
                         ),
               ),
             ],
@@ -2299,97 +2738,15 @@ class _AdvancedDebugPanelState extends State<_AdvancedDebugPanel> {
         ),
         _InfoCard(
           title: '调试命令',
-          child: SelectableText(
+          child: Text(
             'tmux attach -t ${task.host.tmuxSessionName}\n'
             'tmux capture-pane -p -t ${task.host.tmuxSessionName} -S -200',
           ),
         ),
-        _InfoCard(
+        _LazyInfoCard(
           title: '审批历史',
-          child: task.approvalRequests.isEmpty && task.approval == null
-              ? const Text('无')
-              : Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    for (final approval in task.approvalRequests.isEmpty
-                        ? [task.approval!]
-                        : task.approvalRequests)
-                      Padding(
-                        padding: const EdgeInsets.only(bottom: 12),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            SelectableText(
-                              'reason: ${approval.reason}\n'
-                              'command: ${approval.command}\n'
-                              'risk: ${approval.risk}\n'
-                              'status: ${approval.status}',
-                            ),
-                            const SizedBox(height: 10),
-                            if (_isPendingApproval(approval.status))
-                              Wrap(
-                                spacing: 8,
-                                children: [
-                                  FilledButton.icon(
-                                    onPressed: () async {
-                                      var succeeded = false;
-                                      await _runControlAction(
-                                        context,
-                                        () async {
-                                          await AppStateScope.read(context)
-                                              .resolveApproval(task,
-                                                  approved: true);
-                                          succeeded = true;
-                                        },
-                                      );
-                                      if (succeeded && context.mounted) {
-                                        ScaffoldMessenger.of(context)
-                                            .showSnackBar(
-                                          const SnackBar(
-                                            content: Text('已允许，正在继续监听远端任务。'),
-                                          ),
-                                        );
-                                      }
-                                    },
-                                    icon: const Icon(Icons.check_outlined),
-                                    label: const Text('允许'),
-                                  ),
-                                  OutlinedButton.icon(
-                                    onPressed: () async {
-                                      var succeeded = false;
-                                      await _runControlAction(
-                                        context,
-                                        () async {
-                                          await AppStateScope.read(context)
-                                              .resolveApproval(task,
-                                                  approved: false);
-                                          succeeded = true;
-                                        },
-                                      );
-                                      if (succeeded && context.mounted) {
-                                        ScaffoldMessenger.of(context)
-                                            .showSnackBar(
-                                          const SnackBar(
-                                            content: Text('已拒绝，正在继续监听远端任务。'),
-                                          ),
-                                        );
-                                      }
-                                    },
-                                    icon: const Icon(Icons.close_outlined),
-                                    label: const Text('拒绝'),
-                                  ),
-                                ],
-                              )
-                            else
-                              _MiniBadge(
-                                label: _approvalStatusLabel(approval.status),
-                                color: _approvalStatusColor(approval.status),
-                              ),
-                          ],
-                        ),
-                      ),
-                  ],
-                ),
+          collapsedText: _approvalHistoryCollapsedText(task),
+          builder: (context) => _approvalHistoryContent(context, task),
         ),
         _InfoCard(
           title: '指标',
@@ -2410,6 +2767,111 @@ class _AdvancedDebugPanelState extends State<_AdvancedDebugPanel> {
         ),
       ],
     );
+  }
+
+  Widget _approvalHistoryContent(BuildContext context, TaskSession task) {
+    final approvals = task.approvalRequests.isEmpty
+        ? [if (task.approval != null) task.approval!]
+        : task.approvalRequests;
+    if (approvals.isEmpty) {
+      return const Text('无');
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        for (final approval in approvals)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: _approvalHistoryRow(context, task, approval),
+          ),
+      ],
+    );
+  }
+
+  Widget _approvalHistoryRow(
+    BuildContext context,
+    TaskSession task,
+    ApprovalRequest approval,
+  ) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'reason: ${approval.reason}\n'
+          'command: ${approval.command}\n'
+          'risk: ${approval.risk}\n'
+          'status: ${approval.status}',
+        ),
+        const SizedBox(height: 10),
+        if (_isPendingApproval(approval.status))
+          Wrap(
+            spacing: 8,
+            children: [
+              FilledButton.icon(
+                onPressed: () => _resolveHistoricalApproval(
+                  context,
+                  task,
+                  approved: true,
+                ),
+                icon: const Icon(Icons.check_outlined),
+                label: const Text('允许'),
+              ),
+              OutlinedButton.icon(
+                onPressed: () => _resolveHistoricalApproval(
+                  context,
+                  task,
+                  approved: false,
+                ),
+                icon: const Icon(Icons.close_outlined),
+                label: const Text('拒绝'),
+              ),
+            ],
+          )
+        else
+          _MiniBadge(
+            label: _approvalStatusLabel(approval.status),
+            color: _approvalStatusColor(approval.status),
+          ),
+      ],
+    );
+  }
+
+  Future<void> _resolveHistoricalApproval(
+    BuildContext context,
+    TaskSession task, {
+    required bool approved,
+  }) async {
+    var succeeded = false;
+    await _runControlAction(
+      context,
+      () async {
+        await AppStateScope.read(context).resolveApproval(
+          task,
+          approved: approved,
+        );
+        succeeded = true;
+      },
+    );
+    if (succeeded && context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(approved ? '已允许，正在继续监听远端任务。' : '已拒绝，正在继续监听远端任务。'),
+        ),
+      );
+    }
+  }
+
+  String _approvalHistoryCollapsedText(TaskSession task) {
+    final approvals = task.approvalRequests.isEmpty
+        ? [if (task.approval != null) task.approval!]
+        : task.approvalRequests;
+    if (approvals.isEmpty) {
+      return '无审批记录';
+    }
+    if (approvals.length == 1) {
+      return _approvalStatusLabel(approvals.single.status);
+    }
+    return '${approvals.length} 条审批记录，点开查看';
   }
 
   bool _isPendingApproval(String status) {
@@ -2484,6 +2946,67 @@ class _InfoCard extends StatelessWidget {
             const SizedBox(height: 12),
             child,
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _LazyInfoCard extends StatefulWidget {
+  const _LazyInfoCard({
+    required this.title,
+    required this.collapsedText,
+    required this.builder,
+  });
+
+  final String title;
+  final String collapsedText;
+  final WidgetBuilder builder;
+
+  @override
+  State<_LazyInfoCard> createState() => _LazyInfoCardState();
+}
+
+class _LazyInfoCardState extends State<_LazyInfoCard> {
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      margin: const EdgeInsets.only(bottom: 12),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: () => setState(() => _expanded = !_expanded),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      widget.title,
+                      style: Theme.of(context).textTheme.titleSmall,
+                    ),
+                  ),
+                  Icon(
+                    _expanded
+                        ? Icons.expand_less_outlined
+                        : Icons.expand_more_outlined,
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              if (_expanded)
+                Builder(builder: widget.builder)
+              else
+                Text(
+                  widget.collapsedText,
+                  style: Theme.of(context).textTheme.bodyMedium,
+                ),
+            ],
+          ),
         ),
       ),
     );
@@ -2784,7 +3307,7 @@ bool _isAttentionRequired(TaskStatus status) {
 }
 
 String _cleanSnippet(String value, {int maxChars = 160}) {
-  final cleaned = const CodexOutputCleaner().clean(value);
+  final cleaned = const AgentOutputCleaner().clean(value);
   return const SemanticSnippetBuilder()
       .build(
         cleaned,
@@ -2814,34 +3337,27 @@ String _currentSituationText(TaskSession task) {
         ? '任务发现了需要你决定的事项。\n'
             '批准或拒绝以继续。'
         : '此任务正在等待你的决定才能继续。',
-    TaskStatus.failed ||
-    TaskStatus.userFailed =>
-      '此任务遇到了问题，需要查看后才能继续。',
-    TaskStatus.paused =>
-      '此任务已暂停。\n准备好后恢复它。',
-    TaskStatus.running ||
-    TaskStatus.pending =>
-      '此任务仍在工作中。\n当前不需要任何操作。',
-    TaskStatus.completed ||
-    TaskStatus.userCompleted =>
-      '最新结果已就绪，可供查看。',
-    TaskStatus.runtimeLost =>
-      '更新已暂停。\n如需继续观察此任务，请重新连接。',
-    TaskStatus.observerDetached =>
-      '更新已暂停。\n任务可能仍在远端运行。',
-    TaskStatus.stopped =>
-      '此任务已停止。\n查看输出，或根据需要启动新运行。',
+    TaskStatus.failed || TaskStatus.userFailed => '此任务遇到了问题，需要查看后才能继续。',
+    TaskStatus.paused => '此任务已暂停。\n准备好后恢复它。',
+    TaskStatus.running || TaskStatus.pending => '此任务仍在工作中。\n当前不需要任何操作。',
+    TaskStatus.completed || TaskStatus.userCompleted => '最新结果已就绪，可供查看。',
+    TaskStatus.runtimeLost => '更新已暂停。\n如需继续观察此任务，请重新连接。',
+    TaskStatus.observerDetached => '更新已暂停。\n任务可能仍在远端运行。',
+    TaskStatus.stopped => '此任务已停止。\n查看输出，或根据需要启动新运行。',
     TaskStatus.draft => '此任务尚未启动。',
   };
 }
 
 bool _hasMeaningfulOutput(TaskSession task) {
   if (task.shortSummary.isNotEmpty &&
-      const CodexOutputCleaner().clean(task.shortSummary).trim().isNotEmpty) {
+      const AgentOutputCleaner().clean(task.shortSummary).trim().isNotEmpty) {
     return true;
   }
   if (task.result?.summary != null &&
-      const CodexOutputCleaner().clean(task.result!.summary).trim().isNotEmpty) {
+      const AgentOutputCleaner()
+          .clean(task.result!.summary)
+          .trim()
+          .isNotEmpty) {
     return true;
   }
   if (task.turns.isNotEmpty) {
@@ -2850,12 +3366,20 @@ bool _hasMeaningfulOutput(TaskSession task) {
   return false;
 }
 
+String _progressSituationText(TaskSession task, RuntimeTaskSnapshot snapshot) {
+  final action = snapshot.action.isNotEmpty ? '动作: ${snapshot.action}。' : '';
+  final progress = snapshot.progress > 0 ? '进度 ${snapshot.progress}%' : '';
+  final parts = [action, progress].where((p) => p.isNotEmpty);
+  if (parts.isEmpty) return _currentSituationText(task);
+  return '此任务仍在工作中。${parts.join('，')}。'
+      '\n当前不需要任何操作。';
+}
+
 _NextAction _nextActionForTask(TaskStatus status) {
   return switch (status) {
     TaskStatus.needApproval => _NextAction(
         title: '需要你决定',
-        description:
-            '选择此任务是否可以继续执行提议的操作。',
+        description: '选择此任务是否可以继续执行提议的操作。',
         icon: Icons.rule_outlined,
         color: Colors.orange.shade700,
       ),
@@ -2867,22 +3391,19 @@ _NextAction _nextActionForTask(TaskStatus status) {
       ),
     TaskStatus.running || TaskStatus.pending => const _NextAction(
         title: '当前无需操作',
-        description:
-            '任务仍在推进。你可以让它继续运行或暂停它。',
+        description: '任务仍在推进。你可以让它继续运行或暂停它。',
         icon: Icons.play_circle_outline,
         color: ArminTheme.primary,
       ),
     TaskStatus.completed || TaskStatus.userCompleted => _NextAction(
         title: '可查看',
-        description:
-            '检查交付成果，然后接受或继续添加上下文。',
+        description: '检查交付成果，然后接受或继续添加上下文。',
         icon: Icons.fact_check_outlined,
         color: Colors.green.shade700,
       ),
     TaskStatus.failed || TaskStatus.userFailed => _NextAction(
         title: '需要查看',
-        description:
-            '检查发生的情况，并决定是否从此处继续。',
+        description: '检查发生的情况，并决定是否从此处继续。',
         icon: Icons.error_outline,
         color: Colors.red.shade700,
       ),
@@ -2894,15 +3415,13 @@ _NextAction _nextActionForTask(TaskStatus status) {
       ),
     TaskStatus.observerDetached => _NextAction(
         title: '需要时重新连接',
-        description:
-            '更新已暂停。继续前请重新连接或查看详情。',
+        description: '更新已暂停。继续前请重新连接或查看详情。',
         icon: Icons.wifi_off_outlined,
         color: Colors.blueGrey.shade700,
       ),
     TaskStatus.runtimeLost => _NextAction(
         title: '连接已暂停',
-        description:
-            '远端会话不再可用。准备好后处理任务状态。',
+        description: '远端会话不再可用。准备好后处理任务状态。',
         icon: Icons.task_alt_outlined,
         color: Colors.blueGrey.shade700,
       ),
@@ -2914,8 +3433,7 @@ _NextAction _nextActionForTask(TaskStatus status) {
       ),
     TaskStatus.stopped => _NextAction(
         title: '查看详情',
-        description:
-            '此任务已停止。查看历史记录或启动新运行。',
+        description: '此任务已停止。查看历史记录或启动新运行。',
         icon: Icons.stop_circle_outlined,
         color: Colors.grey.shade700,
       ),

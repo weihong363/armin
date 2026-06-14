@@ -1,11 +1,16 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/scheduler.dart';
 
 import '../../features/agent/services/agent_session_service.dart';
 import '../../features/agent/services/agent_runtime_config.dart';
+import '../../features/agent/parsers/approval_parser.dart';
+import '../../features/agent/parsers/approval_request.dart';
 import '../../features/agent/parsers/task_result.dart';
 import '../../features/agent/parsers/terminal_prompt.dart';
+import '../../features/agent/parsers/terminal_prompt_parser.dart';
+import '../../features/agent/services/agent_output_cleaner.dart';
 import '../../features/agent/services/ssh_agent_session_service.dart';
 import '../../features/hosts/models/host_config.dart';
 import '../../features/projects/models/project_path_config.dart';
@@ -18,6 +23,13 @@ import '../../features/tasks/models/voice_input.dart';
 import '../../features/tasks/services/output_summary_provider.dart';
 import '../../features/tasks/services/secret_redactor.dart';
 import '../../features/tasks/services/turn_output_slicer.dart';
+import '../../features/runtime/models/runtime_diagnostics.dart';
+import '../../features/runtime/models/runtime_task_snapshot.dart';
+import '../../features/runtime/models/work_state.dart';
+import '../../features/runtime/services/bridge_runtime.dart';
+import '../../features/runtime/services/runtime_event_bus.dart';
+import '../../features/runtime/services/runtime_task_store.dart';
+import '../../features/runtime/services/sqlite_runtime_persistence_store.dart';
 import '../../features/voice/services/device_voice_service.dart';
 import '../../features/voice/services/task_speech_policy.dart';
 import '../../features/voice/services/voice_service.dart';
@@ -27,6 +39,7 @@ import '../storage/task_history_store.dart';
 
 class ArminAppState extends ChangeNotifier {
   static const _turnOutputSlicer = TurnOutputSlicer();
+  static const _runtimeOutputNotifyInterval = Duration(seconds: 1);
 
   ArminAppState({
     required TaskHistoryStore store,
@@ -35,10 +48,24 @@ class ArminAppState extends ChangeNotifier {
     TaskSpeechPolicy? taskSpeechPolicy,
     OutputSummaryProvider? outputSummaryProvider,
     this.speechSettings = const TaskSpeechSettings(),
+    RuntimeEventBus? runtimeEventBus,
+    BridgeRuntime? bridgeRuntime,
+    bool enableRemoteReconcile = false,
+    Duration remoteReconcileInterval = const Duration(seconds: 10),
   })  : _store = store,
         _taskSpeechPolicy = taskSpeechPolicy ?? const TaskSpeechPolicy(),
         outputSummaryProvider =
-            outputSummaryProvider ?? SelectableOutputSummaryProvider() {
+            outputSummaryProvider ?? SelectableOutputSummaryProvider(),
+        _enableRemoteReconcile = enableRemoteReconcile,
+        _remoteReconcileInterval = remoteReconcileInterval,
+        // ignore: unnecessary_this
+        this.runtimeEventBus = runtimeEventBus ?? RuntimeEventBus() {
+    // ignore: unnecessary_this
+    this.bridgeRuntime = bridgeRuntime ??
+        BridgeRuntime(
+          taskStore: InMemoryRuntimeTaskStore(),
+          eventBus: this.runtimeEventBus,
+        );
     _configureOutputSummaryProvider();
   }
 
@@ -53,7 +80,14 @@ class ArminAppState extends ChangeNotifier {
         _taskSpeechPolicy = const TaskSpeechPolicy(),
         outputSummaryProvider =
             outputSummaryProvider ?? SelectableOutputSummaryProvider(),
-        speechSettings = const TaskSpeechSettings() {
+        speechSettings = const TaskSpeechSettings(),
+        _enableRemoteReconcile = true,
+        _remoteReconcileInterval = const Duration(seconds: 10),
+        runtimeEventBus = RuntimeEventBus() {
+    bridgeRuntime = BridgeRuntime(
+      taskStore: SQLiteRuntimePersistenceStore(),
+      eventBus: runtimeEventBus,
+    );
     _configureOutputSummaryProvider();
   }
 
@@ -64,41 +98,124 @@ class ArminAppState extends ChangeNotifier {
   final OutputSummaryProvider outputSummaryProvider;
   final SecretRedactor _secretRedactor = const SecretRedactor();
   TaskSpeechSettings speechSettings;
+  final RuntimeEventBus runtimeEventBus;
+  late final BridgeRuntime bridgeRuntime;
+  final Set<String> _bridgedTaskIds = {};
+  final Map<String, Future<void>> _bridgeCreateFutures = {};
+  final Map<String, ValueNotifier<TaskSession?>> _taskSnapshots = {};
+  final ValueNotifier<HomeTaskSnapshot> homeSnapshot =
+      ValueNotifier(HomeTaskSnapshot.empty());
+  String _homeSnapshotSignature = '';
 
   List<HostConfig> hosts = const [];
   List<TaskSession> tasks = const [];
   List<ProjectPathConfig> projectPaths = const [];
   bool ready = false;
+
+  /// Maximum concurrent active (non-terminal) tasks.
+  int maxActiveTasks = _defaultMaxActiveTasks;
+  static const int _defaultMaxActiveTasks = 5;
+
+  /// Active tasks: any task that is NOT in a terminal state.
+  /// Terminal states: completed, userCompleted, failed, userFailed, stopped.
+  List<TaskSession> get activeTasks {
+    return tasks.where((t) => !_isTerminalTask(t)).toList(growable: false);
+  }
+
+  static bool _isTerminalTask(TaskSession task) {
+    return switch (task.status) {
+      TaskStatus.completed ||
+      TaskStatus.userCompleted ||
+      TaskStatus.failed ||
+      TaskStatus.userFailed ||
+      TaskStatus.stopped ||
+      TaskStatus.runtimeLost =>
+        true,
+      _ => false,
+    };
+  }
+
+  String _taskBlockingLabel(TaskSession task) {
+    final title = task.displayTitle;
+    return title.length > 20 ? '${title.substring(0, 20)}...' : title;
+  }
+
   final Map<String, StreamSubscription<AgentExecutionUpdate>>
       _runningExecutions = {};
   final Map<String, Timer> _autoDetachTimers = {};
   final Map<String, String> _lastSpokenHashes = {};
+  final Map<String, StringBuffer> _progressOutputMap = {};
+  final Map<String, DateTime> _lastRuntimeOutputNotifiedAt = {};
+  final Map<String, int> _lastRuntimeOutputHashes = {};
+  Future<void> _speechQueue = Future<void>.value();
+  final bool _enableRemoteReconcile;
+  final Duration _remoteReconcileInterval;
+  bool _notifyScheduled = false;
+
+  // ---- reconcile backoff: track consecutive sessionMissing per task ----
+  final Map<String, int> _reconcileMissStreak = {};
+  static const int _kReconcileMaxMissStreak = 6; // ~1 min at 10s interval
 
   Future<void> load() async {
+    await bridgeRuntime.restoreDurableState();
     hosts = await _store.loadHosts();
     tasks = await _store.loadTasks();
+    // Dedup: ensure no duplicate task ids leaked from storage.
+    if (tasks.length > 1) {
+      final seen = <String>{};
+      tasks = tasks.where((t) => seen.add(t.id)).toList();
+    }
     projectPaths = await _store.loadProjectPaths();
     ready = true;
+    // Only bridge active tasks — archived tasks don't need runtime tracking.
+    for (final task in activeTasks) {
+      await _bridgeEnsureTaskCreated(task);
+    }
+    _syncTaskSnapshots();
+    _updateHomeSnapshot(force: true);
+    _startRemoteReconcileLoop();
     notifyListeners();
   }
 
+  @override
+  void dispose() {
+    homeSnapshot.dispose();
+    for (final snapshot in _taskSnapshots.values) {
+      snapshot.dispose();
+    }
+    bridgeRuntime.stopReconcileLoop();
+    for (final timer in _autoDetachTimers.values) {
+      timer.cancel();
+    }
+    for (final subscription in _runningExecutions.values) {
+      unawaited(subscription.cancel());
+    }
+    unawaited(runtimeEventBus.dispose());
+    super.dispose();
+  }
+
   Future<void> saveHost(HostConfig host) async {
+    final blockingIds = activeTasks
+        .where((t) => t.host.id == host.id)
+        .map((t) => _taskBlockingLabel(t))
+        .toList();
+    if (blockingIds.isNotEmpty) {
+      throw HostEditBlockedException(blockingIds);
+    }
     await _store.saveHost(host);
     hosts = await _store.loadHosts();
     notifyListeners();
   }
 
   Future<void> deleteHost(String hostId) async {
-    // Load current hosts, remove the one to delete, and save the rest
-    final currentHosts = await _store.loadHosts();
-    final remainingHosts = currentHosts.where((h) => h.id != hostId).toList();
-
-    // Clear and re-save all remaining hosts
-    for (final host in remainingHosts) {
-      await _store.saveHost(host);
+    final blockingIds = activeTasks
+        .where((t) => t.host.id == hostId)
+        .map((t) => _taskBlockingLabel(t))
+        .toList();
+    if (blockingIds.isNotEmpty) {
+      throw HostEditBlockedException(blockingIds);
     }
-
-    // Reload to ensure consistency
+    await _store.deleteHost(hostId);
     hosts = await _store.loadHosts();
     notifyListeners();
   }
@@ -121,14 +238,58 @@ class ArminAppState extends ChangeNotifier {
   Future<void> saveTask(TaskSession task) async {
     await _store.saveTask(task);
     final updatedTasks = [...tasks];
-    final index = updatedTasks.indexWhere((item) => item.id == task.id);
-    if (index >= 0) {
-      updatedTasks[index] = task;
-    } else {
-      updatedTasks.insert(0, task);
-    }
+    // Dedup: remove ALL existing entries with this id before inserting.
+    updatedTasks.removeWhere((item) => item.id == task.id);
+    updatedTasks.insert(0, task);
     tasks = updatedTasks;
+    // Reset reconcile backoff when task status changes.
+    _reconcileMissStreak.remove(task.id);
+    unawaited(_bridgeEnsureTaskCreated(task));
+    _updateTaskSnapshot(task);
+    _updateHomeSnapshot();
+    _scheduleNotify();
+  }
+
+  Future<void> refreshTasks() async {
+    tasks = await _store.loadTasks();
+    for (final task in activeTasks) {
+      await _bridgeEnsureTaskCreated(task);
+    }
+    _syncTaskSnapshots();
+    _updateHomeSnapshot(force: true);
     notifyListeners();
+  }
+
+  Future<void> refreshTaskFromRemote(
+    TaskSession task, {
+    bool markIdleIfNoAttention = false,
+  }) async {
+    final latest = _latestTask(task.id) ?? task;
+    await _bridgeEnsureTaskCreated(latest);
+    if (!_canRefreshRemoteState(latest)) {
+      return;
+    }
+    final hadActiveObserver = _runningExecutions.containsKey(latest.id);
+    final snapshot = await _captureLogBestEffort(await _controlRequest(latest));
+    final trimmed = snapshot.trim();
+    if (trimmed.isNotEmpty) {
+      await _applyCapturedRemoteSnapshot(
+        latest,
+        snapshot,
+        markIdleIfNoAttention: markIdleIfNoAttention,
+      );
+    }
+    // Only sync if something changed (remote output captured).
+    // Skip for sessionMissing probes to avoid wasted hash/signature work.
+    final changed = trimmed.isNotEmpty || hadActiveObserver;
+    if (changed) {
+      _syncTaskSnapshots(taskId: task.id);
+      _updateHomeSnapshot();
+    }
+    final synced = _latestTask(task.id) ?? latest;
+    if (hadActiveObserver) {
+      startTaskExecution(synced, _attachRequest(synced));
+    }
   }
 
   Future<void> updateTaskTitle(TaskSession task, String title) async {
@@ -187,13 +348,22 @@ class ArminAppState extends ChangeNotifier {
     return true;
   }
 
+  ValueListenable<TaskSession?> taskListenable(String taskId) {
+    return _taskSnapshots.putIfAbsent(
+      taskId,
+      () => ValueNotifier<TaskSession?>(_latestTask(taskId)),
+    );
+  }
+
   Future<void> deleteTask(String taskId) async {
     final task = _latestTask(taskId);
     if (task != null && !_canDeleteTask(task.status)) {
-      throw StateError('Only completed or failed tasks can be deleted.');
+      throw StateError('Only terminal tasks can be deleted.');
     }
     await _store.deleteTask(taskId);
     tasks = await _store.loadTasks();
+    _updateTaskSnapshotById(taskId);
+    _updateHomeSnapshot(force: true);
     notifyListeners();
   }
 
@@ -210,15 +380,43 @@ class ArminAppState extends ChangeNotifier {
                 : task.shortSummary,
       ),
     );
+    _bridgeSyncTerminalStatus(task.id, status, now, task.shortSummary);
   }
 
   Future<void> saveProjectPath(ProjectPathConfig projectPath) async {
+    final existingPaths = projectPaths
+        .where((p) => p.id == projectPath.id)
+        .map((p) => normalizeRemoteProjectPath(p.path))
+        .toSet()
+      ..add(normalizeRemoteProjectPath(projectPath.path));
+    final blockingIds = activeTasks
+        .where((t) => existingPaths
+            .contains(normalizeRemoteProjectPath(t.host.projectPath)))
+        .map((t) => _taskBlockingLabel(t))
+        .toList();
+    if (blockingIds.isNotEmpty) {
+      throw ProjectPathEditBlockedException(blockingIds);
+    }
     await _store.saveProjectPath(projectPath);
     projectPaths = await _store.loadProjectPaths();
     notifyListeners();
   }
 
   Future<void> deleteProjectPath(String projectPathId) async {
+    final pathToDelete = projectPaths
+        .where((p) => p.id == projectPathId)
+        .map((p) => normalizeRemoteProjectPath(p.path))
+        .firstOrNull;
+    if (pathToDelete != null) {
+      final blockingIds = activeTasks
+          .where((t) =>
+              normalizeRemoteProjectPath(t.host.projectPath) == pathToDelete)
+          .map((t) => _taskBlockingLabel(t))
+          .toList();
+      if (blockingIds.isNotEmpty) {
+        throw ProjectPathEditBlockedException(blockingIds);
+      }
+    }
     await _store.deleteProjectPath(projectPathId);
     projectPaths = await _store.loadProjectPaths();
     notifyListeners();
@@ -263,9 +461,9 @@ class ArminAppState extends ChangeNotifier {
 
   Future<void> selectTerminalOption(
       TaskSession task, TerminalPromptOption option,
-      {String customResponse = ''}) async {
+      {String customResponse = '', bool? approvalDecision}) async {
     final latest = _latestTask(task.id) ?? task;
-    final prompt = latest.terminalPrompt;
+    final prompt = latest.terminalPrompt ?? task.terminalPrompt;
     if (prompt == null ||
         !prompt.options.any((candidate) => candidate.key == option.key)) {
       throw StateError('Terminal prompt option is no longer available.');
@@ -280,8 +478,17 @@ class ArminAppState extends ChangeNotifier {
         await _controlRequest(latest, instruction: trimmedResponse),
       );
     }
+    final taskForSave = approvalDecision == null
+        ? latest.copyWith(
+            clearApproval: true,
+            clearTerminalPrompt: true,
+          )
+        : _taskWithApprovalDecision(
+            latest,
+            approved: approvalDecision,
+          );
     await _saveControlledTask(
-      latest.copyWith(clearTerminalPrompt: true),
+      taskForSave,
       status: TaskStatus.running,
       logMessage: 'Terminal option selected by user: ${option.key}.',
       eventType: 'terminal_prompt_resolved',
@@ -307,6 +514,8 @@ class ArminAppState extends ChangeNotifier {
     );
     final synced = await _syncRemoteSnapshot(_latestTask(task.id) ?? latest);
     final attached = _latestTask(task.id) ?? synced;
+    bridgeRuntime.notifyObserverAttached(task.id);
+    bridgeRuntime.notifyConnectionRestored(task.id);
     startTaskExecution(attached, _attachRequest(attached));
   }
 
@@ -337,7 +546,20 @@ class ArminAppState extends ChangeNotifier {
       logMessage: 'Task resumed by user.',
     );
     final resumed = _latestTask(task.id) ?? latest;
+    bridgeRuntime.notifyObserverAttached(task.id);
+    bridgeRuntime.notifyConnectionRestored(task.id);
     startTaskExecution(resumed, _attachRequest(resumed));
+  }
+
+  Future<void> interruptTask(TaskSession task) async {
+    await agentSessionService.interrupt(await _controlRequest(task));
+    final latest = _latestTask(task.id) ?? task;
+    await _saveControlledTask(
+      latest,
+      status: latest.status,
+      logMessage: 'User sent interrupt signal (Ctrl+C) to remote agent.',
+      eventType: 'user_interrupt',
+    );
   }
 
   Future<void> stopTask(
@@ -393,19 +615,169 @@ class ArminAppState extends ChangeNotifier {
     return synced;
   }
 
+  bool _canRefreshRemoteState(TaskSession task) {
+    return switch (task.status) {
+      TaskStatus.running ||
+      TaskStatus.needApproval ||
+      TaskStatus.needAttention ||
+      TaskStatus.turnIdle ||
+      TaskStatus.observerDetached ||
+      TaskStatus.runtimeLost =>
+        true,
+      TaskStatus.draft ||
+      TaskStatus.pending ||
+      TaskStatus.paused ||
+      TaskStatus.stopped ||
+      TaskStatus.completed ||
+      TaskStatus.userCompleted ||
+      TaskStatus.failed ||
+      TaskStatus.userFailed =>
+        false,
+    };
+  }
+
+  void _startRemoteReconcileLoop() {
+    if (!_enableRemoteReconcile ||
+        agentSessionService is! RemoteTaskProbeService) {
+      return;
+    }
+    bridgeRuntime.startReconcileLoop(
+      loadTargets: _loadRuntimeReconcileTargets,
+      probe: _probeRuntimeTarget,
+      onDecision: _applyRuntimeReconcileDecision,
+      interval: _remoteReconcileInterval,
+    );
+  }
+
+  Future<List<RuntimeReconcileTarget>> _loadRuntimeReconcileTargets() async {
+    if (!ready) {
+      return const [];
+    }
+    final candidates = activeTasks;
+    final result = candidates
+        .where((t) =>
+            _canAutoReconcileRemoteState(t) &&
+            (_reconcileMissStreak[t.id] ?? 0) < _kReconcileMaxMissStreak)
+        .map(
+          (task) => RuntimeReconcileTarget(
+            taskId: task.id,
+            status: RuntimeTaskSnapshot.fromTaskStatus(
+              taskId: task.id,
+              status: task.status,
+              createdAt: task.createdAt,
+              updatedAt: task.updatedAt,
+            ).status,
+          ),
+        )
+        .toList(growable: false);
+    return result;
+  }
+
+  Future<RuntimeRemoteProbe> _probeRuntimeTarget(
+    RuntimeReconcileTarget target,
+  ) async {
+    final probeService = agentSessionService;
+    if (probeService is! RemoteTaskProbeService) {
+      return const RuntimeRemoteProbe(sessionExists: false);
+    }
+    final remoteProbeService = probeService as RemoteTaskProbeService;
+    final task = _latestTask(target.taskId);
+    if (task == null || !_canAutoReconcileRemoteState(task)) {
+      return const RuntimeRemoteProbe(sessionExists: false);
+    }
+    final probe = await remoteProbeService.probeRemoteState(
+      await _controlRequest(task),
+    );
+    return RuntimeRemoteProbe(
+      sessionExists: probe.sessionExists,
+      snapshot: probe.snapshot,
+      needsAttention: probe.needsAttention,
+      hasExitedMarker: probe.hasExitedMarker,
+    );
+  }
+
+  Future<void> _applyRuntimeReconcileDecision(
+    RuntimeReconcileDecision decision,
+  ) async {
+    if (decision.action == RuntimeReconcileAction.none) {
+      return;
+    }
+    final task = _latestTask(decision.taskId);
+    if (task == null || !_canRefreshRemoteState(task)) {
+      _reconcileMissStreak.remove(decision.taskId);
+      return;
+    }
+    // Track consecutive sessionMissing for backoff.
+    if (decision.reason == RuntimeReconcileReason.sessionMissing) {
+      _reconcileMissStreak[decision.taskId] =
+          (_reconcileMissStreak[decision.taskId] ?? 0) + 1;
+    } else {
+      _reconcileMissStreak.remove(decision.taskId);
+    }
+    await refreshTaskFromRemote(
+      task,
+      markIdleIfNoAttention: decision.markIdleIfNoAttention,
+    );
+  }
+
+  bool _canAutoReconcileRemoteState(TaskSession task) {
+    return switch (task.status) {
+      TaskStatus.running ||
+      TaskStatus.observerDetached ||
+      TaskStatus.runtimeLost =>
+        true,
+      TaskStatus.draft ||
+      TaskStatus.pending ||
+      TaskStatus.paused ||
+      TaskStatus.stopped ||
+      TaskStatus.completed ||
+      TaskStatus.userCompleted ||
+      TaskStatus.failed ||
+      TaskStatus.userFailed ||
+      TaskStatus.needApproval ||
+      TaskStatus.needAttention ||
+      TaskStatus.turnIdle =>
+        false,
+    };
+  }
+
+  Future<void> _applyCapturedRemoteSnapshot(
+    TaskSession task,
+    String snapshot, {
+    bool markIdleIfNoAttention = false,
+  }) async {
+    final approval = const ApprovalParser().parse(snapshot);
+    final terminalPrompt = const TerminalPromptParser().parse(snapshot);
+    final hasAttention = approval != null || terminalPrompt != null;
+    final shouldMarkIdle = markIdleIfNoAttention && !hasAttention;
+    final update = AgentExecutionUpdate(
+      rawOutput: snapshot,
+      cleanedOutput: const AgentOutputCleaner().clean(snapshot),
+      needsAttention: hasAttention,
+      approval: approval,
+      terminalPrompt: terminalPrompt,
+      turnIdle: shouldMarkIdle,
+      done: shouldMarkIdle,
+    );
+    final updated =
+        _taskWithExecutionUpdate(task, update, reopenResolvedApproval: true);
+    if (_taskSnapshotSignature(task) == _taskSnapshotSignature(updated)) {
+      return;
+    }
+    await saveTask(updated);
+  }
+
+  String _taskSnapshotSignature(TaskSession task) {
+    return '${task.status.name}|${task.shortSummary}|'
+        '${task.approval?.reason}|${task.terminalPrompt?.question}|'
+        '${_turnsSignature(task)}';
+  }
+
   String _turnsSignature(TaskSession task) {
     return task.turns
-        .map(
-          (turn) => [
-            turn.turnIndex,
-            turn.status.name,
-            turn.userInput,
-            turn.rawOutput,
-            turn.cleanedOutput,
-            turn.lastOutputAt.microsecondsSinceEpoch,
-          ].join('|'),
-        )
-        .join('\n---\n');
+        .map((t) => '${t.turnIndex}:${t.status.name}:${t.rawOutput.hashCode}:'
+            '${t.lastOutputAt.microsecondsSinceEpoch}')
+        .join('|');
   }
 
   Future<TaskSession> _captureFinalLog(
@@ -493,6 +865,8 @@ class ArminAppState extends ChangeNotifier {
       unawaited(previous.cancel());
     }
 
+    _bridgeNotifyExecutionStarted(initialTask);
+
     var task = initialTask;
     var pendingUpdates = Future<void>.value();
     late final StreamSubscription<AgentExecutionUpdate> subscription;
@@ -509,9 +883,24 @@ class ArminAppState extends ChangeNotifier {
             return;
           }
           final previousTask = latest;
-          task = _taskWithExecutionUpdate(previousTask, update);
-          await saveTask(task);
-          await _speakTaskUpdate(previousTask, task);
+          final hasStatusChange =
+              _updateWouldChangeStatus(previousTask, update);
+          if (hasStatusChange) {
+            // State transition: flush accumulated output, full persistence.
+            _progressOutputMap.remove(previousTask.id);
+            task = _taskWithExecutionUpdate(previousTask, update);
+            await saveTask(task);
+            _bridgeSyncStreamStatus(task, previousTask);
+          } else {
+            // Pure progress: accumulate output, skip JSON persistence.
+            _progressOutputMap
+                .putIfAbsent(previousTask.id, () => StringBuffer())
+                .write(update.rawOutput);
+            task = _taskWithLightProgress(previousTask, update);
+            _updateInMemory(task);
+          }
+          _bridgeNotifyExecutionUpdate(task, update.rawOutput);
+          _queueTaskSpeech(previousTask, task);
         });
       },
       onError: (Object error) async {
@@ -526,13 +915,12 @@ class ArminAppState extends ChangeNotifier {
           return;
         }
         if (_isRecoverableObserverError(error)) {
-          final detachedTask = await _saveObserverDisconnected(latest, error);
-          await _speakTaskUpdate(latest, detachedTask);
+          await _saveObserverDisconnected(latest, error);
           return;
         }
         final failedTask = await _saveFailedExecution(latest, error);
         final finalTask = await _captureAndSaveFinalLog(failedTask);
-        await _speakTaskUpdate(latest, finalTask);
+        _queueTaskSpeech(latest, finalTask);
         await _cleanupTaskSession(finalTask);
       },
       onDone: () async {
@@ -575,8 +963,8 @@ class ArminAppState extends ChangeNotifier {
   }
 
   Future<void> _autoDetachTask(TaskSession task) async {
-    await disconnectTask(task, markFailed: false, recordDetached: true,
-        reason: 'auto_detach');
+    await disconnectTask(task,
+        markFailed: false, recordDetached: true, reason: 'auto_detach');
   }
 
   Future<void> disconnectTask(
@@ -604,8 +992,10 @@ class ArminAppState extends ChangeNotifier {
         shortSummary: isAutoDetach
             ? '已自动断开监听以节省手机性能，远端任务仍在运行。可随时重新监听查看进度。'
             : '已断开手机监听，远端 Agent 可能仍在运行',
-        eventType: isAutoDetach ? 'observer_auto_detached' : 'observer_detached',
+        eventType:
+            isAutoDetach ? 'observer_auto_detached' : 'observer_detached',
       );
+      bridgeRuntime.notifyObserverDetached(task.id);
       return;
     }
     await _saveControlledTask(
@@ -653,6 +1043,32 @@ class ArminAppState extends ChangeNotifier {
 
   Future<void> resolveApproval(TaskSession task,
       {required bool approved}) async {
+    // Notify bridge that we are resolving approval.
+    bridgeRuntime.notifyApprovalResolving(task.id);
+
+    // When the approval card is backed by a native terminal prompt (e.g.
+    // Codex CLI "Allow execution of ..."), route to the terminal option
+    // selection flow so the agent receives the expected numbered key.
+    final terminalPrompt = task.terminalPrompt;
+    if (terminalPrompt != null && terminalPrompt.options.isNotEmpty) {
+      final optionKey = _terminalOptionKeyForDecision(terminalPrompt, approved);
+      final option = terminalPrompt.options.firstWhere(
+          (opt) => opt.key == optionKey,
+          orElse: () => terminalPrompt.options.first);
+      try {
+        await selectTerminalOption(
+          task,
+          option,
+          approvalDecision: approved,
+        );
+      } catch (_) {
+        bridgeRuntime.notifyApprovalFailed(task.id);
+        rethrow;
+      }
+      // Native terminal approval resolved.
+      bridgeRuntime.notifyApprovalResolved(task.id);
+      return;
+    }
     final decision = approved ? 'approved' : 'rejected';
     await sendFollowUp(
       task,
@@ -665,6 +1081,39 @@ Apply this decision to the pending approval request.
     await _saveApprovalDecision(task, approved: approved);
     final updatedTask = _latestTask(task.id) ?? task;
     startTaskExecution(updatedTask, _attachRequest(updatedTask));
+    if (approved) {
+      bridgeRuntime.notifyApprovalResolved(task.id);
+    } else {
+      bridgeRuntime.notifyApprovalRejected(task.id);
+    }
+  }
+
+  /// Picks the safest terminal-option key for a binary approve / reject
+  /// decision over a native agent permission prompt.
+  String _terminalOptionKeyForDecision(TerminalPrompt prompt, bool approved) {
+    if (approved) {
+      for (final option in prompt.options) {
+        final lower = option.label.toLowerCase();
+        if (lower.contains('allow once') ||
+            lower.contains('允许一次') ||
+            lower == 'allow' ||
+            lower == 'yes' ||
+            lower == '是') {
+          return option.key;
+        }
+      }
+      return prompt.options.first.key;
+    }
+    for (final option in prompt.options.reversed) {
+      final lower = option.label.toLowerCase();
+      if (lower.contains('no') ||
+          lower.contains('reject') ||
+          lower.contains('否') ||
+          lower.contains('拒绝')) {
+        return option.key;
+      }
+    }
+    return prompt.options.last.key;
   }
 
   HostConfig? get defaultHost {
@@ -779,6 +1228,185 @@ Apply this decision to the pending approval request.
         ),
       ),
     );
+    await _bridgeEnsureTaskCreated(_latestTask(task.id) ?? taskWithTurn);
+    _bridgeSyncTerminalStatus(
+        task.id, status, now, shortSummary ?? task.shortSummary);
+  }
+
+  // ─── Bridge Runtime integration ───
+
+  Future<void> _bridgeEnsureTaskCreated(TaskSession task) async {
+    if (_bridgedTaskIds.contains(task.id)) {
+      return;
+    }
+    final inFlight = _bridgeCreateFutures[task.id];
+    if (inFlight != null) {
+      await inFlight;
+      return;
+    }
+    final future = _bridgeCreateTaskIfMissing(task);
+    _bridgeCreateFutures[task.id] = future;
+    try {
+      await future;
+    } finally {
+      _bridgeCreateFutures.remove(task.id);
+    }
+  }
+
+  Future<void> _bridgeCreateTaskIfMissing(TaskSession task) async {
+    final existing = await bridgeRuntime.taskSnapshot(task.id);
+    if (existing != null) {
+      _bridgedTaskIds.add(task.id);
+      return;
+    }
+    await bridgeRuntime.createTask(
+      RuntimeTaskSnapshot.fromTaskStatus(
+        taskId: task.id,
+        status: task.status,
+        createdAt: task.createdAt,
+        updatedAt: task.updatedAt,
+        summary: task.shortSummary,
+      ),
+    );
+    _bridgedTaskIds.add(task.id);
+  }
+
+  void _bridgeNotifyExecutionStarted(TaskSession task) {
+    final projectPath = task.host.projectPath;
+    final tmuxName = task.host.tmuxSessionName;
+    unawaited(
+      _bridgeEnsureTaskCreated(task).then((_) {
+        return bridgeRuntime.startTask(
+          taskId: task.id,
+          sessionName: projectPath,
+          projectPath: projectPath,
+          tmuxSessionName: tmuxName,
+          now: DateTime.now(),
+        );
+      }).catchError((_) {
+        return RuntimeTaskSnapshot.fromTaskStatus(
+          taskId: task.id,
+          status: task.status,
+          createdAt: task.createdAt,
+          updatedAt: task.updatedAt,
+          summary: task.shortSummary,
+        );
+      }),
+    );
+  }
+
+  void _bridgeNotifyExecutionUpdate(
+    TaskSession task,
+    String rawOutput,
+  ) {
+    final trimmed = rawOutput.trim();
+    if (trimmed.isEmpty) {
+      return;
+    }
+    final now = DateTime.now();
+    final hash = trimmed.hashCode;
+    final lastHash = _lastRuntimeOutputHashes[task.id];
+    final lastAt = _lastRuntimeOutputNotifiedAt[task.id];
+    if (lastHash == hash ||
+        (lastAt != null &&
+            now.difference(lastAt) < _runtimeOutputNotifyInterval)) {
+      return;
+    }
+    _lastRuntimeOutputHashes[task.id] = hash;
+    _lastRuntimeOutputNotifiedAt[task.id] = now;
+    unawaited(bridgeRuntime.observeOutput(
+      taskId: task.id,
+      capturedOutput: rawOutput,
+      now: now,
+    ));
+  }
+
+  void _bridgeSyncTerminalStatus(
+    String taskId,
+    TaskStatus status,
+    DateTime now,
+    String summary,
+  ) {
+    switch (status) {
+      case TaskStatus.turnIdle:
+      case TaskStatus.needAttention:
+      case TaskStatus.needApproval:
+        unawaited(bridgeRuntime.markWaitingUser(
+          taskId,
+          summary: summary,
+          now: now,
+        ));
+      case TaskStatus.userCompleted:
+      case TaskStatus.completed:
+        unawaited(bridgeRuntime.completeTask(
+          taskId,
+          summary: summary,
+          now: now,
+        ));
+      case TaskStatus.failed:
+      case TaskStatus.userFailed:
+      case TaskStatus.runtimeLost:
+        unawaited(bridgeRuntime.failTask(
+          taskId,
+          summary: summary,
+          now: now,
+        ));
+      case TaskStatus.stopped:
+        unawaited(bridgeRuntime.cancelTask(
+          taskId,
+          summary: summary,
+          now: now,
+        ));
+      case TaskStatus.running:
+        break;
+      case TaskStatus.paused:
+        bridgeRuntime.pauseTask(
+          taskId,
+          summary: summary,
+          now: now,
+        );
+        break;
+      case TaskStatus.observerDetached:
+        bridgeRuntime.notifyObserverDetached(taskId, now: now);
+        break;
+      case TaskStatus.draft:
+      case TaskStatus.pending:
+        break;
+    }
+  }
+
+  /// Sync bridge when stream-side task status changes (not via _saveControlledTask).
+  void _bridgeSyncStreamStatus(TaskSession current, TaskSession previous) {
+    if (current.status == previous.status) {
+      return;
+    }
+    _bridgeSyncTerminalStatus(
+      current.id,
+      current.status,
+      DateTime.now(),
+      current.shortSummary,
+    );
+    // Additional bridge events for stream-side status transitions
+    if (current.status == TaskStatus.needApproval) {
+      bridgeRuntime.notifyApprovalRequested(current.id);
+    }
+  }
+
+  void _scheduleNotify() {
+    if (_notifyScheduled) {
+      return;
+    }
+    _notifyScheduled = true;
+    try {
+      SchedulerBinding.instance.addPostFrameCallback((_) {
+        _notifyScheduled = false;
+        notifyListeners();
+      });
+    } catch (_) {
+      // Fall back to immediate notify when binding is unavailable (e.g. tests).
+      _notifyScheduled = false;
+      notifyListeners();
+    }
   }
 
   Future<TaskSession> _appendRawLog(TaskSession task, String rawOutput) async {
@@ -818,16 +1446,128 @@ Apply this decision to the pending approval request.
     return null;
   }
 
-  TaskSession _taskWithExecutionUpdate(
+  /// Returns true if processing [update] would change the task's status.
+  bool _updateWouldChangeStatus(TaskSession task, AgentExecutionUpdate update) {
+    if (update.approval != null) return true;
+    if (update.terminalPrompt != null) return true;
+    if (update.result != null) return true;
+    if (update.needsAttention) return true;
+    if (update.turnIdle || update.done) return true;
+    if (update.runtimeLost) return true;
+    return false;
+  }
+
+  /// Lightweight in-memory task update for pure progress (no status change).
+  /// Does NOT build rawLog or executionLogs to avoid O(n²) string growth.
+  TaskSession _taskWithLightProgress(
     TaskSession task,
     AgentExecutionUpdate update,
   ) {
+    final now = DateTime.now();
+    final turns =
+        task.turns.isEmpty ? task.turns : List<NativeOutputTurn>.of(task.turns);
+    if (turns.isNotEmpty) {
+      turns[turns.length - 1] = turns.last.copyWith(lastOutputAt: now);
+    }
+    return task.copyWith(turns: turns, updatedAt: now);
+  }
+
+  /// Replaces the task in the in-memory list for pure progress updates.
+  /// This intentionally skips persistence and global notifications; visible
+  /// progress surfaces consume runtime events instead of rebuilding the app.
+  void _updateInMemory(TaskSession task) {
+    final updatedTasks = [...tasks];
+    // Dedup: remove ALL existing entries with this id before inserting.
+    updatedTasks.removeWhere((item) => item.id == task.id);
+    updatedTasks.insert(0, task);
+    tasks = updatedTasks;
+  }
+
+  void _syncTaskSnapshots({String? taskId}) {
+    if (taskId != null) {
+      final snapshot = _taskSnapshots[taskId];
+      if (snapshot != null) {
+        final latest = _latestTask(taskId);
+        if (snapshot.value != latest) {
+          snapshot.value = latest;
+        }
+      }
+    } else {
+      for (final snapshot in _taskSnapshots.entries) {
+        final latest = _latestTask(snapshot.key);
+        if (snapshot.value.value != latest) {
+          snapshot.value.value = latest;
+        }
+      }
+    }
+  }
+
+  void _updateTaskSnapshot(TaskSession task) {
+    final snapshot = _taskSnapshots[task.id];
+    if (snapshot != null && snapshot.value != task) {
+      snapshot.value = task;
+    }
+  }
+
+  void _updateTaskSnapshotById(String taskId) {
+    final snapshot = _taskSnapshots[taskId];
+    if (snapshot != null) {
+      snapshot.value = _latestTask(taskId);
+    }
+  }
+
+  void _updateHomeSnapshot({bool force = false}) {
+    final signature = _homeSignatureFor(tasks, ready: ready);
+    if (!force && signature == _homeSnapshotSignature) {
+      return;
+    }
+    _homeSnapshotSignature = signature;
+    homeSnapshot.value = HomeTaskSnapshot(
+      ready: ready,
+      tasks: List<TaskSession>.unmodifiable(tasks),
+    );
+  }
+
+  String _homeSignatureFor(List<TaskSession> tasks, {required bool ready}) {
+    final parts = <String>['ready:$ready', 'count:${tasks.length}'];
+    for (final task in tasks) {
+      parts.add(_homeTaskSignature(task));
+    }
+    return parts.join('|');
+  }
+
+  String _homeTaskSignature(TaskSession task) {
+    final includeUpdatedAt = task.status != TaskStatus.running &&
+        task.status != TaskStatus.pending &&
+        task.status != TaskStatus.draft;
+    return [
+      task.id,
+      task.title,
+      task.userText,
+      task.status.name,
+      task.shortSummary,
+      task.approval?.reason ?? '',
+      task.terminalPrompt?.question ?? '',
+      task.completedAt?.microsecondsSinceEpoch.toString() ?? '',
+      if (includeUpdatedAt) task.updatedAt.microsecondsSinceEpoch.toString(),
+    ].join('~');
+  }
+
+  TaskSession _taskWithExecutionUpdate(
+    TaskSession task,
+    AgentExecutionUpdate update, {
+    bool reopenResolvedApproval = false,
+  }) {
     final updateAt = DateTime.now();
     final rawLog = '${task.rawLog}${update.rawOutput}';
     final executionLogs = _executionLogsWithUpdate(task, update, updateAt);
+    final accumulatedOutput = _progressOutputMap[task.id]?.toString() ?? '';
+    final effectiveRawOutput = accumulatedOutput.isNotEmpty
+        ? accumulatedOutput + update.rawOutput
+        : update.rawOutput;
     final taskWithTurn = _taskWithTurnOutput(
       task,
-      rawOutput: update.rawOutput,
+      rawOutput: effectiveRawOutput,
       cleanedOutput: update.cleanedOutput ?? '',
       now: updateAt,
       status: _turnStatusForUpdate(update),
@@ -836,11 +1576,37 @@ Apply this decision to the pending approval request.
 
     if (update.approval != null) {
       final approval = update.approval!;
+      // Don't re-apply an approval that was already resolved by the user.
+      final alreadyResolved = taskWithTurn.approvalRequests.any(
+        (a) =>
+            a.reason == approval.reason &&
+            a.command == approval.command &&
+            a.status.trim().toLowerCase() != 'pending',
+      );
+      if (alreadyResolved && !reopenResolvedApproval) {
+        return taskWithTurn.copyWith(
+          rawLog: rawLog,
+          executionLogs: executionLogs,
+          updatedAt: updateAt,
+          clearApproval: true,
+          clearTerminalPrompt: true,
+        );
+      }
+      // Preserve the terminal prompt alongside the approval so that
+      // the full set of interactive controls is available.
+      final effectiveTerminalPrompt =
+          update.terminalPrompt ?? taskWithTurn.terminalPrompt;
       return taskWithTurn.copyWith(
         status: TaskStatus.needApproval,
         rawLog: rawLog,
         approval: approval,
-        approvalRequests: [...taskWithTurn.approvalRequests, approval],
+        terminalPrompt: effectiveTerminalPrompt,
+        approvalRequests: reopenResolvedApproval
+            ? _approvalRequestsWithReopenedApproval(
+                taskWithTurn.approvalRequests,
+                approval,
+              )
+            : [...taskWithTurn.approvalRequests, approval],
         executionLogs: executionLogs,
         updatedAt: updateAt,
         shortSummary: approval.reason,
@@ -855,6 +1621,22 @@ Apply this decision to the pending approval request.
     }
 
     if (update.terminalPrompt != null) {
+      // Don't re-apply a terminal prompt that mirrors a resolved approval.
+      final promptQuestion =
+          update.terminalPrompt!.question.trim().toLowerCase();
+      final mirrorsResolvedApproval = taskWithTurn.approvalRequests.any(
+        (a) =>
+            a.status.trim().toLowerCase() != 'pending' &&
+            a.reason.trim().toLowerCase() == promptQuestion,
+      );
+      if (mirrorsResolvedApproval) {
+        return taskWithTurn.copyWith(
+          rawLog: rawLog,
+          executionLogs: executionLogs,
+          updatedAt: updateAt,
+          clearTerminalPrompt: true,
+        );
+      }
       return taskWithTurn.copyWith(
         status: TaskStatus.needAttention,
         rawLog: rawLog,
@@ -921,26 +1703,27 @@ Apply this decision to the pending approval request.
     if (update.turnIdle || update.done) {
       final idleAt = DateTime.now();
       final summary = update.cleanedOutput?.trim() ?? '';
+      final shouldWriteResult = !update.needsAttention && summary.isNotEmpty;
       return taskWithTurn.copyWith(
         status: update.needsAttention
             ? TaskStatus.needAttention
             : TaskStatus.turnIdle,
         rawLog: rawLog,
-        result: summary.isEmpty
-            ? task.result
-            : TaskResult(
+        result: shouldWriteResult
+            ? TaskResult(
                 status: 'turn_idle',
                 summary: summary,
                 changedFiles: const [],
                 validation: const [],
                 risks: const [],
                 nextActions: const [],
-              ),
+              )
+            : task.result,
         updatedAt: idleAt,
         shortSummary: update.needsAttention
             ? 'Agent 可能需要用户处理'
             : (summary.isEmpty ? 'Agent 暂时停止输出' : summary),
-        summary: summary.isEmpty ? task.summary : summary,
+        summary: shouldWriteResult ? summary : task.summary,
         executionLogs: executionLogs,
         metricEvents: _metricEventsWithCreated(
           taskWithTurn.metricEvents,
@@ -951,6 +1734,24 @@ Apply this decision to the pending approval request.
         ),
         clearApproval: !update.needsAttention,
         clearTerminalPrompt: !update.needsAttention,
+      );
+    }
+
+    if (update.needsAttention) {
+      final attentionAt = DateTime.now();
+      return taskWithTurn.copyWith(
+        status: TaskStatus.needAttention,
+        rawLog: rawLog,
+        updatedAt: attentionAt,
+        shortSummary: 'Agent 正在等待你的输入',
+        executionLogs: executionLogs,
+        metricEvents: _metricEventsWithCreated(
+          taskWithTurn.metricEvents,
+          taskId: task.id,
+          eventType: 'need_attention',
+          payloadJson: '{"source":"observer"}',
+          now: attentionAt,
+        ),
       );
     }
 
@@ -969,6 +1770,32 @@ Apply this decision to the pending approval request.
             )
           : taskWithTurn.metricEvents,
     );
+  }
+
+  List<ApprovalRequest> _approvalRequestsWithReopenedApproval(
+    List<ApprovalRequest> existing,
+    ApprovalRequest approval,
+  ) {
+    var replaced = false;
+    final reopened = existing.map((item) {
+      if (item.reason == approval.reason && item.command == approval.command) {
+        replaced = true;
+        return ApprovalRequest(
+          id: item.id,
+          taskId: item.taskId,
+          reason: approval.reason,
+          command: approval.command,
+          risk: approval.risk,
+          status: 'pending',
+          createdAt: item.createdAt ?? approval.createdAt,
+        );
+      }
+      return item;
+    }).toList();
+    if (!replaced) {
+      reopened.add(approval);
+    }
+    return reopened;
   }
 
   List<ExecutionLog> _executionLogsWithUpdate(
@@ -1156,16 +1983,6 @@ Apply this decision to the pending approval request.
       updatedAt: observedAt,
       summary: summary.isEmpty ? task.summary : summary,
       shortSummary: summary.isEmpty ? task.shortSummary : summary,
-      result: summary.isEmpty
-          ? task.result
-          : TaskResult(
-              status: 'turn_idle',
-              summary: summary,
-              changedFiles: const [],
-              validation: const [],
-              risks: const [],
-              nextActions: const [],
-            ),
     );
   }
 
@@ -1253,6 +2070,7 @@ Apply this decision to the pending approval request.
       clearApproval: true,
     );
     await saveTask(failedTask);
+    _bridgeSyncTerminalStatus(task.id, TaskStatus.failed, failedAt, message);
     return failedTask;
   }
 
@@ -1289,6 +2107,9 @@ Apply this decision to the pending approval request.
       clearApproval: true,
     );
     await saveTask(detachedTask);
+    _bridgeSyncTerminalStatus(task.id, TaskStatus.observerDetached, now,
+        'SSH 监听已断开，远端任务状态未知；可以重新监听或停止任务');
+    bridgeRuntime.notifyConnectionLost(task.id);
     return detachedTask;
   }
 
@@ -1325,6 +2146,14 @@ Apply this decision to the pending approval request.
     }
   }
 
+  void _queueTaskSpeech(TaskSession previous, TaskSession current) {
+    _speechQueue = _speechQueue
+        .then((_) => _speakTaskUpdate(previous, current))
+        .catchError((Object error) {
+      debugPrint('Task speech queue failed: $error');
+    });
+  }
+
   bool _isTerminal(TaskStatus status) {
     return status == TaskStatus.stopped ||
         status == TaskStatus.runtimeLost ||
@@ -1334,11 +2163,27 @@ Apply this decision to the pending approval request.
         status == TaskStatus.failed;
   }
 
+  /// Public stream of runtime lifecycle events for UI-layer consumption.
+  Stream<RuntimeEvent> get runtimeEvents => runtimeEventBus.events;
+
+  /// Returns the current WorkState for a task.
+  WorkState? workState(String taskId) => bridgeRuntime.workState(taskId);
+
+  /// Returns runtime diagnostics for a task (debug only).
+  RuntimeDiagnostics? runtimeDiagnostics(String taskId) =>
+      bridgeRuntime.diagnostics(taskId);
+
   bool _canDeleteTask(TaskStatus status) {
-    return status == TaskStatus.completed ||
-        status == TaskStatus.failed ||
-        status == TaskStatus.userCompleted ||
-        status == TaskStatus.userFailed;
+    return switch (status) {
+      TaskStatus.completed ||
+      TaskStatus.failed ||
+      TaskStatus.userCompleted ||
+      TaskStatus.userFailed ||
+      TaskStatus.stopped ||
+      TaskStatus.runtimeLost =>
+        true,
+      _ => false,
+    };
   }
 
   Future<void> _saveApprovalDecision(
@@ -1347,40 +2192,61 @@ Apply this decision to the pending approval request.
   }) async {
     final now = DateTime.now();
     final decision = approved ? 'approved' : 'rejected';
-    final pendingApproval = task.approval;
-    final resolvedApproval = pendingApproval?.copyWith(
-      status: decision,
-      resolvedAt: now,
-    );
-    final approvalRequests = task.approvalRequests.map((approval) {
-      if (pendingApproval != null &&
-          approval.reason == pendingApproval.reason &&
-          approval.command == pendingApproval.command) {
-        return resolvedApproval!;
-      }
-      return approval;
-    }).toList();
-    if (resolvedApproval != null && approvalRequests.isEmpty) {
-      approvalRequests.add(resolvedApproval);
-    }
     final logLine = 'Approval $decision by user.\n';
+    final resolvedTask = _taskWithApprovalDecision(task, approved: approved);
     await saveTask(
-      task.copyWith(
+      resolvedTask.copyWith(
         status: TaskStatus.running,
-        approvalRequests: approvalRequests,
-        rawLog: '${task.rawLog}$logLine',
+        rawLog: '${resolvedTask.rawLog}$logLine',
         updatedAt: now,
         executionLogs: [
-          ...task.executionLogs,
+          ...resolvedTask.executionLogs,
           ExecutionLog(
             id: 'log-${now.microsecondsSinceEpoch}',
-            taskId: task.id,
+            taskId: resolvedTask.id,
             rawOutput: logLine,
             createdAt: now,
           ),
         ],
         clearApproval: true,
+        clearTerminalPrompt: true,
       ),
+    );
+  }
+
+  TaskSession _taskWithApprovalDecision(
+    TaskSession task, {
+    required bool approved,
+  }) {
+    final now = DateTime.now();
+    final decision = approved ? 'approved' : 'rejected';
+    final pendingApproval = task.approval;
+    final promptQuestion = task.terminalPrompt?.question.trim().toLowerCase();
+    var resolvedExistingApproval = false;
+    final approvalRequests = task.approvalRequests.map((approval) {
+      final matchesCurrentApproval = pendingApproval != null &&
+          approval.reason == pendingApproval.reason &&
+          approval.command == pendingApproval.command;
+      final matchesTerminalPrompt = pendingApproval == null &&
+          promptQuestion != null &&
+          promptQuestion.isNotEmpty &&
+          approval.status.trim().toLowerCase() == 'pending' &&
+          approval.reason.trim().toLowerCase() == promptQuestion;
+      if (matchesCurrentApproval || matchesTerminalPrompt) {
+        resolvedExistingApproval = true;
+        return approval.copyWith(status: decision, resolvedAt: now);
+      }
+      return approval;
+    }).toList();
+    if (pendingApproval != null && !resolvedExistingApproval) {
+      approvalRequests.add(
+        pendingApproval.copyWith(status: decision, resolvedAt: now),
+      );
+    }
+    return task.copyWith(
+      approvalRequests: approvalRequests,
+      clearApproval: true,
+      clearTerminalPrompt: true,
     );
   }
 
@@ -1407,5 +2273,47 @@ Apply this decision to the pending approval request.
       TaskStatus.observerDetached =>
         currentCompletedAt,
     };
+  }
+}
+
+class HomeTaskSnapshot {
+  const HomeTaskSnapshot({
+    required this.ready,
+    required this.tasks,
+  });
+
+  factory HomeTaskSnapshot.empty() {
+    return const HomeTaskSnapshot(ready: false, tasks: []);
+  }
+
+  final bool ready;
+  final List<TaskSession> tasks;
+}
+
+class HostEditBlockedException implements Exception {
+  const HostEditBlockedException(this.blockingTaskLabels);
+
+  final List<String> blockingTaskLabels;
+
+  String get message {
+    if (blockingTaskLabels.isEmpty) {
+      return '无法编辑主机配置。';
+    }
+    final names = blockingTaskLabels.join('、');
+    return '以下任务正在使用此主机，请先将它们停止或完成：$names';
+  }
+}
+
+class ProjectPathEditBlockedException implements Exception {
+  const ProjectPathEditBlockedException(this.blockingTaskLabels);
+
+  final List<String> blockingTaskLabels;
+
+  String get message {
+    if (blockingTaskLabels.isEmpty) {
+      return '无法编辑项目目录。';
+    }
+    final names = blockingTaskLabels.join('、');
+    return '以下任务正在使用此项目目录，请先将它们停止或完成：$names';
   }
 }

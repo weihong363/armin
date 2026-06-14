@@ -1,3 +1,4 @@
+import 'package:armin/features/agent/models/agent_approval_config.dart';
 import 'package:armin/features/agent/services/agent_session_service.dart';
 import 'package:armin/features/agent/services/runtime_policy.dart';
 import 'package:armin/features/agent/services/ssh_agent_session_service.dart';
@@ -118,7 +119,10 @@ void main() {
     expect(command, contains('Enter'));
     expect(command, contains('stable_count'));
     expect(command, contains('stable_count" -ge 4'));
+    expect(command, contains('last_stable_emitted_hash'));
     expect(command, contains('Allow execution of|Allow command execution'));
+    expect(command, contains('Permission Required'));
+    expect(command, contains('permission|approval|confirm|allow|reject'));
     expect(command, contains("'\"'\"'/usr/bin/tmux'\"'\"' capture-pane"));
     expect(command, contains('-S -80'));
     expect(command, isNot(contains('-S -2000')));
@@ -269,6 +273,7 @@ void main() {
     expect(command, contains('sleep 0.5'));
     expect(command, contains('stable_count'));
     expect(command, contains('stable_count" -ge 4'));
+    expect(command, contains('last_stable_emitted_hash'));
     expect(command, isNot(contains('initial_markers')));
     expect(command, isNot(contains('marker_count')));
     expect(command, contains('Armin could not capture tmux pane'));
@@ -308,8 +313,69 @@ void main() {
 
     expect(execution, contains('-S -40'));
     expect(execution, contains('stable_count" -ge 3'));
+    expect(execution, contains('last_stable_emitted_hash'));
     expect(execution, contains('while [ "\$i" -lt 7 ]'));
     expect(finalCapture, contains('-S -120'));
+  });
+
+  test('execution mode configures quiet threshold in monitor script', () {
+    final service = SSHAgentSessionService(
+      pollInterval: const Duration(seconds: 1),
+    );
+
+    final balanced = service.buildExecutionCommandForTest(
+      const AgentExecutionRequest(
+        prompt: '',
+        host: '127.0.0.1',
+        username: 'ironion',
+        tmuxSessionName: 'armin-balanced',
+        password: 'secret-password',
+        attachOnly: true,
+        approvalConfig: AgentApprovalConfig(
+          agentType: AgentType.codex,
+          mode: AgentApprovalMode.balanced,
+        ),
+      ),
+    );
+    final aggressive = service.buildExecutionCommandForTest(
+      const AgentExecutionRequest(
+        prompt: '',
+        host: '127.0.0.1',
+        username: 'ironion',
+        tmuxSessionName: 'armin-aggressive',
+        password: 'secret-password',
+        attachOnly: true,
+        approvalConfig: AgentApprovalConfig(
+          agentType: AgentType.codex,
+          mode: AgentApprovalMode.aggressive,
+        ),
+      ),
+    );
+
+    expect(balanced, contains('stable_count" -ge 10'));
+    expect(aggressive, contains('stable_count" -ge 60'));
+  });
+
+  test('probe command checks session and captures recent pane only', () {
+    final service = SSHAgentSessionService(
+      runtimePolicy: const RuntimePolicy(monitorCaptureLines: 40),
+    );
+
+    final command = service.buildProbeRemoteStateCommandForTest(
+      const AgentControlRequest(
+        host: '127.0.0.1',
+        port: 22,
+        username: 'ironion',
+        tmuxSessionName: 'armin-2800',
+        password: 'secret-password',
+      ),
+    );
+
+    expect(command, contains("has-session -t 'armin-2800'"));
+    expect(command, contains("capture-pane -p -t 'armin-2800' -S -40"));
+    expect(command, contains('__ARMIN_PROBE_SESSION_MISSING__'));
+    expect(command, isNot(contains('send-keys')));
+    expect(command, isNot(contains('new-session')));
   });
 
   test('missing readable result log keeps captured pane output', () {
@@ -379,6 +445,81 @@ void main() {
 
     expect(outputs.first, contains('帮我执行中断测试'));
     expect(outputs.last, contains('执行中断测试完成'));
+  });
+
+  test('raw snapshot output detects markers split across chunks', () {
+    final service = SSHAgentSessionService();
+    final outputs = service.rawOutputsForSnapshotChunksForTest([
+      'noise\n__ARMIN_SNA',
+      'PSHOT_BEGIN__\nfirst line',
+      '\nsecond line\n__ARMIN_SNAPSHOT_',
+      'END__\n',
+    ]);
+
+    expect(outputs.take(3).every((output) => output.isEmpty), isTrue);
+    expect(outputs.last, contains('first line'));
+    expect(outputs.last, contains('second line'));
+    expect(outputs.last, isNot(contains('noise')));
+  });
+
+  test('stream buffer keeps only a bounded tail window', () {
+    final service = SSHAgentSessionService();
+    final limit = service.streamTextLimitForTest;
+    final prefix = 'head${List.filled(limit + 64, 'a').join()}';
+    final output = service.streamTextForChunksForTest([
+      prefix,
+      'tail',
+    ]);
+
+    expect(output.length, limit);
+    expect(output, endsWith('tail'));
+    expect(output, isNot(contains('head')));
+  });
+
+  test('stream buffer keeps full content when under limit', () {
+    final service = SSHAgentSessionService();
+    final limit = service.streamTextLimitForTest;
+    final text = 'hello${List.filled(100, 'x').join()}';
+    final output = service.streamTextForChunksForTest([text]);
+
+    expect(output.length, text.length);
+    expect(output, contains('hello'));
+    expect(output.length, lessThan(limit));
+  });
+
+  test('stream buffer retains exactly at the boundary', () {
+    final service = SSHAgentSessionService();
+    final limit = service.streamTextLimitForTest;
+    final exactly = List.filled(limit, 'a').join();
+    final output = service.streamTextForChunksForTest([exactly]);
+
+    expect(output.length, limit);
+    expect(output, exactly);
+  });
+
+  test('stream buffer clips when single chunk exceeds limit', () {
+    final service = SSHAgentSessionService();
+    final limit = service.streamTextLimitForTest;
+    final huge = List.filled(limit * 2, 'z').join();
+    final output = service.streamTextForChunksForTest([huge]);
+
+    expect(output.length, limit);
+    expect(output, huge.substring(huge.length - limit));
+  });
+
+  test('stream buffer clips across multiple cumulative chunks', () {
+    final service = SSHAgentSessionService();
+    final limit = service.streamTextLimitForTest;
+    final first = List.filled(limit ~/ 2, 'a').join();
+    final over = List.filled(limit ~/ 2 + 100, 'b').join();
+    final output = service.streamTextForChunksForTest([first, over]);
+
+    expect(output.length, limit);
+    // Combined _streamText+text was clipped from the head by 100 chars,
+    // so some 'a's remain before the 'b' tail.
+    expect(output, contains('a'));
+    expect(output, contains('b'));
+    expect(output, endsWith('b'));
   });
 
   test('approval decision is sent without runtime update wrapper', () async {
@@ -460,7 +601,10 @@ decision: approved
 
     final command = service.buildTerminalOptionCommandForTest(request, '1');
 
-    expect(command, contains("send-keys -t 'armin-2800'"));
+    expect(command, contains("has-session -t 'armin-2800'"));
+    expect(command, contains('display-message -p -t'));
+    expect(command, contains("'#{pane_id}'"));
+    expect(command, contains(r'send-keys -t "$pane"'));
     expect(command, contains("-- '1' C-m"));
   });
 }

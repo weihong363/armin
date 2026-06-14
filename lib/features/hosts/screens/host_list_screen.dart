@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../../app_state_scope.dart';
+import '../../../core/services/armin_app_state.dart';
 import '../models/host_config.dart';
 import 'host_form_screen.dart';
 
@@ -59,7 +60,26 @@ class HostListScreen extends StatelessWidget {
 
               if (shouldDelete == true && context.mounted) {
                 final appState = AppStateScope.of(context);
-                await appState.deleteHost(host.id);
+                try {
+                  await appState.deleteHost(host.id);
+                } on HostEditBlockedException catch (e) {
+                  if (context.mounted) {
+                    await showDialog<void>(
+                      context: context,
+                      builder: (context) => AlertDialog(
+                        title: const Text('无法删除主机'),
+                        content: Text(e.message),
+                        actions: [
+                          FilledButton(
+                            onPressed: () => Navigator.of(context).pop(),
+                            child: const Text('知道了'),
+                          ),
+                        ],
+                      ),
+                    );
+                  }
+                  return false;
+                }
                 if (context.mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(
@@ -70,7 +90,7 @@ class HostListScreen extends StatelessWidget {
                 }
               }
 
-              return shouldDelete;
+              return shouldDelete == true;
             },
             onDismissed: (direction) {
               // Widget is already removed by confirmDismiss, nothing to do here

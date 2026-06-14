@@ -6,22 +6,29 @@ import 'package:flutter/foundation.dart';
 
 import '../../hosts/models/host_config.dart';
 import '../../tasks/services/agent_instruction_discovery.dart';
+import '../models/agent_approval_config.dart';
 import '../parsers/approval_parser.dart';
+import '../parsers/approval_request.dart';
+import '../parsers/terminal_prompt.dart';
 import '../parsers/terminal_prompt_parser.dart';
 import 'agent_session_service.dart';
 import 'agent_runtime_config.dart';
-import 'codex_output_cleaner.dart';
+import 'agent_output_cleaner.dart';
 import 'native_output_observer.dart';
 import 'runtime_policy.dart';
 
-class SSHAgentSessionService implements AgentSessionService {
+class SSHAgentSessionService
+    implements AgentSessionService, RemoteTaskProbeService {
+  static const _controlCommandTimeout = Duration(seconds: 15);
+  static const _controlConnectionIdleTimeout = Duration(seconds: 20);
+
   SSHAgentSessionService({
     ApprovalParser? approvalParser,
     TerminalPromptParser terminalPromptParser = const TerminalPromptParser(),
     Duration pollInterval = AgentRuntimeConfig.pollInterval,
     RuntimePolicy runtimePolicy = const RuntimePolicy(),
-    CodexOutputCleaner cleaner = const CodexOutputCleaner(),
-  })  : _approvalParser = approvalParser ?? ApprovalParser(),
+    AgentOutputCleaner cleaner = const AgentOutputCleaner(),
+  })  : _approvalParser = approvalParser ?? const ApprovalParser(),
         _terminalPromptParser = terminalPromptParser,
         _pollInterval = pollInterval,
         _runtimePolicy = runtimePolicy,
@@ -31,7 +38,11 @@ class SSHAgentSessionService implements AgentSessionService {
   final TerminalPromptParser _terminalPromptParser;
   final Duration _pollInterval;
   final RuntimePolicy _runtimePolicy;
-  final CodexOutputCleaner _cleaner;
+  final AgentOutputCleaner _cleaner;
+  final Map<String, _PooledControlConnection> _controlConnections = {};
+  final Map<String, Future<_PooledControlConnection>>
+      _controlConnectionCreates = {};
+  AgentApprovalConfig? _currentApprovalConfig;
 
   @override
   Future<AgentConnectionTestResult> testConnection(
@@ -116,6 +127,7 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
   @override
   Stream<AgentExecutionUpdate> execute(AgentExecutionRequest request) async* {
     _validateExecutionRequest(request);
+    _currentApprovalConfig = request.approvalConfig;
     final client = await _connect(
       host: request.host,
       port: request.port,
@@ -129,10 +141,11 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
       final command = _buildExecutionScript(request);
       final session = await client.execute(command);
       final output = _ExecutionOutputState();
+      final runtimePolicy = _runtimePolicyFor(request);
       final observer = NativeOutputObserver(
         cleaner: _cleaner,
-        idleThreshold: _runtimePolicy.idleThreshold,
-        reconnectThreshold: _runtimePolicy.reconnectThreshold,
+        idleThreshold: runtimePolicy.idleThreshold,
+        reconnectThreshold: runtimePolicy.reconnectThreshold,
       );
       late final StreamSubscription<String> stdoutSub;
       late final StreamSubscription<String> stderrSub;
@@ -147,19 +160,19 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
       );
 
       stdoutSub = session.stdout
-        .cast<List<int>>()
-        .transform(utf8.decoder)
-        .listen((text) {
-      output.write(text);
-      controller.add(_buildStreamingUpdate(text, output, observer));
-    });
-    stderrSub = session.stderr
-        .cast<List<int>>()
-        .transform(utf8.decoder)
-        .listen((text) {
-      output.write(text);
-      controller.add(_buildStreamingUpdate(text, output, observer));
-    });
+          .cast<List<int>>()
+          .transform(utf8.decoder)
+          .listen((text) {
+        output.write(text);
+        controller.add(_buildStreamingUpdate(text, output, observer));
+      });
+      stderrSub = session.stderr
+          .cast<List<int>>()
+          .transform(utf8.decoder)
+          .listen((text) {
+        output.write(text);
+        controller.add(_buildStreamingUpdate(text, output, observer));
+      });
 
       unawaited(
         Future.wait([stdoutSub.asFuture<void>(), stderrSub.asFuture<void>()])
@@ -196,34 +209,35 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
             return;
           }
           final approval = _approvalParser.parse(observedOutput);
-          if (approval != null) {
-            controller.add(
-              AgentExecutionUpdate(
-                rawOutput: '',
-                cleanedOutput: _cleaner.clean(observedOutput),
-                observerState: NativeOutputObserverState.needAttention,
-                needsAttention: true,
-                approval: approval,
-                done: true,
-              ),
-            );
-          } else {
-            final snapshot = observer.observeSettled(observedOutput);
-            final terminalPrompt = _terminalPromptParser.parse(observedOutput);
-            controller.add(
-              AgentExecutionUpdate(
-                rawOutput: '',
-                cleanedOutput: snapshot.cleanedOutput,
-                observerState: snapshot.state,
-                turnIdle: snapshot.turnIdle,
-                runtimeLost: snapshot.runtimeLost,
-                needsAttention:
-                    terminalPrompt != null || snapshot.needsAttention,
-                terminalPrompt: terminalPrompt,
-                done: true,
-              ),
-            );
-          }
+          final terminalPrompt = _terminalPromptParser.parse(observedOutput);
+          final isSafeMode =
+              _currentApprovalConfig?.mode == AgentApprovalMode.safe;
+          // Bridge native terminal prompts into approval requests so that
+          // users see the simplified Approve / Reject card — except in
+          // safe mode where the full terminal prompt card is preferred.
+          final effectiveApproval = approval ??
+              (isSafeMode ? null : _approvalFromTerminalPrompt(terminalPrompt));
+          final snapshot = observer.observeSettled(observedOutput);
+          final shouldFinishUpdate = snapshot.turnIdle ||
+              snapshot.runtimeLost ||
+              snapshot.needsAttention ||
+              terminalPrompt != null ||
+              effectiveApproval != null;
+          controller.add(
+            AgentExecutionUpdate(
+              rawOutput: '',
+              cleanedOutput: snapshot.cleanedOutput,
+              observerState: snapshot.state,
+              turnIdle: snapshot.turnIdle,
+              runtimeLost: snapshot.runtimeLost,
+              needsAttention: terminalPrompt != null ||
+                  snapshot.needsAttention ||
+                  effectiveApproval != null,
+              approval: effectiveApproval,
+              terminalPrompt: terminalPrompt,
+              done: shouldFinishUpdate,
+            ),
+          );
           await controller.close();
         }),
       );
@@ -244,13 +258,24 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
     final rawOutput = output.rawOutputForLatestUpdate(fallback: chunk);
     final observedOutput = output.observedText;
     final snapshot = observer.observe(observedOutput);
-    final terminalPrompt = _terminalPromptParser.parse(observedOutput);
+    final promptState = output.promptState(
+      terminalPromptParser: _terminalPromptParser,
+      approvalParser: _approvalParser,
+    );
+    final terminalPrompt = promptState.terminalPrompt;
+    final approval = promptState.approval;
+    final isSafeMode = _currentApprovalConfig?.mode == AgentApprovalMode.safe;
+    final effectiveApproval = approval ??
+        (isSafeMode ? null : _approvalFromTerminalPrompt(terminalPrompt));
     return AgentExecutionUpdate(
       rawOutput: rawOutput,
       cleanedOutput: snapshot.cleanedOutput,
       observerState: snapshot.state,
       runtimeLost: snapshot.runtimeLost,
-      needsAttention: terminalPrompt != null || snapshot.needsAttention,
+      needsAttention: effectiveApproval != null ||
+          terminalPrompt != null ||
+          snapshot.needsAttention,
+      approval: effectiveApproval,
       terminalPrompt: terminalPrompt,
     );
   }
@@ -272,6 +297,24 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
 
   bool _isRuntimeLimitReached(String output) {
     return output.contains('Armin runtime limit reached while session');
+  }
+
+  /// Converts a native terminal prompt into an [ApprovalRequest] so the
+  /// simplified Approve / Reject card is available even when the legacy
+  /// NEED_APPROVAL markers are absent.
+  ///
+  /// Handles both command-level prompts (where a specific shell command
+  /// needs approval) and plan-level prompts (where the agent asks "ready
+  /// to proceed?" without a concrete command).
+  ApprovalRequest? _approvalFromTerminalPrompt(TerminalPrompt? prompt) {
+    if (prompt == null || prompt.question.trim().isEmpty) {
+      return null;
+    }
+    return ApprovalRequest(
+      reason: prompt.question,
+      command: prompt.command.trim().isEmpty ? 'plan_approval' : prompt.command,
+      risk: 'medium',
+    );
   }
 
   @override
@@ -312,6 +355,12 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
   }
 
   @override
+  Future<void> interrupt(AgentControlRequest request) async {
+    _validateControlRequest(request);
+    await _sendRawKeys(request, 'C-c');
+  }
+
+  @override
   Future<void> stop(AgentControlRequest request) async {
     _validateControlRequest(request);
     await cleanup(request);
@@ -337,11 +386,61 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
     return output.trim();
   }
 
+  @override
+  Future<RemoteTaskProbe> probeRemoteState(AgentControlRequest request) async {
+    _validateControlRequest(request);
+    final output = await _runControlCommand(
+      request,
+      _wrapRemoteCommand(
+        _buildProbeRemoteStateCommand(request),
+        pathPrepend: request.pathPrepend,
+        shellWrapper: request.shellWrapper,
+      ),
+    );
+    return _parseRemoteTaskProbe(output);
+  }
+
   String _buildCaptureLogCommand(AgentControlRequest request) {
     final tmux = _tmuxCommand(request.tmuxCommand);
     return '$tmux capture-pane -p -t '
         '${_shellQuote(request.tmuxSessionName)} '
         '-S -${_runtimePolicy.finalCaptureLines} 2>/dev/null || true';
+  }
+
+  String _buildProbeRemoteStateCommand(AgentControlRequest request) {
+    final tmux = _tmuxCommand(request.tmuxCommand);
+    final session = _shellQuote(request.tmuxSessionName);
+    return '''
+if ! $tmux has-session -t $session 2>/dev/null; then
+  printf '%s\\n' '__ARMIN_PROBE_SESSION_MISSING__'
+  exit 0
+fi
+$tmux capture-pane -p -t $session -S -${_runtimePolicy.monitorCaptureLines} 2>/dev/null || true
+''';
+  }
+
+  RemoteTaskProbe _parseRemoteTaskProbe(String output) {
+    if (output.contains('__ARMIN_PROBE_SESSION_MISSING__')) {
+      return const RemoteTaskProbe.missingSession();
+    }
+    final snapshot = output.trim();
+    final terminalPrompt = _terminalPromptParser.parse(snapshot);
+    final approval = _approvalParser.parse(snapshot) ??
+        _approvalFromTerminalPrompt(terminalPrompt);
+    return RemoteTaskProbe(
+      sessionExists: true,
+      snapshot: snapshot,
+      hasApprovalPrompt: approval != null,
+      hasTerminalPrompt: terminalPrompt != null,
+      hasExitedMarker: _hasExitedMarker(snapshot),
+    );
+  }
+
+  bool _hasExitedMarker(String output) {
+    return RegExp(
+      r'Armin\s+(?:Codex|Qoder)\s+exited with status',
+      caseSensitive: false,
+    ).hasMatch(output);
   }
 
   Future<SSHClient> _connect({
@@ -395,8 +494,12 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
 
   String _buildSendKeysCommand(AgentControlRequest request, String text) {
     final tmux = _tmuxCommand(request.tmuxCommand);
-    return '$tmux send-keys -t ${_shellQuote(request.tmuxSessionName)} '
-        '-- ${_shellQuote(text)} C-m';
+    final session = _shellQuote(request.tmuxSessionName);
+    return '''
+$tmux has-session -t $session
+pane="\$($tmux display-message -p -t $session '#{pane_id}')"
+$tmux send-keys -t "\$pane" -- ${_shellQuote(text)} C-m
+''';
   }
 
   Future<void> _pasteText(AgentControlRequest request, String text) async {
@@ -458,24 +561,75 @@ $tmux send-keys -t "\$pane" C-m$clearHistory
     AgentControlRequest request,
     String command,
   ) async {
-    final client = await _connect(
-      host: request.host,
-      port: request.port,
-      username: request.username,
-      password: request.password,
-      privateKeyPem: request.privateKeyPem,
-      privateKeyPassphrase: request.privateKeyPassphrase,
-    );
+    final key = _controlConnectionKey(request);
+    final connection = await _controlConnectionFor(key, request);
+    connection.beginCommand();
     try {
-      final output = await client.run(command);
+      final output =
+          await connection.client.run(command).timeout(_controlCommandTimeout);
       return utf8.decode(output, allowMalformed: true);
+    } catch (_) {
+      _dropControlConnection(key, connection);
+      rethrow;
     } finally {
-      client.close();
-      await client.done;
+      connection.endCommand(
+        idleTimeout: _controlConnectionIdleTimeout,
+        onIdle: () => _dropControlConnection(key, connection),
+      );
     }
   }
 
+  Future<_PooledControlConnection> _controlConnectionFor(
+    String key,
+    AgentControlRequest request,
+  ) {
+    final existing = _controlConnections[key];
+    if (existing != null && !existing.closed) {
+      return Future<_PooledControlConnection>.value(existing);
+    }
+    return _controlConnectionCreates.putIfAbsent(key, () async {
+      try {
+        final client = await _connect(
+          host: request.host,
+          port: request.port,
+          username: request.username,
+          password: request.password,
+          privateKeyPem: request.privateKeyPem,
+          privateKeyPassphrase: request.privateKeyPassphrase,
+        );
+        final connection = _PooledControlConnection(client);
+        _controlConnections[key] = connection;
+        return connection;
+      } finally {
+        _controlConnectionCreates.remove(key);
+      }
+    });
+  }
+
+  void _dropControlConnection(
+    String key,
+    _PooledControlConnection connection,
+  ) {
+    if (_controlConnections[key] == connection) {
+      _controlConnections.remove(key);
+    }
+    unawaited(connection.close());
+  }
+
+  String _controlConnectionKey(AgentControlRequest request) {
+    return [
+      request.host,
+      request.port,
+      request.username,
+      request.tmuxSessionName,
+      request.password.hashCode,
+      request.privateKeyPem.hashCode,
+      request.privateKeyPassphrase.hashCode,
+    ].join('|');
+  }
+
   String _buildExecutionScript(AgentExecutionRequest request) {
+    final runtimePolicy = _runtimePolicyFor(request);
     final tmux = _tmuxCommand(request.tmuxCommand);
     final session = _shellQuote(request.tmuxSessionName);
     final projectPath = _pathToken(request.projectPath);
@@ -487,9 +641,10 @@ $tmux send-keys -t "\$pane" C-m$clearHistory
     );
     final prompt = _shellQuote(request.prompt);
     final delayMs = _pollInterval.inMilliseconds;
-    final stablePolls = _runtimePolicy.stablePollCount(_pollInterval);
-    final maxPolls = _runtimePolicy.maxPollCount(_pollInterval);
-    final monitorStart = -_runtimePolicy.monitorCaptureLines;
+    final stablePolls = runtimePolicy.stablePollCount(_pollInterval);
+    final maxPolls = runtimePolicy.maxPollCount(_pollInterval);
+    final monitorStart = -runtimePolicy.monitorCaptureLines;
+    final approvalPromptPattern = _approvalPromptPattern(profile);
     final sessionSetup = request.attachOnly
         ? '''
 if ! $tmux has-session -t $session 2>/dev/null; then
@@ -559,6 +714,7 @@ last_hash="\$initial_hash"
 last_emitted_hash="\$initial_hash"
 $promptSubmit
 stable_count=0
+last_stable_emitted_hash=""
 changed_after_start=0
 i=0
 while [ "\$i" -lt $maxPolls ]; do
@@ -599,17 +755,17 @@ while [ "\$i" -lt $maxPolls ]; do
     fi
     break
   fi
-  if printf "%s" "\$pane_output" | grep -E -q "Allow execution of|Allow command execution|Would you like to run|Asking User|Enter select|Type Something"; then
+  if printf "%s" "\$pane_output" | grep -E -i -q ${_shellQuote(approvalPromptPattern)}; then
     if [ "\$snapshot_emitted" -eq 0 ]; then
       emit_armin_snapshot
     fi
     break
   fi
   if [ "\$changed_after_start" -eq 1 ] && [ "\$stable_count" -ge $stablePolls ]; then
-    if [ "\$snapshot_emitted" -eq 0 ]; then
+    if [ "\$snapshot_emitted" -eq 0 ] && [ "\$current_hash" != "\$last_stable_emitted_hash" ]; then
       emit_armin_snapshot
+      last_stable_emitted_hash="\$current_hash"
     fi
-    break
   fi
   if [ "\$i" -eq ${maxPolls - 1} ]; then
     if [ "\$snapshot_emitted" -eq 0 ]; then
@@ -629,6 +785,10 @@ wait "\$pipe_cat_pid" 2>/dev/null || true
       pathPrepend: request.pathPrepend,
       shellWrapper: request.shellWrapper,
     );
+  }
+
+  RuntimePolicy _runtimePolicyFor(AgentExecutionRequest request) {
+    return _runtimePolicy.forApprovalMode(request.approvalConfig?.mode);
   }
 
   String _buildConnectionTestCommand(AgentConnectionTestRequest request) {
@@ -750,6 +910,11 @@ fi
   }
 
   @visibleForTesting
+  String buildProbeRemoteStateCommandForTest(AgentControlRequest request) {
+    return _buildProbeRemoteStateCommand(request);
+  }
+
+  @visibleForTesting
   String buildTerminalOptionCommandForTest(
     AgentControlRequest request,
     String optionKey,
@@ -773,6 +938,27 @@ fi
       );
       return output.rawOutputForLatestUpdate(fallback: '');
     }).toList(growable: false);
+  }
+
+  @visibleForTesting
+  List<String> rawOutputsForSnapshotChunksForTest(List<String> chunks) {
+    final output = _ExecutionOutputState();
+    return chunks.map((chunk) {
+      output.write(chunk);
+      return output.rawOutputForLatestUpdate(fallback: '');
+    }).toList(growable: false);
+  }
+
+  @visibleForTesting
+  int get streamTextLimitForTest => _ExecutionOutputState.streamTextLimit;
+
+  @visibleForTesting
+  String streamTextForChunksForTest(List<String> chunks) {
+    final output = _ExecutionOutputState();
+    for (final chunk in chunks) {
+      output.write(chunk);
+    }
+    return output.streamText;
   }
 
   @visibleForTesting
@@ -829,6 +1015,8 @@ fi
         label: 'Qoder',
         workspaceFlag: '-w',
         readyPattern: r'Qoder|qoder|/help|/status|workspace|>',
+        approvalPromptPattern:
+            r'Permission Required|Apply this change|Allow once|Reject and type something|Approve|Proceed|Continue',
         skipCodexUpdatePrompt: false,
       );
     }
@@ -836,8 +1024,16 @@ fi
       label: 'Codex',
       workspaceFlag: '-C',
       readyPattern: r'OpenAI Codex|directory:',
+      approvalPromptPattern:
+          r'Permission Required|Apply this change|Allow execution of|Allow command execution|Would you like to run|Asking User|Enter select|Type Something|Allow once|Allow for this session|Reject and type something',
       skipCodexUpdatePrompt: true,
     );
+  }
+
+  String _approvalPromptPattern(_AgentRuntimeProfile profile) {
+    const genericInteractivePattern =
+        r'([0-9]{1,2}[.)][[:space:]]*(Allow|Reject|Approve|Yes|No|Continue|Proceed))|([>❯][[:space:]]*[0-9]{1,2}[.)])|((permission|approval|confirm|allow|reject|proceed|continue).{0,80}[?？])|((waiting for|asking).{0,40}(user|input))';
+    return '$genericInteractivePattern|${profile.approvalPromptPattern}';
   }
 
   String _buildReadyCheck(_AgentRuntimeProfile profile) {
@@ -900,6 +1096,7 @@ fi
 class _ExecutionOutputState {
   static const _snapshotBegin = '__ARMIN_SNAPSHOT_BEGIN__';
   static const _snapshotEnd = '__ARMIN_SNAPSHOT_END__';
+  static const streamTextLimit = 256 * 1024;
 
   @visibleForTesting
   static const snapshotBeginForTest = _snapshotBegin;
@@ -907,23 +1104,45 @@ class _ExecutionOutputState {
   @visibleForTesting
   static const snapshotEndForTest = _snapshotEnd;
 
-  final StringBuffer _stream = StringBuffer();
+  String _streamText = '';
+  final StringBuffer _snapshot = StringBuffer();
   String _latestSnapshot = '';
   String _lastRawOutput = '';
   String _lastRawSignature = '';
+  String _lastPromptParseSignature = '';
+  _PromptParseResult _lastPromptParseResult = const _PromptParseResult();
+  bool _capturingSnapshot = false;
+  int _snapshotBeginMatch = 0;
+  int _snapshotEndMatch = 0;
 
   void write(String text) {
-    _stream.write(text);
-    final snapshot = _extractLatestSnapshot(_stream.toString());
-    if (snapshot != null) {
-      _latestSnapshot = snapshot;
-    }
+    _appendStreamText(text);
+    _scanSnapshotMarkers(text);
   }
 
-  String get streamText => _stream.toString();
+  String get streamText => _streamText;
 
   String get observedText {
     return _latestSnapshot.trim().isEmpty ? streamText : _latestSnapshot;
+  }
+
+  _PromptParseResult promptState({
+    required TerminalPromptParser terminalPromptParser,
+    required ApprovalParser approvalParser,
+  }) {
+    final observed = observedText;
+    final semanticSignature = _semanticSignature(observed);
+    final signature =
+        semanticSignature.isEmpty ? observed.trim() : semanticSignature;
+    if (signature == _lastPromptParseSignature) {
+      return _lastPromptParseResult;
+    }
+    _lastPromptParseSignature = signature;
+    _lastPromptParseResult = _PromptParseResult(
+      terminalPrompt: terminalPromptParser.parse(observed),
+      approval: approvalParser.parse(observed),
+    );
+    return _lastPromptParseResult;
   }
 
   String rawOutputForLatestUpdate({required String fallback}) {
@@ -947,17 +1166,64 @@ class _ExecutionOutputState {
     return _latestSnapshot;
   }
 
-  String? _extractLatestSnapshot(String text) {
-    final end = text.lastIndexOf(_snapshotEnd);
-    if (end < 0) {
-      return null;
+  void _appendStreamText(String text) {
+    if (text.length >= streamTextLimit) {
+      _streamText = text.substring(text.length - streamTextLimit);
+      return;
     }
-    final begin = text.lastIndexOf(_snapshotBegin, end);
-    if (begin < 0) {
-      return null;
+    final next = '$_streamText$text';
+    if (next.length > streamTextLimit) {
+      _streamText = next.substring(next.length - streamTextLimit);
+      return;
     }
-    final start = begin + _snapshotBegin.length;
-    return text.substring(start, end).trim();
+    _streamText = next;
+  }
+
+  void _scanSnapshotMarkers(String text) {
+    for (var index = 0; index < text.length; index++) {
+      final codeUnit = text.codeUnitAt(index);
+      if (_capturingSnapshot) {
+        _scanSnapshotEnd(codeUnit);
+      } else {
+        _scanSnapshotBegin(codeUnit);
+      }
+    }
+  }
+
+  void _scanSnapshotBegin(int codeUnit) {
+    if (codeUnit == _snapshotBegin.codeUnitAt(_snapshotBeginMatch)) {
+      _snapshotBeginMatch++;
+      if (_snapshotBeginMatch == _snapshotBegin.length) {
+        _capturingSnapshot = true;
+        _snapshotBeginMatch = 0;
+        _snapshotEndMatch = 0;
+        _snapshot.clear();
+      }
+      return;
+    }
+    _snapshotBeginMatch = codeUnit == _snapshotBegin.codeUnitAt(0) ? 1 : 0;
+  }
+
+  void _scanSnapshotEnd(int codeUnit) {
+    if (codeUnit == _snapshotEnd.codeUnitAt(_snapshotEndMatch)) {
+      _snapshotEndMatch++;
+      if (_snapshotEndMatch == _snapshotEnd.length) {
+        _latestSnapshot = _snapshot.toString().trim();
+        _snapshot.clear();
+        _capturingSnapshot = false;
+        _snapshotEndMatch = 0;
+      }
+      return;
+    }
+    if (_snapshotEndMatch > 0) {
+      _snapshot.write(_snapshotEnd.substring(0, _snapshotEndMatch));
+      _snapshotEndMatch = 0;
+      if (codeUnit == _snapshotEnd.codeUnitAt(0)) {
+        _snapshotEndMatch = 1;
+        return;
+      }
+    }
+    _snapshot.writeCharCode(codeUnit);
   }
 
   String _semanticSignature(String snapshot) {
@@ -989,6 +1255,54 @@ class _ExecutionOutputState {
   }
 }
 
+class _PooledControlConnection {
+  _PooledControlConnection(this.client);
+
+  final SSHClient client;
+  Timer? _idleTimer;
+  int _activeCommands = 0;
+  bool closed = false;
+
+  void beginCommand() {
+    _idleTimer?.cancel();
+    _idleTimer = null;
+    _activeCommands++;
+  }
+
+  void endCommand({
+    required Duration idleTimeout,
+    required VoidCallback onIdle,
+  }) {
+    if (_activeCommands > 0) {
+      _activeCommands--;
+    }
+    if (_activeCommands == 0 && !closed) {
+      _idleTimer = Timer(idleTimeout, onIdle);
+    }
+  }
+
+  Future<void> close() async {
+    if (closed) {
+      return;
+    }
+    closed = true;
+    _idleTimer?.cancel();
+    _idleTimer = null;
+    client.close();
+    await client.done;
+  }
+}
+
+class _PromptParseResult {
+  const _PromptParseResult({
+    this.terminalPrompt,
+    this.approval,
+  });
+
+  final TerminalPrompt? terminalPrompt;
+  final ApprovalRequest? approval;
+}
+
 class SSHAuthPlan {
   const SSHAuthPlan({
     this.identities,
@@ -1004,11 +1318,13 @@ class _AgentRuntimeProfile {
     required this.label,
     required this.workspaceFlag,
     required this.readyPattern,
+    required this.approvalPromptPattern,
     required this.skipCodexUpdatePrompt,
   });
 
   final String label;
   final String workspaceFlag;
   final String readyPattern;
+  final String approvalPromptPattern;
   final bool skipCodexUpdatePrompt;
 }

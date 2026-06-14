@@ -9,6 +9,10 @@ import 'package:armin/features/agent/parsers/terminal_prompt.dart';
 import 'package:armin/features/agent/services/agent_session_service.dart';
 import 'package:armin/features/hosts/models/host_config.dart';
 import 'package:armin/features/projects/models/project_path_config.dart';
+import 'package:armin/features/runtime/models/runtime_task_snapshot.dart';
+import 'package:armin/features/runtime/services/bridge_runtime.dart';
+import 'package:armin/features/runtime/services/runtime_event_bus.dart';
+import 'package:armin/features/runtime/services/runtime_task_store.dart';
 import 'package:armin/features/tasks/models/native_output_turn.dart';
 import 'package:armin/features/tasks/models/task_constraint.dart';
 import 'package:armin/features/tasks/models/task_session.dart';
@@ -166,6 +170,114 @@ void main() {
     expect(state.tasks.single.shortSummary, 'stream update');
   });
 
+  test('saveTask notifies only matching task listenable', () async {
+    final task = _task(status: TaskStatus.running);
+    final other = _task(status: TaskStatus.running).copyWith(id: 'task-2');
+    final store = _TaskStore(task);
+    store.tasks = [task, other];
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: _ControlAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+    var taskUpdates = 0;
+    var otherUpdates = 0;
+    state.taskListenable(task.id).addListener(() => taskUpdates++);
+    state.taskListenable(other.id).addListener(() => otherUpdates++);
+
+    await state.saveTask(task.copyWith(shortSummary: 'updated task 1'));
+
+    expect(taskUpdates, 1);
+    expect(otherUpdates, 0);
+  });
+
+  test('startTaskExecution does not block tmux execution on runtime storage',
+      () async {
+    final task = _task(status: TaskStatus.running);
+    final store = _TaskStore(null);
+    final runtimeStore = _BlockingRuntimeStore();
+    final agent = _ControlAgent();
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: agent,
+      voiceService: const _SilentVoiceService(),
+      bridgeRuntime: BridgeRuntime(
+        taskStore: runtimeStore,
+        eventBus: RuntimeEventBus(),
+      ),
+    );
+    await state.load();
+
+    await state.saveTask(task);
+    await runtimeStore.waitForBlockedLoad();
+    state.startTaskExecution(
+      task,
+      const AgentExecutionRequest(prompt: 'Task'),
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    expect(agent.lastExecuteRequest?.prompt, 'Task');
+
+    runtimeStore.releaseLoad();
+    await Future<void>.delayed(Duration.zero);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(
+      (await runtimeStore.loadTask(task.id))?.status,
+      RuntimeTaskStatus.running,
+    );
+  });
+
+  test('markTaskCompleted creates bridge task before completing it', () async {
+    final task = _task(status: TaskStatus.running);
+    final store = _TaskStore(task);
+    final agent = _ControlAgent()..capturedLog = 'all done';
+    final runtimeStore = _CallRecordingRuntimeStore();
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: agent,
+      voiceService: const _SilentVoiceService(),
+      bridgeRuntime: BridgeRuntime(
+        taskStore: runtimeStore,
+        eventBus: RuntimeEventBus(),
+      ),
+    );
+    await state.load();
+
+    await state.markTaskCompleted(task);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(runtimeStore.callLog.length, greaterThanOrEqualTo(2));
+    final createIndex =
+        runtimeStore.callLog.indexWhere((log) => log.status == 'running');
+    final completeIndex =
+        runtimeStore.callLog.indexWhere((log) => log.status == 'completed');
+    expect(createIndex, greaterThanOrEqualTo(0));
+    expect(completeIndex, greaterThanOrEqualTo(0));
+    expect(createIndex, lessThan(completeIndex),
+        reason: 'bridgeRuntime.createTask must happen before completeTask');
+    expect(store.task!.status, TaskStatus.userCompleted);
+    expect(agent.events, containsAllInOrder(['captureLog', 'cleanup']));
+  });
+
+  test('refreshTasks reloads task list from store', () async {
+    final task = _task(status: TaskStatus.running);
+    final store = _TaskStore(task);
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: _ControlAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    store.task = task.copyWith(shortSummary: 'reloaded from store');
+    await state.refreshTasks();
+
+    expect(state.tasks.single.shortSummary, 'reloaded from store');
+    expect(store.loadTasksCount, 2);
+  });
+
   test('deleteTask removes task from store', () async {
     final task = _task(status: TaskStatus.userCompleted);
     final store = _TaskStore(task);
@@ -196,6 +308,113 @@ void main() {
 
     expect(store.deletedTaskId, isNull);
     expect(state.tasks.single.id, task.id);
+  });
+
+  test('saveHost rejects edits while active task uses host', () async {
+    final task = _task(status: TaskStatus.running);
+    final store = _TaskStore(task, hosts: [task.host]);
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: _ControlAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await expectLater(
+      state.saveHost(task.host.copyWith(name: 'Renamed')),
+      throwsA(isA<HostEditBlockedException>()),
+    );
+
+    expect(store.savedHosts, isEmpty);
+  });
+
+  test('deleteHost rejects deletion while active task uses host', () async {
+    final task = _task(status: TaskStatus.running);
+    final store = _TaskStore(task, hosts: [task.host]);
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: _ControlAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await expectLater(
+      state.deleteHost(task.host.id),
+      throwsA(isA<HostEditBlockedException>()),
+    );
+
+    expect(store.deletedHostId, isNull);
+    expect(state.hosts.single.id, task.host.id);
+  });
+
+  test('deleteHost removes inactive host from store', () async {
+    final task = _task(status: TaskStatus.completed);
+    final store = _TaskStore(task, hosts: [task.host]);
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: _ControlAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await state.deleteHost(task.host.id);
+
+    expect(store.deletedHostId, task.host.id);
+    expect(state.hosts, isEmpty);
+  });
+
+  test('saveProjectPath rejects editing path used by active task', () async {
+    final task = _task(status: TaskStatus.running);
+    final projectPath = _projectPath(
+      id: 'project-1',
+      path: task.host.projectPath,
+    );
+    final store = _TaskStore(
+      task,
+      hosts: [task.host],
+      projectPaths: [projectPath],
+    );
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: _ControlAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await expectLater(
+      state.saveProjectPath(projectPath.copyWith(path: '/tmp/other')),
+      throwsA(isA<ProjectPathEditBlockedException>()),
+    );
+
+    expect(store.savedProjectPaths, isEmpty);
+  });
+
+  test('deleteProjectPath rejects deletion while active task uses path',
+      () async {
+    final task = _task(status: TaskStatus.running);
+    final projectPath = _projectPath(
+      id: 'project-1',
+      path: task.host.projectPath,
+    );
+    final store = _TaskStore(
+      task,
+      hosts: [task.host],
+      projectPaths: [projectPath],
+    );
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: _ControlAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await expectLater(
+      state.deleteProjectPath(projectPath.id),
+      throwsA(isA<ProjectPathEditBlockedException>()),
+    );
+
+    expect(store.deletedProjectPathId, isNull);
+    expect(state.projectPaths.single.id, projectPath.id);
   });
 
   test('resolveApproval sends raw decision and marks task running', () async {
@@ -234,6 +453,51 @@ void main() {
     expect(agent.lastExecuteRequest?.prompt, isEmpty);
   });
 
+  test('resolveApproval routes native terminal approvals through option key',
+      () async {
+    const option = TerminalPromptOption(key: '1', label: 'Allow once');
+    final task = _task(status: TaskStatus.needApproval).copyWith(
+      approval: const ApprovalRequest(
+        reason: 'Apply this change?',
+        command: 'plan_approval',
+        risk: 'medium',
+      ),
+      terminalPrompt: const TerminalPrompt(
+        question: 'Apply this change?',
+        options: [
+          option,
+          TerminalPromptOption(key: '4', label: 'Reject and type something'),
+        ],
+      ),
+      approvalRequests: const [
+        ApprovalRequest(
+          reason: 'Apply this change?',
+          command: 'plan_approval',
+          risk: 'medium',
+        ),
+      ],
+    );
+    final store = _TaskStore(task);
+    final agent = _ControlAgent();
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: agent,
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await state.resolveApproval(task, approved: true);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(agent.events, isNot(contains('sendFollowUp')));
+    expect(agent.selectedTerminalOption, '1');
+    expect(store.task!.status, TaskStatus.running);
+    expect(store.task!.approval, isNull);
+    expect(store.task!.terminalPrompt, isNull);
+    expect(store.task!.approvalRequests.single.status, 'approved');
+    expect(agent.lastExecuteRequest?.attachOnly, isTrue);
+  });
+
   test('terminal prompt update persists selectable terminal actions', () async {
     final task = _task(status: TaskStatus.running);
     final store = _TaskStore(task);
@@ -255,6 +519,27 @@ void main() {
     expect(store.task!.terminalPrompt?.options.first.label, 'Allow once');
     expect(
         store.task!.metricEvents.last.eventType, 'terminal_prompt_requested');
+  });
+
+  test('needsAttention update changes running task to needAttention', () async {
+    final task = _task(status: TaskStatus.running);
+    final store = _TaskStore(task);
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: _NeedsAttentionAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    state.startTaskExecution(
+      task,
+      const AgentExecutionRequest(prompt: 'Task'),
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    expect(store.task!.status, TaskStatus.needAttention);
+    expect(store.task!.shortSummary, 'Agent 正在等待你的输入');
+    expect(store.task!.metricEvents.last.eventType, 'need_attention');
   });
 
   test('selectTerminalOption writes selected key and resumes observation',
@@ -397,8 +682,156 @@ world
     expect(
         agent.lastExecuteRequest?.tmuxSessionName, task.host.tmuxSessionName);
     expect(store.task!.turns.last.cleanedOutput, contains('world'));
-    expect(store.task!.result?.summary, contains('world'));
+    expect(store.task!.result, isNull);
     expect(agent.events, contains('captureLog'));
+  });
+
+  test('refreshTaskFromRemote recovers approval prompt while task is running',
+      () async {
+    final task = _task(status: TaskStatus.running).copyWith(
+      approvalRequests: [
+        ApprovalRequest(
+          reason: 'Apply this change?',
+          command: 'plan_approval',
+          risk: 'medium',
+          status: 'approved',
+          resolvedAt: DateTime(2026, 5, 18, 0, 1),
+        ),
+      ],
+      turns: [
+        NativeOutputTurn(
+          id: 'turn-task-1-1',
+          taskId: 'task-1',
+          turnIndex: 1,
+          userInput: '写 README',
+          rawOutput: '',
+          cleanedOutput: '',
+          startedAt: DateTime(2026, 5, 18),
+          lastOutputAt: DateTime(2026, 5, 18),
+          status: NativeOutputTurnStatus.running,
+        ),
+      ],
+    );
+    final store = _TaskStore(task);
+    final agent = _ControlAgent()
+      ..capturedLog = '''
+Tool: Write
+File: README.md
+
+Apply this change?
+
+  ❯ 1. Allow once
+    2. Allow for this session
+    3. Modify with external editor
+    4. Reject and type something
+    5. No
+''';
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: agent,
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await state.refreshTaskFromRemote(task);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(store.task!.status, TaskStatus.needApproval);
+    expect(store.task!.approval?.reason, 'Apply this change?');
+    expect(store.task!.approvalRequests.single.reason, 'Apply this change?');
+    expect(store.task!.approvalRequests.single.status, 'pending');
+    expect(store.task!.approvalRequests.single.resolvedAt, isNull);
+    expect(store.task!.terminalPrompt?.options.first.label, 'Allow once');
+    expect(agent.lastExecuteRequest, isNull);
+    expect(agent.events, contains('captureLog'));
+  });
+
+  test('refreshTaskFromRemote replaces observer only when one is active',
+      () async {
+    final task = _task(status: TaskStatus.running);
+    final store = _TaskStore(task);
+    final agent = _HangingAgent()..capturedLog = 'still running\n下一步可以继续';
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: agent,
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    state.startTaskExecution(
+      task,
+      const AgentExecutionRequest(prompt: 'Task'),
+    );
+    await Future<void>.delayed(Duration.zero);
+    final firstRequest = agent.lastExecuteRequest;
+
+    await state.refreshTaskFromRemote(task);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(agent.cancelled, isTrue);
+    expect(agent.lastExecuteRequest, isNot(same(firstRequest)));
+    expect(agent.lastExecuteRequest?.attachOnly, isTrue);
+    expect(agent.events, contains('captureLog'));
+  });
+
+  test('refreshTaskFromRemote does not relisten detached tasks', () async {
+    final task = _task(status: TaskStatus.observerDetached);
+    final store = _TaskStore(task);
+    final agent = _ControlAgent()
+      ..capturedLog = 'remote output after detach\n等待继续';
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: agent,
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await state.refreshTaskFromRemote(task);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(agent.lastExecuteRequest, isNull);
+    expect(agent.events, contains('captureLog'));
+  });
+
+  test('remote reconcile reuses refresh for stable running output', () async {
+    final task = _task(status: TaskStatus.running).copyWith(
+      turns: [
+        NativeOutputTurn(
+          id: 'turn-task-1-1',
+          taskId: 'task-1',
+          turnIndex: 1,
+          userInput: '输出 hello',
+          rawOutput: '',
+          cleanedOutput: '',
+          startedAt: DateTime(2026, 5, 18),
+          lastOutputAt: DateTime(2026, 5, 18),
+          status: NativeOutputTurnStatus.running,
+        ),
+      ],
+    );
+    final store = _TaskStore(task);
+    final agent = _ProbeAgent()
+      ..capturedLog = 'HELLO WORLD\n下一步可以继续补充要求'
+      ..probe = const RemoteTaskProbe(
+        sessionExists: true,
+        snapshot: 'HELLO WORLD\n下一步可以继续补充要求',
+      );
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: agent,
+      voiceService: const _SilentVoiceService(),
+      enableRemoteReconcile: true,
+      remoteReconcileInterval: const Duration(milliseconds: 10),
+    );
+    await state.load();
+
+    await _waitUntil(() => store.task!.status == TaskStatus.turnIdle);
+    state.dispose();
+
+    expect(store.task!.status, TaskStatus.turnIdle);
+    expect(store.task!.result?.summary, contains('HELLO WORLD'));
+    expect(agent.events, contains('captureLog'));
+    expect(agent.probeCount, greaterThanOrEqualTo(2));
   });
 
   test('sendFollowUp sends clean prompt and relistens current tmux session',
@@ -531,6 +964,7 @@ world
     await Future<void>.delayed(Duration.zero);
 
     expect(store.task!.status, TaskStatus.turnIdle);
+    await _waitUntil(() => voice.spokenSummaries.isNotEmpty);
     expect(voice.spokenSummaries.single, contains('本轮输出已暂停'));
     expect(voice.spokenSummaries.single, contains('done'));
   });
@@ -559,6 +993,28 @@ world
     expect(store.task!.turns.single.rawOutput, contains('hello'));
   });
 
+  test('done update needing attention does not write a result summary',
+      () async {
+    final task = _task(status: TaskStatus.running);
+    final store = _TaskStore(task);
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: _DoneNeedsAttentionAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    state.startTaskExecution(
+      task,
+      const AgentExecutionRequest(prompt: 'Task'),
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    expect(store.task!.status, TaskStatus.needAttention);
+    expect(store.task!.result, isNull);
+    expect(store.task!.summary, task.summary);
+  });
+
   test('turn idle output is spoken once for repeated same summary', () async {
     final task = _task(status: TaskStatus.running);
     final store = _TaskStore(task);
@@ -577,6 +1033,7 @@ world
     await Future<void>.delayed(Duration.zero);
 
     expect(store.task!.status, TaskStatus.turnIdle);
+    await _waitUntil(() => voice.spokenSummaries.isNotEmpty);
     expect(voice.spokenSummaries, hasLength(1));
     expect(voice.spokenSummaries.single, contains('本轮输出已暂停'));
   });
@@ -601,12 +1058,13 @@ world
 
     expect(store.task!.status, TaskStatus.turnIdle);
     expect(store.task!.result?.summary, 'HELLO WORLD');
-    expect(store.task!.executionLogs.map((log) => log.rawOutput),
-        contains('HELLO WORLD'));
+    // executionLogs may be empty for pure-progress chunks;
+    // the full execution snapshot is captured on state transitions only.
     expect(
       store.task!.metricEvents.map((event) => event.eventType),
-      containsAllInOrder(['log_update', 'turn_idle']),
+      contains('turn_idle'),
     );
+    await _waitUntil(() => voice.spokenSummaries.isNotEmpty);
     expect(voice.spokenSummaries, hasLength(1));
     expect(voice.spokenSummaries.single, contains('HELLO WORLD'));
   });
@@ -649,12 +1107,58 @@ world
     await Future<void>.delayed(Duration.zero);
     await Future<void>.delayed(Duration.zero);
 
-    expect(
-      store.task!.metricEvents
-          .where((event) => event.eventType == 'log_update'),
-      hasLength(1),
+    // Pure-progress updates are handled via _taskWithLightProgress
+    // which skips metrics accumulation. Metrics are only created on
+    // state transitions. Repeated progress chunks produce 0 metric nodes.
+    final logUpdates = store.task!.metricEvents
+        .where((event) => event.eventType == 'log_update');
+    expect(logUpdates, isEmpty);
+  });
+
+  test('pure progress updates do not notify home snapshot', () async {
+    final task = _task(status: TaskStatus.running);
+    final store = _TaskStore(task);
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: _RepeatedLogUpdateAgent(),
+      voiceService: const _SilentVoiceService(),
     );
-    expect(store.task!.metricEvents.single.payloadJson, '{"bytes":6}');
+    await state.load();
+    var homeUpdates = 0;
+    state.homeSnapshot.addListener(() => homeUpdates++);
+
+    state.startTaskExecution(
+      task,
+      const AgentExecutionRequest(prompt: 'Task'),
+    );
+    await Future<void>.delayed(Duration.zero);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(store.task!.status, TaskStatus.running);
+    expect(homeUpdates, 0);
+  });
+
+  test('pure progress updates do not notify global app listeners', () async {
+    final task = _task(status: TaskStatus.running);
+    final store = _TaskStore(task);
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: _RepeatedLogUpdateAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+    var appUpdates = 0;
+    state.addListener(() => appUpdates++);
+
+    state.startTaskExecution(
+      task,
+      const AgentExecutionRequest(prompt: 'Task'),
+    );
+    await Future<void>.delayed(Duration.zero);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(store.task!.status, TaskStatus.running);
+    expect(appUpdates, 0);
   });
 
   test('approval request is spoken when attention speech is enabled', () async {
@@ -675,6 +1179,7 @@ world
     await Future<void>.delayed(Duration.zero);
 
     expect(store.task!.status, TaskStatus.needApproval);
+    await _waitUntil(() => voice.spokenSummaries.isNotEmpty);
     expect(voice.spokenSummaries.single, contains('需要你确认一个操作'));
     expect(voice.spokenSummaries.single, isNot(contains('rm -rf')));
   });
@@ -725,6 +1230,7 @@ world
 
     expect(store.task!.status, TaskStatus.needApproval);
     expect(store.task!.turns.last.turnIndex, 2);
+    await _waitUntil(() => voice.spokenSummaries.isNotEmpty);
     expect(voice.spokenSummaries.single, contains('删除临时构建产物'));
     expect(voice.spokenSummaries.single, isNot(contains('Turn 1 old result')));
   });
@@ -927,6 +1433,7 @@ world
     await Future<void>.delayed(Duration.zero);
 
     expect(store.task!.status, TaskStatus.failed);
+    await _waitUntil(() => voice.spokenSummaries.isNotEmpty);
     expect(voice.spokenSummaries.single, contains('任务失败'));
     expect(voice.spokenSummaries.single, contains('建议先查看失败原因'));
   });
@@ -956,6 +1463,22 @@ world
     expect(store.task!.metricEvents.last.eventType, 'observer_connection_lost');
     expect(agent.cleanedUp, isFalse);
   });
+}
+
+Future<void> _waitUntil(
+  bool Function() condition, {
+  Duration timeout = const Duration(milliseconds: 500),
+}) async {
+  final deadline = DateTime.now().add(timeout);
+  while (DateTime.now().isBefore(deadline)) {
+    if (condition()) {
+      return;
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+  }
+  if (!condition()) {
+    fail('Timed out waiting for condition.');
+  }
 }
 
 TaskSession _task({required TaskStatus status}) {
@@ -992,31 +1515,80 @@ TaskSession _task({required TaskStatus status}) {
   );
 }
 
+ProjectPathConfig _projectPath({
+  required String id,
+  required String path,
+}) {
+  final now = DateTime(2026, 5, 17);
+  return ProjectPathConfig(
+    id: id,
+    name: 'Armin',
+    path: path,
+    createdAt: now,
+    updatedAt: now,
+  );
+}
+
 class _TaskStore implements TaskHistoryStore {
-  _TaskStore(this.task, {List<HostConfig>? hosts}) : _hosts = hosts;
+  _TaskStore(
+    this.task, {
+    List<HostConfig>? hosts,
+    List<ProjectPathConfig>? projectPaths,
+  })  : hosts = hosts ?? [if (task != null) task.host],
+        projectPaths = projectPaths ?? const [],
+        tasks = [if (task != null) task];
 
   TaskSession? task;
+  List<TaskSession> tasks;
   String? deletedTaskId;
-  final List<HostConfig>? _hosts;
+  String? deletedHostId;
+  String? deletedProjectPathId;
+  final List<HostConfig> hosts;
+  List<ProjectPathConfig> projectPaths;
+  final List<HostConfig> savedHosts = [];
+  final List<ProjectPathConfig> savedProjectPaths = [];
   int loadTasksCount = 0;
 
   @override
   Future<List<HostConfig>> loadHosts() async {
-    return _hosts ?? [if (task != null) task!.host];
+    return List.unmodifiable(hosts);
   }
 
   @override
   Future<List<TaskSession>> loadTasks() async {
     loadTasksCount++;
-    return [if (task != null) task!];
+    if (task != null && tasks.length <= 1) {
+      tasks = [task!];
+    }
+    return tasks;
   }
 
   @override
-  Future<void> saveHost(HostConfig host) async {}
+  Future<void> saveHost(HostConfig host) async {
+    savedHosts.add(host);
+    final index = hosts.indexWhere((item) => item.id == host.id);
+    if (index >= 0) {
+      hosts[index] = host;
+      return;
+    }
+    hosts.add(host);
+  }
+
+  @override
+  Future<void> deleteHost(String hostId) async {
+    deletedHostId = hostId;
+    hosts.removeWhere((item) => item.id == hostId);
+  }
 
   @override
   Future<void> saveTask(TaskSession task) async {
     this.task = task;
+    final index = tasks.indexWhere((item) => item.id == task.id);
+    if (index >= 0) {
+      tasks[index] = task;
+    } else {
+      tasks.insert(0, task);
+    }
   }
 
   @override
@@ -1025,16 +1597,82 @@ class _TaskStore implements TaskHistoryStore {
     if (task?.id == taskId) {
       task = null;
     }
+    tasks = tasks.where((task) => task.id != taskId).toList();
   }
 
   @override
-  Future<List<ProjectPathConfig>> loadProjectPaths() async => [];
+  Future<List<ProjectPathConfig>> loadProjectPaths() async {
+    return List.unmodifiable(projectPaths);
+  }
 
   @override
-  Future<void> saveProjectPath(ProjectPathConfig projectPath) async {}
+  Future<void> saveProjectPath(ProjectPathConfig projectPath) async {
+    savedProjectPaths.add(projectPath);
+    final index = projectPaths.indexWhere((item) => item.id == projectPath.id);
+    if (index >= 0) {
+      projectPaths[index] = projectPath;
+      return;
+    }
+    projectPaths = [...projectPaths, projectPath];
+  }
 
   @override
-  Future<void> deleteProjectPath(String projectPathId) async {}
+  Future<void> deleteProjectPath(String projectPathId) async {
+    deletedProjectPathId = projectPathId;
+    projectPaths = projectPaths
+        .where((item) => item.id != projectPathId)
+        .toList(growable: false);
+  }
+}
+
+class _BlockingRuntimeStore extends InMemoryRuntimeTaskStore {
+  final Completer<void> _blockedLoad = Completer<void>();
+  final Completer<void> _releaseLoad = Completer<void>();
+  bool _blockedOnce = false;
+
+  Future<void> waitForBlockedLoad() => _blockedLoad.future;
+
+  void releaseLoad() {
+    if (!_releaseLoad.isCompleted) {
+      _releaseLoad.complete();
+    }
+  }
+
+  @override
+  Future<RuntimeTaskSnapshot?> loadTask(String taskId) async {
+    if (!_blockedOnce) {
+      _blockedOnce = true;
+      _blockedLoad.complete();
+      await _releaseLoad.future;
+    }
+    return super.loadTask(taskId);
+  }
+}
+
+class _CallRecordingRuntimeStore extends InMemoryRuntimeTaskStore {
+  final List<_RuntimeStoreCall> callLog = [];
+
+  @override
+  Future<void> saveTask(RuntimeTaskSnapshot task) async {
+    callLog.add(_RuntimeStoreCall(
+      taskId: task.taskId,
+      status: task.status.name,
+      timestamp: DateTime.now(),
+    ));
+    return super.saveTask(task);
+  }
+}
+
+class _RuntimeStoreCall {
+  const _RuntimeStoreCall({
+    required this.taskId,
+    required this.status,
+    required this.timestamp,
+  });
+
+  final String taskId;
+  final String status;
+  final DateTime timestamp;
 }
 
 class _ControlAgent implements AgentSessionService {
@@ -1065,6 +1703,11 @@ class _ControlAgent implements AgentSessionService {
     events.add('resume');
     resumed = true;
     lastResumeRequest = request;
+  }
+
+  @override
+  Future<void> interrupt(AgentControlRequest request) async {
+    events.add('interrupt');
   }
 
   @override
@@ -1113,6 +1756,18 @@ class _ControlAgent implements AgentSessionService {
     AgentInstructionDiscoveryRequest request,
   ) async {
     return const AgentInstructionDiscoveryResult(paths: []);
+  }
+}
+
+class _ProbeAgent extends _ControlAgent implements RemoteTaskProbeService {
+  RemoteTaskProbe probe = const RemoteTaskProbe.missingSession();
+  int probeCount = 0;
+
+  @override
+  Future<RemoteTaskProbe> probeRemoteState(AgentControlRequest request) async {
+    events.add('probeRemoteState');
+    probeCount++;
+    return probe;
   }
 }
 
@@ -1165,6 +1820,18 @@ class _TurnIdleAgent extends _ControlAgent {
       rawOutput: 'hello',
       cleanedOutput: 'hello',
       turnIdle: true,
+      done: true,
+    );
+  }
+}
+
+class _DoneNeedsAttentionAgent extends _ControlAgent {
+  @override
+  Stream<AgentExecutionUpdate> execute(AgentExecutionRequest request) async* {
+    yield const AgentExecutionUpdate(
+      rawOutput: 'Credits exhausted. Use /usage for details.',
+      cleanedOutput: 'Credits exhausted. Use /usage for details.',
+      needsAttention: true,
       done: true,
     );
   }
@@ -1275,11 +1942,23 @@ class _TerminalPromptAgent extends _ControlAgent {
   }
 }
 
+class _NeedsAttentionAgent extends _ControlAgent {
+  @override
+  Stream<AgentExecutionUpdate> execute(AgentExecutionRequest request) async* {
+    yield const AgentExecutionUpdate(
+      rawOutput: 'Permission Required',
+      cleanedOutput: 'Permission Required',
+      needsAttention: true,
+    );
+  }
+}
+
 class _HangingAgent extends _ControlAgent {
   bool cancelled = false;
 
   @override
   Stream<AgentExecutionUpdate> execute(AgentExecutionRequest request) {
+    lastExecuteRequest = request;
     final controller = StreamController<AgentExecutionUpdate>(
       onCancel: () {
         cancelled = true;

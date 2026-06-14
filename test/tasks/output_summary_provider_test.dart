@@ -91,6 +91,29 @@ hello world
     expect(summary.displaySummary, isNot(contains('最小改动')));
   });
 
+  test('rule provider keeps simple post-thinking output', () async {
+    const simpleOutput = OutputSummaryRequest(
+      cleanedOutput: '''
+> 输出hello world
+▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+
+Thinking
+│ Simple request, just print hello world.
+▪ hello world
+''',
+      status: TaskStatus.turnIdle,
+      taskTitle: '输出hello world',
+      promptInputs: ['输出hello world'],
+    );
+
+    final summary =
+        await const RuleBasedOutputSummaryProvider().summarize(simpleOutput);
+
+    expect(summary.displaySummary, 'hello world');
+    expect(summary.speechSummary, 'hello world');
+    expect(summary.displaySummary, isNot(contains('Simple request')));
+  });
+
   test('rule provider strips governance prefix but keeps the actual result',
       () async {
     const noisyPrefix = OutputSummaryRequest(
@@ -256,6 +279,32 @@ Summer 是一个 Codex桌面宠物（pixel-art风格），角色设定为一位�
     expect(summary.displaySummary, isNot(contains('User constraints')));
     expect(summary.displaySummary, isNot(contains('Thinking')));
     expect(summary.displaySummary, isNot(contains('Grep(')));
+  });
+
+  test('rule provider uses latest post-thinking output instead of prompt',
+      () async {
+    const prompt = '实现一个批量重命名工具，支持正则替换、前缀、后缀和序号。';
+    const output = OutputSummaryRequest(
+      cleanedOutput: '''
+实现一个批量重命名工具，支持正则替换、前缀、后缀和序号。
+Thinking...
+我需要先检查项目结构。
+核心重命名逻辑已全部就绪，实际重命名验证通过。
+下一步可以写 README.md，或者继续调整参数校验。
+''',
+      status: TaskStatus.turnIdle,
+      taskTitle: prompt,
+      promptInputs: [prompt],
+    );
+
+    final summary =
+        await const RuleBasedOutputSummaryProvider().summarize(output);
+
+    expect(summary.displaySummary, contains('核心重命名逻辑已全部就绪'));
+    expect(summary.displaySummary, contains('下一步可以写 README.md'));
+    expect(summary.displaySummary, isNot(contains('实现一个批量重命名工具')));
+    expect(summary.displaySummary, isNot(contains('Thinking')));
+    expect(summary.displaySummary, isNot(contains('检查项目结构')));
   });
 
   test('rule provider removes meta narration prefixes before results',
@@ -483,6 +532,70 @@ pin-up 风格，含 9 个动画状态（idle/running/waving/jumping/failed/waiti
     expect(summary.displaySummary, isNot(contains('---')));
   });
 
+  test('rule provider preserves context around structured table results',
+      () async {
+    const tableOutput = OutputSummaryRequest(
+      cleanedOutput: '''
+核心重命名逻辑已全部就绪，实际重命名验证通过。当前实现的核心函数：
+┌──────────────────┬──────────────────────────────────┐
+│ 函数             │ 职责                             │
+├──────────────────┼──────────────────────────────────┤
+│ collect_files()  │ 按正则收集文件，支持递归         │
+│ build_replace()  │ re.sub 正则替换                  │
+│ build_prefix()   │ 文件名前添加前缀                 │
+│ build_suffix()   │ 文件名（扩展名前）添加后缀       │
+│ build_sequence() │ 零填充序号重命名                 │
+│ process_files()  │ 调度各模式，生成变更列表         │
+│ apply_changes()  │ 执行重命名，含冲突检测和 dry-run │
+└──────────────────┴──────────────────────────────────┘
+下一步可以写 README.md，或者你觉得有需要调整的地方。
+''',
+      status: TaskStatus.turnIdle,
+      taskTitle: '实现重命名工具',
+    );
+
+    final summary =
+        await const RuleBasedOutputSummaryProvider().summarize(tableOutput);
+
+    expect(summary.displaySummary, contains('核心重命名逻辑已全部就绪'));
+    expect(summary.displaySummary, contains('实际重命名验证通过'));
+    expect(summary.displaySummary, contains('collect_files()，按正则收集文件'));
+    expect(summary.displaySummary, contains('apply_changes()，执行重命名'));
+    expect(summary.displaySummary, contains('下一步可以写 README.md'));
+    expect(summary.displaySummary, isNot(contains('│')));
+    expect(summary.displaySummary, isNot(contains('┌')));
+  });
+
+  test('rule provider filters prompt before structured table results',
+      () async {
+    const prompt = '实现一个批量重命名工具，支持正则替换、前缀、后缀和序号。';
+    const tableOutput = OutputSummaryRequest(
+      cleanedOutput: '''
+实现一个批量重命名工具，支持正则替换、前缀、后缀和序号。
+核心重命名逻辑已全部就绪，实际重命名验证通过。当前实现的核心函数：
+┌──────────────────┬──────────────────────────────────┐
+│ 函数             │ 职责                             │
+├──────────────────┼──────────────────────────────────┤
+│ collect_files()  │ 按正则收集文件，支持递归         │
+│ apply_changes()  │ 执行重命名，含冲突检测和 dry-run │
+└──────────────────┴──────────────────────────────────┘
+下一步可以写 README.md，或者继续调整参数校验。
+''',
+      status: TaskStatus.turnIdle,
+      taskTitle: prompt,
+      promptInputs: [prompt],
+    );
+
+    final summary =
+        await const RuleBasedOutputSummaryProvider().summarize(tableOutput);
+
+    expect(summary.displaySummary, isNot(contains('实现一个批量重命名工具')));
+    expect(summary.displaySummary, contains('核心重命名逻辑已全部就绪'));
+    expect(summary.displaySummary, contains('collect_files()，按正则收集文件'));
+    expect(summary.displaySummary, contains('下一步可以写 README.md'));
+    expect(summary.displaySummary, isNot(contains('│')));
+  });
+
   test('rule provider merges wrapped table cells before summarizing', () async {
     const tableOutput = OutputSummaryRequest(
       cleanedOutput: '''
@@ -593,6 +706,63 @@ pin-up 风格，含 9 个动画状态（idle/running/waving/jumping/failed/waiti
         contains(
             '评估：app/evaluation/，RAG 评估（evaluate.py）、Loop 评估（evaluate_loop.py）'));
     expect(summary.displaySummary, isNot(contains('BM25；')));
+    expect(summary.displaySummary, isNot(contains('│')));
+  });
+
+  test('rule provider merges wrapped feature table cells', () async {
+    const tableOutput = OutputSummaryRequest(
+      cleanedOutput: '''
+▪ ┌──────────┬────────────┬─────────────────────────────────────────┬────────────┐
+   │ 功能分类 │ 功能名称   │ 说明                                    │ 参数/用法  │
+   ├──────────┼────────────┼─────────────────────────────────────────┼────────────┤
+   │ 重命名模 │ replace    │ 正则表达式查找并替换文件名              │ --find /   │
+   │ 式       │            │                                         │ --with     │
+   │          │ affix      │ 给文件名添加前缀和/或后缀，自动保留扩展 │ --prefix / │
+   │          │            │ 名                                      │ --suffix   │
+   │          │ sequence   │ 按序号批量重命名，支持自定义格式模板    │ --start /  │
+   │          │            │                                         │ --step /   │
+   │          │            │                                         │ --fmt      │
+   │ 文件筛选 │ 递归遍历   │ 递归处理所有子目录中的文件              │ --recursiv │
+   │          │            │                                         │ e / -r     │
+   │          │ 正则过滤   │ 用正则表达式过滤，只处理匹配的文件      │ --match /  │
+   │          │            │                                         │ -m         │
+   │          │ 仅处理文件 │ 自动跳过目录，只处理文件                │ 内置       │
+   │          │ 排序处理   │ 文件按名称排序后依次处理，保证序号稳定  │ 内置       │
+   │ 预览模式 │ dry-run    │ 只显示变更，不实际执行重命名            │ --dry-run  │
+   │          │            │                                         │ / -n       │
+   │ 安全机制 │ 冲突检测   │ 目标文件名已存在时自动跳过，不覆盖      │ 内置       │
+   │          │ 目录校验   │ 路径不存在或非目录时报错退出            │ 内置       │
+   │          │ 空匹配提示 │ 无匹配文件或无需重命名时给出提示        │ 内置       │
+   │ CLI 入口 │ argparse   │ 三种模式各自独立子命令，带独立 --help   │ 内置       │
+   │          │ 子命令     │                                         │            │
+   │          │ 帮助系统   │ 主命令和各子命令均有 --help 说明        │ -h /       │
+   │          │            │                                         │ --help     │
+   │ 格式模板 │ 序号格式化 │ 支持 {seq:03d} 等 Python 格式化语法     │ sequence   │
+   │          │            │                                         │ --fmt      │
+   │          │ 原文件名保 │ 模板中 {name}                           │ sequence   │
+   │          │ 留         │ 代表原文件名（不含扩展名）              │ --fmt      │
+   └──────────┴────────────┴─────────────────────────────────────────┴────────────┘
+''',
+      status: TaskStatus.turnIdle,
+      taskTitle: '输出功能表',
+    );
+
+    final summary =
+        await const RuleBasedOutputSummaryProvider().summarize(tableOutput);
+
+    expect(summary.displaySummary,
+        contains('重命名模式，replace，正则表达式查找并替换文件名，--find / --with'));
+    expect(summary.displaySummary,
+        contains('affix，给文件名添加前缀和/或后缀，自动保留扩展名，--prefix / --suffix'));
+    expect(summary.displaySummary,
+        contains('递归遍历，递归处理所有子目录中的文件，--recursive / -r'));
+    expect(summary.displaySummary, contains('argparse子命令，三种模式各自独立子命令'));
+    expect(summary.displaySummary,
+        contains('原文件名保留，模板中 {name}代表原文件名（不含扩展名），sequence --fmt'));
+    expect(summary.displaySummary, isNot(contains('功能分类，功能名称')));
+    expect(summary.displaySummary, isNot(contains('重命名模，replace')));
+    expect(summary.displaySummary, isNot(contains('--recursiv e')));
+    expect(summary.displaySummary, isNot(contains('原文件名保，模板中')));
     expect(summary.displaySummary, isNot(contains('│')));
   });
 
@@ -795,6 +965,111 @@ You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro).
     expect(summary.speechSummary, isNot(contains('SKILL.md')));
     expect(summary.speechSummary, isNot(contains('/Users/ironion')));
     expect(summary.speechSummary, isNot(contains('Use /skills')));
+  });
+
+  test('rule provider strips Permission Required approval prompt block',
+      () async {
+    // Simpler case: prompt with a clear result after
+    const output = 'Permission Required\n'
+        '\n'
+        'Tool: Write\n'
+        'File: test.py\n'
+        '\n'
+        '    1 print("hello")\n'
+        '\n'
+        'Apply this change?\n'
+        '\n'
+        '  \u003e 1. Allow once\n'
+        '    2. Allow for this session\n'
+        '    3. Reject and type something\n'
+        '    4. No\n'
+        '\n'
+        '\u4efb\u52a1\u5b8c\u6210\uff0c\u5df2\u521b\u5efa\u6587\u4ef6\u3002\n';
+
+    final summary = await const RuleBasedOutputSummaryProvider().summarize(
+      const OutputSummaryRequest(
+        cleanedOutput: output,
+        status: TaskStatus.turnIdle,
+        taskTitle: 'test',
+      ),
+    );
+
+    expect(summary.displaySummary, isNotEmpty);
+    expect(summary.displaySummary, contains('\u4efb\u52a1\u5b8c\u6210'));
+    expect(summary.displaySummary, isNot(contains('Permission Required')));
+    expect(summary.displaySummary, isNot(contains('Apply this change')));
+    expect(summary.displaySummary, isNot(contains('Allow once')));
+    expect(summary.displaySummary, isNot(contains('print("hello")')));
+  });
+
+  test('rule provider drops governance echo and thinking code from result',
+      () async {
+    const request = OutputSummaryRequest(
+      cleanedOutput: '''
+Armin context governance:
+- Only inspect files directly related to the task.
+- Keep edits minimal and focused.
+## User task
+实现审批同步修复
+Thinking
+  我需要先检查审批状态同步。
+  final prompt = "实现审批同步修复";
+  class ApprovalFix {}
+核心逻辑已完成，审批提示会在远端出现后同步到任务详情。
+下一步可以真机验证审批卡片是否自动出现。
+''',
+      status: TaskStatus.turnIdle,
+      taskTitle: '实现审批同步修复',
+      promptInputs: ['实现审批同步修复'],
+    );
+
+    final summary = await const RuleBasedOutputSummaryProvider().summarize(
+      request,
+    );
+
+    expect(summary.displaySummary, contains('核心逻辑已完成'));
+    expect(summary.displaySummary, contains('下一步可以真机验证'));
+    expect(summary.displaySummary, isNot(contains('Armin context governance')));
+    expect(summary.displaySummary, isNot(contains('Only inspect')));
+    expect(summary.displaySummary, isNot(contains('实现审批同步修复')));
+    expect(summary.displaySummary, isNot(contains('final prompt')));
+    expect(summary.displaySummary, isNot(contains('ApprovalFix')));
+  });
+
+  test('rule provider ignores approval decision and uses latest deliverable',
+      () async {
+    const request = OutputSummaryRequest(
+      cleanedOutput: '''
+> APPROVAL_DECISION:
+decision: rejected
+Apply this decision to the pending approval request.
+
+Thinking
+The user rejected something, but README writing already finished.
+Write(/Users/test/armin-test/README.md)
+└ Accepted README.md
+
+Thinking
+Done. README.md created with all usage examples.
+README.md 已写入，包含三种模式的完整使用示例、公共参数表和安全机制说明。
+''',
+      status: TaskStatus.turnIdle,
+      taskTitle: '写 readme，包含所有使用事例',
+      promptInputs: ['写 readme，包含所有使用事例'],
+    );
+
+    final summary = await const RuleBasedOutputSummaryProvider().summarize(
+      request,
+    );
+
+    expect(summary.displaySummary, contains('README.md 已写入'));
+    expect(summary.displaySummary, contains('公共参数表'));
+    expect(summary.displaySummary, isNot(contains('APPROVAL_DECISION')));
+    expect(summary.displaySummary, isNot(contains('decision: rejected')));
+    expect(summary.displaySummary, isNot(contains('pending approval request')));
+    expect(summary.displaySummary, isNot(contains('The user rejected')));
+    expect(summary.displaySummary, isNot(contains('Write(')));
+    expect(summary.displaySummary, isNot(contains('Done. README.md created')));
   });
 }
 

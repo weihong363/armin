@@ -1,6 +1,6 @@
 # Armin 规范
 
-Armin 是一个移动优先和语音优先的 shell，用于将工作委托给计算机上的终端 Agent。它不是 Codex Mobile，不是一个完整的终端应用，也不是一个 AI 运行时。Armin 帮助用户用自己的语言描述、约束、推进、恢复、停止和确认工作，再由不同 Agent 执行，并保留审计跟踪。
+Armin 是一个语言优先的 shell，用于将工作委派给计算机上的终端 Agent。它不是 Codex Mobile，不是一个完整的终端应用，也不是一个 AI 运行时。Armin 帮助用户用自己的语言描述、约束、推进、恢复、停止和确认工作，再由不同 Agent 执行，并保留审计跟踪。
 
 执行核心保留在计算机端：
 
@@ -14,7 +14,7 @@ Armin 是一个移动优先和语音优先的 shell，用于将工作委托给�
 2. 中间终端噪音默认隐藏。
 3. 用户关心任务是否被理解、发送、等待继续、需要处理以及由自己确认结束。
 4. 每个有意义的交互都会被存档以备后续调试。
-5. 语音是主要输入方式，但手动编辑必须是首要功能。
+5. 语音是降低异步交互成本的一种输入方式，Armin 必须同时支持语音和文字。
 6. 敏感值应该被输入、脱敏并从普通历史中排除。
 7. Armin 不实现复杂的代理执行、调度、合并或规划逻辑。
 8. 未来的指标应有助于调试人与代理之间的委托质量。
@@ -109,7 +109,11 @@ Armin 拥有 shell 级别的会话抽象，而不是代理运行时：
 - `MockAgentSessionService`
 - `SSHAgentSessionService`
 
-`MockAgentSessionService` 仅用于测试。真实 Phase 2 连接到 Host，按任务创建短 session（`armin-{taskId片段}`），并在用户选择的 project path 中启动 Agent。Codex CLI 使用 `codex -C {projectPath}`；Qoder CLI 使用 `qodercli -w {projectPath}`。`CodexOutputCleaner` 和 `NativeOutputObserver` 清洗并观察原生输出；安静输出进入 `turnIdle`，并不代表任务已经完成。
+`MockAgentSessionService` 仅用于测试。真实 Phase 2 连接到 Host，按任务创建短 session（`armin-{taskId片段}`），并在用户选择的 project path 中启动 Agent。Codex CLI 使用 `codex -C {projectPath}`；Qoder CLI 使用 `qodercli -w {projectPath}`。`AgentOutputCleaner` 和 `NativeOutputObserver` 清洗并观察原生输出；安静输出进入 `turnIdle`，并不代表任务已经完成。
+
+长期 Runtime 方向中，`tmux capture-pane` 只能作为观察输入，不能作为状态权威。短时间无新增输出或 pane 稳定只能表示 `outputQuieting` / `no visible update`；`turnIdle`、结果卡片和 TTS 播报应由 Runtime Event、SQLite 中的 durable state、明确等待用户输入、审批状态或 adapter 识别的强完成信号驱动。
+
+Bridge Runtime 当前运行在 Flutter 进程内，属于过渡实现。长期应将 Runtime 的持久化边界放在 SQLite，并逐步支持断线续传或迁移为远端 Runtime daemon，使任务状态不依赖 App 进程生命周期。
 
 ### 历史和审计跟踪
 

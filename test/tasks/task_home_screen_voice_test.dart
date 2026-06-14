@@ -12,6 +12,13 @@ import 'package:flutter_test/flutter_test.dart';
 import '../features/voice/services/mock_voice_service.dart';
 
 void main() {
+  testWidgets('home task list supports material pull to refresh',
+      (tester) async {
+    await _pumpHome(tester, voiceService: MockVoiceService());
+
+    expect(find.byType(ListView), findsWidgets);
+  });
+
   testWidgets('home add context asks for a task before chat or voice',
       (tester) async {
     await _pumpHome(tester, voiceService: MockVoiceService());
@@ -37,8 +44,7 @@ void main() {
       ],
     );
 
-    expect(
-        find.text('当前没有需要你关注的事项'), findsOneWidget);
+    expect(find.text('当前没有需要你关注的事项'), findsOneWidget);
     expect(find.text('连接已暂停'), findsNothing);
     expect(find.text('最近完成'), findsNothing);
   });
@@ -75,13 +81,11 @@ void main() {
     expect(find.text('等待你处理'), findsOneWidget);
     expect(find.text('Needs Attention (3)'), findsNothing);
     expect(find.text('Payment refactor'), findsWidgets);
-    expect(
-        find.textContaining('这个任务需要你做决定'), findsOneWidget);
+    expect(find.textContaining('这个任务需要你做决定'), findsOneWidget);
     expect(find.text('Login cleanup'), findsWidgets);
     expect(find.textContaining('等待你的指示'), findsOneWidget);
     expect(find.text('Failing import'), findsWidgets);
-    expect(find.textContaining('继续之前请先检查问题'),
-        findsOneWidget);
+    expect(find.textContaining('继续之前请先检查问题'), findsOneWidget);
     expect(find.text('工作正在推进'), findsNothing);
   });
 
@@ -101,8 +105,7 @@ void main() {
     expect(find.text('等待你处理'), findsOneWidget);
     expect(find.text('Needs Attention (0)'), findsNothing);
     expect(find.text('一切都在推进中'), findsAtLeastNWidgets(1));
-    expect(
-        find.text('当前没有需要你关注的事项'), findsOneWidget);
+    expect(find.text('当前没有需要你关注的事项'), findsOneWidget);
     expect(find.text('工作会在你离开后继续推进'), findsOneWidget);
   });
 
@@ -246,8 +249,8 @@ void main() {
     expect(find.text('新建任务'), findsOneWidget);
     expect(
         find.byKey(const ValueKey('home-add-context-button')), findsOneWidget);
-    expect(find.text('历史'), findsOneWidget);
-    await tester.tap(find.text('历史'));
+    expect(find.text('历史'), findsNothing);
+    await tester.tap(find.text('查看全部'));
     await tester.pumpAndSettle();
 
     expect(find.text('历史任务'), findsOneWidget);
@@ -345,6 +348,9 @@ class _NoDelayAgent implements AgentSessionService {
 
   @override
   Future<void> resume(AgentControlRequest request) async {}
+
+  @override
+  Future<void> interrupt(AgentControlRequest request) async {}
 
   @override
   Future<void> stop(AgentControlRequest request) async {}

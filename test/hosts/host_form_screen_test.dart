@@ -228,6 +228,9 @@ class _ConnectionTestAgent implements AgentSessionService {
   Future<void> resume(AgentControlRequest request) async {}
 
   @override
+  Future<void> interrupt(AgentControlRequest request) async {}
+
+  @override
   Future<void> sendFollowUp(AgentControlRequest request) async {}
 
   @override

@@ -106,9 +106,9 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
-      _revealLatestResult();
-    }
+    // Do not auto-jump to the result tab on resume. Runtime/output updates can
+    // arrive while the user is scrolling or switching tabs; only explicit user
+    // actions should reveal the result tab.
   }
 
   void _revealLatestResult() {
@@ -1485,7 +1485,7 @@ class _ResultPanelState extends State<_ResultPanel> {
       if (!_isResultTurn(turn.status)) {
         continue;
       }
-      final cleanedOutput = _turnOutputSlicer.outputForTurn(task.turns, index);
+      final cleanedOutput = _readableTurnOutput(task.turns, index);
       final summary = await provider.summarize(
         OutputSummaryRequest(
           cleanedOutput: cleanedOutput,
@@ -1556,6 +1556,14 @@ class _ResultPanelState extends State<_ResultPanel> {
       NativeOutputTurnStatus.stopped =>
         true,
     };
+  }
+
+  String _readableTurnOutput(List<NativeOutputTurn> turns, int index) {
+    final rawOutput = _turnOutputSlicer.rawOutputForTurn(turns, index);
+    if (rawOutput.trim().isNotEmpty) {
+      return rawOutput;
+    }
+    return _turnOutputSlicer.outputForTurn(turns, index);
   }
 
   void _maybeRevealLatestTurn() {
@@ -2169,8 +2177,7 @@ class _TaskNeedsPanelState extends State<_TaskNeedsPanel> {
       final latestTurn = latestResult.turn;
       final summary = await provider.summarize(
         OutputSummaryRequest(
-          cleanedOutput:
-              _turnOutputSlicer.outputForTurn(task.turns, latestIndex),
+          cleanedOutput: _readableResultOutput(task.turns, latestIndex),
           status: task.status,
           taskTitle: task.title,
           promptInputs: [latestTurn.userInput],
@@ -2235,6 +2242,14 @@ class _TaskNeedsPanelState extends State<_TaskNeedsPanel> {
       NativeOutputTurnStatus.stopped =>
         true,
     };
+  }
+
+  String _readableResultOutput(List<NativeOutputTurn> turns, int index) {
+    final rawOutput = _turnOutputSlicer.rawOutputForTurn(turns, index);
+    if (rawOutput.trim().isNotEmpty) {
+      return rawOutput;
+    }
+    return _turnOutputSlicer.outputForTurn(turns, index);
   }
 }
 
@@ -3373,12 +3388,51 @@ bool _hasMeaningfulOutput(TaskSession task) {
 }
 
 String _progressSituationText(TaskSession task, RuntimeTaskSnapshot snapshot) {
-  final action = snapshot.action.isNotEmpty ? '动作: ${snapshot.action}。' : '';
+  final actionText = _progressActionText(snapshot.action);
+  final action = actionText.isNotEmpty ? '动作: $actionText。' : '';
   final progress = snapshot.progress > 0 ? '进度 ${snapshot.progress}%' : '';
   final parts = [action, progress].where((p) => p.isNotEmpty);
   if (parts.isEmpty) return _currentSituationText(task);
   return '此任务仍在工作中。${parts.join('，')}。'
       '\n当前不需要任何操作。';
+}
+
+String _progressActionText(String value) {
+  final cleaned = const AgentOutputCleaner()
+      .clean(value)
+      .replaceAll(RegExp(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]'), '')
+      .split('\n')
+      .map((line) => line.trim().replaceFirst(
+            RegExp(r'^[>❯▸›▪▫•*-]\s*'),
+            '',
+          ))
+      .where((line) => line.isNotEmpty && !_isUnreadableProgressLine(line))
+      .join(' ');
+  if (cleaned.isEmpty) {
+    return '';
+  }
+  return const SemanticSnippetBuilder()
+      .build(
+        cleaned,
+        contentType: SnippetContentType.agentSummary,
+        maxChars: 80,
+      )
+      .visibleText;
+}
+
+bool _isUnreadableProgressLine(String line) {
+  final trimmed = line.trimLeft();
+  if ('│'.allMatches(trimmed).length >= 2) {
+    return true;
+  }
+  if (RegExp(r'[┌┐└┘┬┼┴├┤─━]').hasMatch(trimmed)) {
+    return true;
+  }
+  final compact = trimmed.replaceAll(RegExp(r'\s+'), '');
+  return compact.length >= 2 &&
+      RegExp(
+        r'^[█▓▒░▀▄▌▐▖▗▘▝▚▞▟▙▛▜▔▁▂▃▄▅▆▇╭╮╰╯─│┌┐└┘┬┴├┤┼━┃╋]+$',
+      ).hasMatch(compact);
 }
 
 _NextAction _nextActionForTask(TaskStatus status) {

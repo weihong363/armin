@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:armin/core/models/task_status.dart';
 import 'package:armin/core/storage/json_task_history_store.dart';
 import 'package:armin/core/storage/secure_password_store.dart';
+import 'package:armin/features/agent/models/agent_approval_config.dart';
 import 'package:armin/features/hosts/models/host_config.dart';
 import 'package:armin/features/agent/parsers/terminal_prompt.dart';
 import 'package:armin/features/projects/models/project_path_config.dart';
@@ -296,6 +297,19 @@ void main() {
 
     expect(tasks.single.id, 'task-1');
     expect(tasks.single.turns, isEmpty);
+    expect(tasks.single.approvalMode, AgentApprovalMode.balanced);
+  });
+
+  test('TaskSession persists approval mode', () {
+    final now = DateTime(2026, 5, 20);
+    final task = _task(now).copyWith(
+      approvalMode: AgentApprovalMode.aggressive,
+    );
+
+    final restored = TaskSession.fromJson(task.toJson());
+
+    expect(task.toJson()['approvalMode'], 'aggressive');
+    expect(restored.approvalMode, AgentApprovalMode.aggressive);
   });
 }
 

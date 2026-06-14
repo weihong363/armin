@@ -85,7 +85,9 @@
 ```
 1. 创建任务，选 Host + project path = /home/user/projects/shortlink
 2. [最小改动] [修改后运行测试] 发送任务
-3. 首轮完成后，在电脑端 curl 验证 POST + GET 是否正常
+3. 首轮完成后，在电脑端 curl 验证 POST + GET 是否正常：
+curl -s -X POST http://localhost:8080/shorten -H "Content-Type: application/json" -d '{"url":"https://www.example.com/very/long/url/to/shorten"}'
+curl -v http://localhost:8080/1
 4. 追加 "加一个 GET /stats/{code} 返回访问次数统计"
 5. 追加语音 "读一下当前进度"
 6. 断网 30 秒，确认自动进入 observerDetached

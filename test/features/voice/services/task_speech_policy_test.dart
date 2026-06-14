@@ -1,6 +1,7 @@
 import 'package:armin/core/models/task_status.dart';
 import 'package:armin/features/agent/parsers/approval_request.dart';
 import 'package:armin/features/agent/parsers/task_result.dart';
+import 'package:armin/features/agent/parsers/terminal_prompt.dart';
 import 'package:armin/features/hosts/models/host_config.dart';
 import 'package:armin/features/tasks/models/native_output_turn.dart';
 import 'package:armin/features/tasks/models/task_session.dart';
@@ -152,6 +153,52 @@ runbook-copilot 是面向工程团队的 RAG 事故排障助手，用于根据�
     );
 
     expect(decision.shouldSpeak, isTrue);
+  });
+
+  test('auto speech uses latest raw turn output before stale cleaned output',
+      () async {
+    final previous = _task(status: TaskStatus.running);
+    final current = previous.copyWith(
+      status: TaskStatus.turnIdle,
+      summary: '旧摘要不应播报',
+      turns: [
+        _turnWithInput(1, '实现接口').copyWith(
+          rawOutput: '旧结果',
+          cleanedOutput: '旧结果',
+        ),
+        _turnWithInput(2, '确认 stats').copyWith(
+          rawOutput: '''
+旧结果
+确认 stats
+Thinking
+ │ Checking current implementation.
+▪ GET /stats/{code} 已经实现了，3 个相关测试全部通过。
+''',
+          cleanedOutput: '这个已经在上一轮实现了。让我确认一下当前代码状态。',
+        ),
+      ],
+    );
+    final provider = _CapturingSummaryProvider(
+      const OutputSummary(
+        displaySummary: 'GET /stats/{code} 已经实现了，3 个相关测试全部通过。',
+        speechSummary: '',
+      ),
+    );
+
+    final decision = await policy.decide(
+      previous: previous,
+      current: current,
+      settings: settings,
+      outputSummaryProvider: provider,
+    );
+
+    expect(decision.shouldSpeak, isTrue);
+    expect(provider.lastRequest?.cleanedOutput, contains('GET /stats/{code}'));
+    expect(
+      provider.lastRequest?.cleanedOutput,
+      isNot(contains('这个已经在上一轮实现了')),
+    );
+    expect(decision.text, contains('GET /stats/{code}'));
   });
 
   test('auto speech does not fallback to stale previous turn summary',
@@ -419,6 +466,60 @@ runbook-copilot 是面向工程团队的 RAG 事故排障助手，用于根据�
           .shouldSpeak,
       isFalse,
     );
+  });
+
+  test('need attention without current prompt or output does not speak summary',
+      () async {
+    final previous = _task(status: TaskStatus.running);
+    final current = previous.copyWith(
+      status: TaskStatus.needAttention,
+      summary: '初始提示词不应该被播报',
+      shortSummary: '任务已创建底下的内容不应该被播报',
+      turns: [
+        _turnWithInput(1, '初始任务').copyWith(
+          rawOutput: '旧结果',
+          cleanedOutput: '旧结果',
+        ),
+        _turnWithInput(2, '继续').copyWith(
+          rawOutput: '',
+          cleanedOutput: '',
+          status: NativeOutputTurnStatus.needAttention,
+        ),
+      ],
+    );
+
+    final decision = await policy.decide(
+      previous: previous,
+      current: current,
+      settings: settings,
+    );
+
+    expect(decision.shouldSpeak, isFalse);
+  });
+
+  test('need attention speaks current terminal prompt only', () async {
+    final previous = _task(status: TaskStatus.running);
+    final current = previous.copyWith(
+      status: TaskStatus.needAttention,
+      summary: '旧摘要不应该被播报',
+      terminalPrompt: const TerminalPrompt(
+        question: 'Apply this change?',
+        options: [
+          TerminalPromptOption(key: '1', label: 'Allow once'),
+          TerminalPromptOption(key: '2', label: 'Reject'),
+        ],
+      ),
+    );
+
+    final decision = await policy.decide(
+      previous: previous,
+      current: current,
+      settings: settings,
+    );
+
+    expect(decision.shouldSpeak, isTrue);
+    expect(decision.text, contains('Apply this change?'));
+    expect(decision.text, isNot(contains('旧摘要')));
   });
 
   test('stale text in a new turn is not replayed as latest speech', () async {

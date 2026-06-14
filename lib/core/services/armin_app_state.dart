@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/scheduler.dart';
 
 import '../../features/agent/services/agent_session_service.dart';
+import '../../features/agent/models/agent_approval_config.dart';
 import '../../features/agent/services/agent_runtime_config.dart';
 import '../../features/agent/parsers/approval_parser.dart';
 import '../../features/agent/parsers/approval_request.dart';
@@ -106,6 +107,7 @@ class ArminAppState extends ChangeNotifier {
   final ValueNotifier<HomeTaskSnapshot> homeSnapshot =
       ValueNotifier(HomeTaskSnapshot.empty());
   String _homeSnapshotSignature = '';
+  final Map<String, int> _remoteExitMarkerCounts = {};
 
   List<HostConfig> hosts = const [];
   List<TaskSession> tasks = const [];
@@ -689,12 +691,26 @@ class ArminAppState extends ChangeNotifier {
     final probe = await remoteProbeService.probeRemoteState(
       await _controlRequest(task),
     );
+    final hasNewExitMarker = _hasNewRemoteExitMarker(
+      task.id,
+      probe.exitMarkerCount,
+    );
     return RuntimeRemoteProbe(
       sessionExists: probe.sessionExists,
       snapshot: probe.snapshot,
       needsAttention: probe.needsAttention,
-      hasExitedMarker: probe.hasExitedMarker,
+      hasExitedMarker: hasNewExitMarker,
+      exitMarkerCount: probe.exitMarkerCount,
     );
+  }
+
+  bool _hasNewRemoteExitMarker(String taskId, int exitMarkerCount) {
+    final previous = _remoteExitMarkerCounts[taskId];
+    _remoteExitMarkerCounts[taskId] = exitMarkerCount;
+    if (previous == null) {
+      return false;
+    }
+    return exitMarkerCount > previous;
   }
 
   Future<void> _applyRuntimeReconcileDecision(
@@ -749,14 +765,15 @@ class ArminAppState extends ChangeNotifier {
   }) async {
     final approval = const ApprovalParser().parse(snapshot);
     final terminalPrompt = const TerminalPromptParser().parse(snapshot);
-    final hasAttention = approval != null || terminalPrompt != null;
+    final hasAttention = (approval != null || terminalPrompt != null) &&
+        !_hasNewerWorkOutputAfterAttention(snapshot, approval, terminalPrompt);
     final shouldMarkIdle = markIdleIfNoAttention && !hasAttention;
     final update = AgentExecutionUpdate(
       rawOutput: snapshot,
       cleanedOutput: const AgentOutputCleaner().clean(snapshot),
       needsAttention: hasAttention,
-      approval: approval,
-      terminalPrompt: terminalPrompt,
+      approval: hasAttention ? approval : null,
+      terminalPrompt: hasAttention ? terminalPrompt : null,
       turnIdle: shouldMarkIdle,
       done: shouldMarkIdle,
     );
@@ -766,6 +783,44 @@ class ArminAppState extends ChangeNotifier {
       return;
     }
     await saveTask(updated);
+  }
+
+  bool _hasNewerWorkOutputAfterAttention(
+    String snapshot,
+    ApprovalRequest? approval,
+    TerminalPrompt? terminalPrompt,
+  ) {
+    final anchor = terminalPrompt?.question.trim().isNotEmpty == true
+        ? terminalPrompt!.question.trim()
+        : approval?.reason.trim() ?? '';
+    if (anchor.isEmpty) {
+      return false;
+    }
+    final index = snapshot.toLowerCase().lastIndexOf(anchor.toLowerCase());
+    if (index < 0) {
+      return false;
+    }
+    final tail = snapshot.substring(index + anchor.length);
+    return tail.split('\n').any(_isNewerWorkOutputLine);
+  }
+
+  bool _isNewerWorkOutputLine(String line) {
+    final text = line.trim();
+    if (text.isEmpty) {
+      return false;
+    }
+    if (RegExp(r'^(?:[❯>]\s*)?\d+\.\s+').hasMatch(text)) {
+      return false;
+    }
+    if (text == 'Permission Required' || text == 'Apply this change?') {
+      return false;
+    }
+    return text == 'Thinking' ||
+        text.startsWith('▪') ||
+        text.startsWith('▫') ||
+        text.startsWith('> ') ||
+        text.contains('Armin Codex exited with status') ||
+        text.contains('Armin Qoder exited with status');
   }
 
   String _taskSnapshotSignature(TaskSession task) {
@@ -1178,6 +1233,10 @@ Apply this decision to the pending approval request.
       shellWrapper: host.shellWrapper,
       password: host.password,
       attachOnly: true,
+      approvalConfig: AgentApprovalConfig(
+        agentType: AgentTypeDetection.detect(host.agentCommand),
+        mode: task.approvalMode,
+      ),
     );
   }
 

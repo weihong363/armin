@@ -4,6 +4,8 @@ Armin 是一个 Flutter 应用，采用本地优先的状态管理，并围绕�
 
 长期 Runtime 方向见 [Bridge Runtime Long-Term Architecture](runtime/bridge-runtime-long-term-architecture.md)。当前 Flutter 内 Bridge Runtime 是过渡实现；最终任务生命周期、审批状态、事件流和 watcher offset 的持久化边界应在 SQLite，并逐步迁移到远端 Runtime daemon 或支持可靠断线续传。
 
+长期目标不是消除文本解析。Codex / Qoder 是 TUI 程序，文本仍然是原始观察输入；目标是把“文本 → 事件”的转换集中在 Runtime Watcher / Agent Adapter 层，解析新增文本后写入结构化事件，再由 Runtime reducer 归约任务状态。AppState、结果卡片、TTS 和 UI 不应各自反复解析 raw terminal text，也不应让 pane 中残留的 exit marker、thinking、approval prompt 或旧结果直接决定当前 turn 状态。
+
 ## 层级结构
 
 - `core/models`: 共享状态和跨功能值类型
@@ -50,6 +52,26 @@ AgentExecutionUpdate(
 Armin 不负责代理的推理、规划、代码合并或调度。它仅管理 shell 级别的通信和可审计性。
 
 `tmux capture-pane` 是观察输入，不是任务状态权威。输出稳定或无新增可见文本只能表示 `outputQuieting` / `no visible update`，不能单独触发 `turnIdle`、结果卡片或 TTS 播报。长期应由 Runtime Event + SQLite Store 派生 `WorkState`、`ApprovalState` 和结果可见性。
+
+目标链路：
+
+```text
+tmux / Codex / Qoder
+↓
+Raw TUI text stream
+↓
+CodexAdapter / QoderAdapter / GenericTuiAdapter
+↓
+RuntimeEventBus
+↓
+Runtime reducer
+↓
+SQLite Task / Turn / Event Store
+↓
+Armin App UI
+```
+
+Adapter 可以解析文本中的审批、等待输入、进度、交付结果和进程退出，但它只产出事件候选；是否进入 `turnIdle`、`needApproval`、`completed` 或显示结果卡片，必须由 reducer 基于新增事件和持久化状态决定。
 
 ## 输出与提示层
 

@@ -732,12 +732,14 @@ class RuntimeRemoteProbe {
     this.snapshot = '',
     this.needsAttention = false,
     this.hasExitedMarker = false,
+    this.exitMarkerCount = 0,
   });
 
   final bool sessionExists;
   final String snapshot;
   final bool needsAttention;
   final bool hasExitedMarker;
+  final int exitMarkerCount;
 }
 
 class RuntimeReconcileDecision {

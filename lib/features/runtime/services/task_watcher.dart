@@ -1,4 +1,5 @@
 import '../models/runtime_task_snapshot.dart';
+import '../../agent/services/agent_output_cleaner.dart';
 
 /// Observes incremental terminal output and extracts progress, action,
 /// and status hints via pattern matching.
@@ -44,9 +45,10 @@ class TaskWatcher {
   }
 
   String _extractAction(String output) {
-    final lines = output
+    final cleaned = const AgentOutputCleaner().clean(output);
+    final lines = cleaned
         .split('\n')
-        .map((line) => line.trim())
+        .map(_normalizeActionLine)
         .where((line) => line.isNotEmpty)
         .where((line) => !_isNoiseLine(line))
         .toList(growable: false);
@@ -105,6 +107,15 @@ class TaskWatcher {
     return lower.startsWith('tmux ') ||
         lower.startsWith('ssh ') ||
         lower.startsWith('thinking') ||
+        lower.startsWith('bash(') ||
+        lower.startsWith('read(') ||
+        lower.startsWith('write(') ||
+        lower.startsWith('edit(') ||
+        lower.startsWith('glob(') ||
+        lower.startsWith('grep(') ||
+        lower.startsWith('accepted ') ||
+        _looksLikeTableLine(line) ||
+        _isTerminalGraphicLine(line) ||
         lower.startsWith('│') ||
         lower.startsWith('>_') ||
         lower.startsWith('armin context governance') ||
@@ -114,6 +125,30 @@ class TaskWatcher {
         lower.startsWith('## secret placeholders') ||
         lower.startsWith('turn ') ||
         _isWatcherGovernanceRule(lower);
+  }
+
+  String _normalizeActionLine(String line) {
+    return line
+        .replaceAll(RegExp(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]'), '')
+        .trim()
+        .replaceFirst(RegExp(r'^[>❯▸›▪▫•*-]\s*'), '')
+        .trim();
+  }
+
+  bool _looksLikeTableLine(String line) {
+    final trimmed = line.trimLeft();
+    if ('│'.allMatches(trimmed).length >= 2) {
+      return true;
+    }
+    return RegExp(r'[┌┐└┘┬┼┴├┤─━]').hasMatch(trimmed);
+  }
+
+  bool _isTerminalGraphicLine(String line) {
+    final compact = line.replaceAll(RegExp(r'\s+'), '');
+    return compact.length >= 2 &&
+        RegExp(
+          r'^[█▓▒░▀▄▌▐▖▗▘▝▚▞▟▙▛▜▔▁▂▃▄▅▆▇╭╮╰╯─│┌┐└┘┬┴├┤┼━┃╋]+$',
+        ).hasMatch(compact);
   }
 
   static const _watcherGovernanceLines = [

@@ -206,6 +206,12 @@ final effectiveApproval = approval ??
 2. `_approvalFromTerminalPrompt()` 移除，改为直接创建 `NativeTerminalApproval`
 3. `AgentExecutionUpdate` 的 `approval` 字段改为 `NativeTerminalApproval?`
 
+### 防回归约束
+
+在迁移完成前，旧 parser 只能消费当前观察窗口里的新增文本，不能解析完整 pane 中的历史残留。attach/reconnect 后残留的 `Permission Required`、`Apply this change?`、terminal option prompt 或已解决的审批块，不能重新生成 `ApprovalRequest`、`TerminalPrompt`、`needAttention` 或自动 TTS。
+
+迁移到 `NativeTerminalApproval` 后也必须保留同一约束：Adapter 只从 `last_offset` / `last_event_id` / baseline 之后的新增文本产生 `ApprovalRequested`，Runtime reducer 通过 offset、event id、marker count 或 fingerprint 去重。完整 `capture-pane` 只能作为审计/恢复输入，不能直接产生状态变更事件。
+
 ---
 
 ## 7. UI 直接消费 TaskStatus
@@ -360,6 +366,30 @@ class AgentExecutionUpdate {
 2. 旧字段标记 `@Deprecated`
 3. SSH 层迁移到新字段
 4. 移除旧字段
+
+## 12. Attach/Reconnect 解析历史残留
+
+### 风险
+
+attach-only 监听已有 tmux session 时，pane 中可能残留上一轮的 exit marker、审批 prompt、terminal option prompt、thinking 或旧结果。旧逻辑如果对完整 pane 做 grep / parser，就会把历史文本误判为当前 turn 的新状态，造成：
+
+- follow-up 刚发送就进入 `needAttention`
+- 远端仍在 thinking，但本地提前 `turnIdle`
+- 结果卡片显示旧 turn 输出
+- 自动 TTS 播报初始提示词或旧摘要
+
+### 约束
+
+所有状态触发型检测必须基于当前观察基线之后的新增证据：
+
+- exit marker：只在 marker count 增加或 adapter 产生新的 `ProcessExited` 事件时有效
+- approval / terminal prompt：只在新增文本中出现时有效
+- deliverable：只来自当前 turn 的新增输出或 `DeliverableUpdated`
+- TTS：只播 event-linked payload，不从 `task.summary` / `shortSummary` 回退到历史任务描述
+
+### 迁移方案
+
+短期在 `SSHAgentSessionService` 中用 baseline count/hash/delta 阻断历史残留进入旧 parser。长期在 `CodexAdapter` / `QoderAdapter` 中以 `last_offset`、`last_event_id` 和 fingerprint 作为事件去重边界，由 Runtime reducer 决定 `WorkState`、`ApprovalState` 和结果可见性。
 
 ---
 

@@ -154,6 +154,40 @@ void main() {
     await eventBus.dispose();
   });
 
+  test('watcher cleans tui graphics before storing current action', () async {
+    final runtime = BridgeRuntime(
+      taskStore: InMemoryRuntimeTaskStore(),
+      eventBus: RuntimeEventBus(),
+    );
+    final now = DateTime(2026, 6, 7, 10);
+
+    await runtime.createTask(
+      RuntimeTaskSnapshot(
+        taskId: 'task-1',
+        status: RuntimeTaskStatus.pending,
+        createdAt: now,
+        updatedAt: now,
+      ),
+    );
+    final updated = await runtime.observeOutput(
+      taskId: 'task-1',
+      capturedOutput: '''
+Thinking
+│ I should inspect the implementation.
+▫ Bash(cd /repo && flutter test)
+┌──────────┬────────────┐
+│ 功能分类 │ 功能名称   │
+└──────────┴────────────┘
+▪ README.md 已写入，包含完整使用示例。
+''',
+      now: now,
+    );
+
+    expect(updated?.action, 'README.md 已写入，包含完整使用示例。');
+    expect(updated?.currentStep, 'README.md 已写入，包含完整使用示例。');
+    expect(updated?.summary, 'README.md 已写入，包含完整使用示例。');
+  });
+
   test('watcher promotes attention and terminal states to runtime events',
       () async {
     final eventBus = RuntimeEventBus();

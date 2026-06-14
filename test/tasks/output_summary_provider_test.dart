@@ -114,6 +114,51 @@ Thinking
     expect(summary.displaySummary, isNot(contains('Simple request')));
   });
 
+  test('rule provider prefers final bullet deliverable over earlier progress',
+      () async {
+    const output = OutputSummaryRequest(
+      cleanedOutput: '''
+Thinking
+│ The user is asking to add GET /stats/{code} which I already implemented.
+▪ 这个已经在上一轮实现了。让我确认一下当前代码状态。
+
+▪ Grep('stats|Stats' within /Users/.../shotlink/handler.go)
+  └ Found 5 matches (Ctrl+O to expand)
+
+Thinking
+│ It's already implemented. Let me run the tests to confirm everything still works.
+▪ Bash(go test -v -run TestStats ./... 2>&1)
+  └ === RUN   TestStatsInitialZero
+    --- PASS: TestStatsInitialZero (0.00s)
+
+Thinking
+│ Everything is already in place and working. Just confirm to the user.
+▪ GET /stats/{code} 已经实现了，3 个相关测试全部通过。
+
+  当前行为：
+  - GET /stats/{code} — 返回 {"code":"1","hits":3}（JSON）
+  - 短码不存在时返回 404 Not Found
+  - 每次 GET /{code} 重定向时自动计数 +1
+
+  无需额外改动，可以直接使用。
+''',
+      status: TaskStatus.turnIdle,
+      taskTitle: '添加 GET /stats/{code}',
+      promptInputs: ['添加 GET /stats/{code}'],
+    );
+
+    final summary =
+        await const RuleBasedOutputSummaryProvider().summarize(output);
+
+    expect(summary.displaySummary, contains('GET /stats/{code} 已经实现了'));
+    expect(summary.displaySummary, contains('3 个相关测试全部通过'));
+    expect(summary.displaySummary, contains('短码不存在时返回 404 Not Found'));
+    expect(summary.displaySummary, contains('无需额外改动'));
+    expect(summary.displaySummary, isNot(contains('上一轮实现')));
+    expect(summary.displaySummary, isNot(contains('Grep(')));
+    expect(summary.displaySummary, isNot(contains('Bash(')));
+  });
+
   test('rule provider strips governance prefix but keeps the actual result',
       () async {
     const noisyPrefix = OutputSummaryRequest(

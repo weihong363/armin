@@ -130,6 +130,25 @@ class TaskSpeechPolicy {
       return _decorate(task.status, approvalText).trim();
     }
 
+    if (task.status == TaskStatus.runtimeLost ||
+        task.status == TaskStatus.observerDetached) {
+      return _decorate(task.status, '').trim();
+    }
+
+    if (task.status == TaskStatus.needAttention) {
+      final promptText = task.terminalPrompt?.question.trim() ?? '';
+      if (promptText.isNotEmpty) {
+        return _decorate(task.status, promptText).trim();
+      }
+      final latestTurnText = await _latestTurnSpeechText(
+        task,
+        outputSummaryProvider: outputSummaryProvider,
+      );
+      return latestTurnText.isEmpty
+          ? ''
+          : _decorate(task.status, latestTurnText).trim();
+    }
+
     final latestTurnText = await _latestTurnSpeechText(
       task,
       outputSummaryProvider: outputSummaryProvider,
@@ -166,8 +185,7 @@ class TaskSpeechPolicy {
       return '';
     }
     final current = task.turns.last;
-    final source =
-        _turnOutputSlicer.outputForTurn(task.turns, task.turns.length - 1);
+    final source = _latestTurnOutputSource(task);
     if (source.trim().isEmpty) {
       return '';
     }
@@ -181,6 +199,15 @@ class TaskSpeechPolicy {
       ),
     );
     return _speechTextFromDisplaySummary(summary);
+  }
+
+  String _latestTurnOutputSource(TaskSession task) {
+    final index = task.turns.length - 1;
+    final rawOutput = _turnOutputSlicer.rawOutputForTurn(task.turns, index);
+    if (rawOutput.trim().isNotEmpty) {
+      return rawOutput;
+    }
+    return _turnOutputSlicer.outputForTurn(task.turns, index);
   }
 
   String _speechTextFromDisplaySummary(OutputSummary summary) {

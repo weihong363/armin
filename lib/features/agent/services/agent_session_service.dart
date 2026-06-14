@@ -108,6 +108,7 @@ class RemoteTaskProbe {
     this.hasApprovalPrompt = false,
     this.hasTerminalPrompt = false,
     this.hasExitedMarker = false,
+    this.exitMarkerCount = 0,
   });
 
   const RemoteTaskProbe.missingSession()
@@ -115,13 +116,15 @@ class RemoteTaskProbe {
         snapshot = '',
         hasApprovalPrompt = false,
         hasTerminalPrompt = false,
-        hasExitedMarker = false;
+        hasExitedMarker = false,
+        exitMarkerCount = 0;
 
   final bool sessionExists;
   final String snapshot;
   final bool hasApprovalPrompt;
   final bool hasTerminalPrompt;
   final bool hasExitedMarker;
+  final int exitMarkerCount;
 
   bool get needsAttention => hasApprovalPrompt || hasTerminalPrompt;
 }

@@ -118,15 +118,69 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
       request.taskTitle,
       ...request.promptInputs,
     }.where((input) => input.trim().isNotEmpty).toList(growable: false);
-    return cleaned
-        .split('\n')
-        .map((line) => line.trim())
-        .where((line) => line.startsWith('▪'))
-        .map((line) => line.substring(1).trim())
-        .where((line) => line.isNotEmpty)
-        .where((line) => !_looksLikePromptEcho(line, promptInputs))
-        .where((line) => !_isPureTableDecorator(line))
-        .toList(growable: false);
+    final blocks = <List<String>>[];
+    var current = <String>[];
+
+    void flush() {
+      final useful = current
+          .where((line) => line.trim().isNotEmpty)
+          .where((line) => !_looksLikePromptEcho(line, promptInputs))
+          .where((line) => !_looksLikeLowValueLine(line))
+          .where((line) => !_isPureTableDecorator(line))
+          .toList(growable: false);
+      if (useful.any((line) => _scoreLine(line) >= 20)) {
+        blocks.add(useful);
+      }
+      current = <String>[];
+    }
+
+    for (final rawLine in cleaned.split('\n')) {
+      final trimmed = rawLine.trim();
+      if (trimmed.isEmpty) {
+        continue;
+      }
+      final bulletMatch = RegExp(r'^[▪■●•]\s*(.+)$').firstMatch(trimmed);
+      if (bulletMatch != null) {
+        flush();
+        final content = bulletMatch.group(1)?.trim() ?? '';
+        if (_looksLikeBulletToolCall(content)) {
+          continue;
+        }
+        final semantic = _semanticLine(content);
+        if (semantic.isNotEmpty) {
+          current.add(semantic);
+        }
+        continue;
+      }
+      if (current.isEmpty) {
+        continue;
+      }
+      final semantic = _semanticLine(trimmed);
+      if (semantic.isNotEmpty && !_looksLikeBulletToolCall(semantic)) {
+        current.add(semantic);
+      }
+    }
+    flush();
+    if (blocks.isEmpty) {
+      return const [];
+    }
+    return blocks.last;
+  }
+
+  bool _looksLikeBulletToolCall(String line) {
+    final lower = line.trim().toLowerCase();
+    return lower.startsWith('bash(') ||
+        lower.startsWith('grep(') ||
+        lower.startsWith('glob(') ||
+        lower.startsWith('read(') ||
+        lower.startsWith('write(') ||
+        lower.startsWith('edit(') ||
+        lower.startsWith('ls(') ||
+        lower.startsWith('cat(') ||
+        lower.startsWith('python ') ||
+        lower.startsWith('go test ') ||
+        lower.startsWith('flutter test ') ||
+        lower.startsWith('dart test ');
   }
 
   bool _isPureTableDecorator(String line) {

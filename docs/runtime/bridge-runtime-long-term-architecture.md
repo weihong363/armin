@@ -135,6 +135,34 @@ Adapters should identify:
 Codex, Qoder, Claude, and future CLIs may share generic structural parsers, but
 their personalized markers should stay in adapter-specific configuration.
 
+## Adapter Invariants
+
+Adapters do not eliminate text parsing. Codex and Qoder are TUI programs, so raw
+text is the unavoidable observation input. The long-term rule is narrower and
+more important:
+
+```text
+Parse text once, parse only new text, then persist events.
+```
+
+Required adapter invariants:
+
+- Adapter input must be delta-based: `last_offset` / `last_event_id` /
+  `baseline_hash` defines the current observation window.
+- Full `capture-pane` snapshots are allowed for audit, recovery, and manual
+  debugging, but they must not directly emit state-changing events.
+- State-changing events require new evidence after the current baseline.
+- Old exit markers, approval prompts, terminal option prompts, thinking text,
+  prompt echoes, and previous deliverables are historical evidence only.
+- Reducers must deduplicate events by offset, event id, marker count, or content
+  fingerprint before changing `WorkState`, `ApprovalState`, turn state, result
+  visibility, or TTS eligibility.
+- UI and TTS consume event-linked payloads such as `ApprovalRequested.reason` or
+  `TurnCompleted.deliverable`, not arbitrary task-level historical summaries.
+
+This prevents attach/reconnect from replaying stale terminal residue as a new
+approval request, new process exit, new turn result, or new speech event.
+
 ## Approval Lifecycle
 
 Native terminal approval must have a durable lifecycle:

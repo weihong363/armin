@@ -65,6 +65,17 @@ class NativeOutputObserver {
     }
 
     if (_containsQuotaExhausted([...statusLines, ...rawStatusLines])) {
+      if (_hasDeliverableBeforeQuota(cleaned) ||
+          _hasDeliverableBeforeQuota(output)) {
+        return NativeOutputSnapshot(
+          rawOutput: output,
+          cleanedOutput: cleaned,
+          state: NativeOutputObserverState.turnIdle,
+          turnIdle: true,
+          runtimeLost: false,
+          needsAttention: false,
+        );
+      }
       return NativeOutputSnapshot(
         rawOutput: output,
         cleanedOutput: cleaned,
@@ -155,6 +166,37 @@ class NativeOutputObserver {
           line.contains('quota exhausted') ||
           line.contains('额度已用完');
     });
+  }
+
+  bool _hasDeliverableBeforeQuota(String output) {
+    final lines = output
+        .split('\n')
+        .map((line) => line.trim())
+        .where((line) => line.isNotEmpty);
+    for (final line in lines) {
+      final lower = line.toLowerCase();
+      if (_containsQuotaExhausted([lower])) {
+        return false;
+      }
+      if (_looksLikeDeliverableLine(line)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  bool _looksLikeDeliverableLine(String line) {
+    if (!line.startsWith('▪')) {
+      return false;
+    }
+    final text = line.replaceFirst(RegExp(r'^▪\s*'), '').trim();
+    if (text.isEmpty) {
+      return false;
+    }
+    return !RegExp(
+      r'^(?:Read|Write|Edit|MultiEdit|Glob|Grep|Bash|List)\(',
+      caseSensitive: false,
+    ).hasMatch(text);
   }
 
   bool _containsReconnect(List<String> lines) {

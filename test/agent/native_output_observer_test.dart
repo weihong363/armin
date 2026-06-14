@@ -65,13 +65,33 @@ void main() {
     expect(snapshot.turnIdle, isFalse);
   });
 
-  test('credits exhausted requires attention instead of result idle', () {
+  test('credits exhausted after deliverable settles as turn idle', () {
     final observer = NativeOutputObserver(
       idleThreshold: const Duration(seconds: 1),
     );
     const output = '''
-▪ 测试文件已创建，运行 pytest。
+▪ 12 个测试全部通过（含竞态检测）。代码无问题，可正常使用。
 
+Credits exhausted. Use /usage for details or /upgrade for more.
+⠸ Thinking... (esc to cancel, 1m 2s)
+ YOLO Shift+Tab to Auto Mode
+''';
+
+    final snapshot = observer.observeSettled(
+      output,
+      now: DateTime(2026, 5, 23, 12),
+    );
+
+    expect(snapshot.state, NativeOutputObserverState.turnIdle);
+    expect(snapshot.needsAttention, isFalse);
+    expect(snapshot.turnIdle, isTrue);
+  });
+
+  test('credits exhausted without deliverable still requires attention', () {
+    final observer = NativeOutputObserver(
+      idleThreshold: const Duration(seconds: 1),
+    );
+    const output = '''
 Credits exhausted. Use /usage for details or /upgrade for more.
 ⠸ Thinking... (esc to cancel, 1m 2s)
  YOLO Shift+Tab to Auto Mode

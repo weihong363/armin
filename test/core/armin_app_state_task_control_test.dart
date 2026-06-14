@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:armin/core/models/task_status.dart';
 import 'package:armin/core/services/armin_app_state.dart';
 import 'package:armin/core/storage/task_history_store.dart';
+import 'package:armin/features/agent/models/agent_approval_config.dart';
 import 'package:armin/features/agent/parsers/approval_request.dart';
 import 'package:armin/features/agent/parsers/task_result.dart';
 import 'package:armin/features/agent/parsers/terminal_prompt.dart';
@@ -746,6 +747,54 @@ Apply this change?
     expect(agent.events, contains('captureLog'));
   });
 
+  test('refreshTaskFromRemote ignores stale approval followed by new output',
+      () async {
+    final task = _task(status: TaskStatus.running).copyWith(
+      turns: [
+        NativeOutputTurn(
+          id: 'turn-task-1-1',
+          taskId: 'task-1',
+          turnIndex: 1,
+          userInput: '继续写 README',
+          rawOutput: '',
+          cleanedOutput: '',
+          startedAt: DateTime(2026, 5, 18),
+          lastOutputAt: DateTime(2026, 5, 18),
+          status: NativeOutputTurnStatus.running,
+        ),
+      ],
+    );
+    final store = _TaskStore(task);
+    final agent = _ControlAgent()
+      ..capturedLog = '''
+Apply this change?
+
+  ❯ 1. Allow once
+    2. Reject and type something
+
+> 写 readme，包含所有使用事例
+
+Thinking
+ │ The user wants me to write a README.
+▪ README.md 已写入。
+''';
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: agent,
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await state.refreshTaskFromRemote(task);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(store.task!.status, TaskStatus.running);
+    expect(store.task!.approval, isNull);
+    expect(store.task!.terminalPrompt, isNull);
+    expect(agent.lastExecuteRequest, isNull);
+    expect(agent.events, contains('captureLog'));
+  });
+
   test('refreshTaskFromRemote replaces observer only when one is active',
       () async {
     final task = _task(status: TaskStatus.running);
@@ -834,6 +883,33 @@ Apply this change?
     expect(agent.probeCount, greaterThanOrEqualTo(2));
   });
 
+  test('remote reconcile ignores old exit marker on first probe', () async {
+    final task = _task(status: TaskStatus.running);
+    final store = _TaskStore(task);
+    final agent = _ProbeAgent()
+      ..capturedLog = 'old result\nArmin Codex exited with status 0.'
+      ..probe = const RemoteTaskProbe(
+        sessionExists: true,
+        snapshot: 'old result\nArmin Codex exited with status 0.',
+        hasExitedMarker: true,
+        exitMarkerCount: 1,
+      );
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: agent,
+      voiceService: const _SilentVoiceService(),
+      enableRemoteReconcile: true,
+      remoteReconcileInterval: const Duration(milliseconds: 100),
+    );
+    await state.load();
+    await _waitUntil(() => agent.probeCount >= 1);
+    state.dispose();
+
+    expect(store.task!.status, TaskStatus.running);
+    expect(agent.events, isNot(contains('captureLog')));
+    expect(agent.probeCount, greaterThanOrEqualTo(1));
+  });
+
   test('sendFollowUp sends clean prompt and relistens current tmux session',
       () async {
     final task = _task(status: TaskStatus.turnIdle);
@@ -856,6 +932,30 @@ Apply this change?
     expect(store.task!.turns, hasLength(2));
     expect(store.task!.turns.last.turnIndex, 2);
     expect(store.task!.turns.last.userInput, '只输出 pets 名字');
+  });
+
+  test('sendFollowUp preserves aggressive execution mode on reattach',
+      () async {
+    final task = _task(status: TaskStatus.turnIdle).copyWith(
+      approvalMode: AgentApprovalMode.aggressive,
+    );
+    final store = _TaskStore(task);
+    final agent = _ControlAgent();
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: agent,
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await state.sendFollowUp(task, '继续跑完整测试');
+    await Future<void>.delayed(Duration.zero);
+
+    expect(agent.lastExecuteRequest?.attachOnly, isTrue);
+    expect(
+      agent.lastExecuteRequest?.approvalConfig?.mode,
+      AgentApprovalMode.aggressive,
+    );
   });
 
   test('sendFollowUp persists constraints recognized from user language',
@@ -1014,6 +1114,30 @@ Apply this change?
     expect(store.task!.status, TaskStatus.needAttention);
     expect(store.task!.result, isNull);
     expect(store.task!.summary, task.summary);
+  });
+
+  test(
+      'credits exhausted after deliverable writes result instead of needs input',
+      () async {
+    final task = _task(status: TaskStatus.running);
+    final store = _TaskStore(task);
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: _QuotaAfterDeliverableAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    state.startTaskExecution(
+      task,
+      const AgentExecutionRequest(prompt: 'Task'),
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    expect(store.task!.status, TaskStatus.turnIdle);
+    expect(store.task!.turns.single.status, NativeOutputTurnStatus.turnIdle);
+    expect(store.task!.result?.summary, contains('12 个测试全部通过'));
+    expect(store.task!.result?.summary, contains('Credits exhausted'));
   });
 
   test('turn idle output is spoken once for repeated same summary', () async {
@@ -1838,6 +1962,26 @@ class _DoneNeedsAttentionAgent extends _ControlAgent {
       rawOutput: 'Credits exhausted. Use /usage for details.',
       cleanedOutput: 'Credits exhausted. Use /usage for details.',
       needsAttention: true,
+      done: true,
+    );
+  }
+}
+
+class _QuotaAfterDeliverableAgent extends _ControlAgent {
+  @override
+  Stream<AgentExecutionUpdate> execute(AgentExecutionRequest request) async* {
+    yield const AgentExecutionUpdate(
+      rawOutput: '''
+▪ 12 个测试全部通过（含竞态检测）。代码无问题，可正常使用。
+Credits exhausted. Use /usage for details or /upgrade for more.
+ YOLO Shift+Tab to Auto Mode
+''',
+      cleanedOutput: '''
+▪ 12 个测试全部通过（含竞态检测）。代码无问题，可正常使用。
+Credits exhausted. Use /usage for details or /upgrade for more.
+ YOLO Shift+Tab to Auto Mode
+''',
+      turnIdle: true,
       done: true,
     );
   }

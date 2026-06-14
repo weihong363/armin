@@ -1,4 +1,5 @@
 import '../../../core/models/task_status.dart';
+import '../../agent/models/agent_approval_config.dart';
 import '../../agent/parsers/approval_request.dart';
 import '../../agent/parsers/task_result.dart';
 import '../../agent/parsers/terminal_prompt.dart';
@@ -29,6 +30,7 @@ class TaskSession {
     required this.finalPrompt,
     required this.secretRecords,
     required this.rawLog,
+    this.approvalMode = AgentApprovalMode.balanced,
     this.startedAt,
     this.completedAt,
     this.parentTaskId,
@@ -66,6 +68,7 @@ class TaskSession {
   final String finalPrompt;
   final List<SecretRedactedRecord> secretRecords;
   final String rawLog;
+  final AgentApprovalMode approvalMode;
   final String shortSummary;
   final String? summary;
   final TaskResult? result;
@@ -113,6 +116,7 @@ class TaskSession {
         SecretRedactedRecord.fromJson,
       ),
       rawLog: json['rawLog'] as String? ?? '',
+      approvalMode: _approvalModeFromJson(json['approvalMode']),
       shortSummary: json['shortSummary'] as String? ?? '',
       summary: json['summary'] as String?,
       result: _objectOf(json['result'], TaskResult.fromJson),
@@ -150,6 +154,7 @@ class TaskSession {
     String? finalPrompt,
     List<SecretRedactedRecord>? secretRecords,
     String? rawLog,
+    AgentApprovalMode? approvalMode,
     String? shortSummary,
     String? summary,
     TaskResult? result,
@@ -185,6 +190,7 @@ class TaskSession {
       finalPrompt: finalPrompt ?? this.finalPrompt,
       secretRecords: secretRecords ?? this.secretRecords,
       rawLog: rawLog ?? this.rawLog,
+      approvalMode: approvalMode ?? this.approvalMode,
       shortSummary: shortSummary ?? this.shortSummary,
       summary: summary ?? this.summary,
       result: result ?? this.result,
@@ -251,6 +257,7 @@ class TaskSession {
       'finalPrompt': safeText(finalPrompt),
       'secretRecords': secretRecords.map((record) => record.toJson()).toList(),
       'rawLog': safeText(rawLog),
+      'approvalMode': approvalMode.name,
       'shortSummary': safeText(shortSummary),
       'summary': summary == null ? null : safeText(summary!),
       'result': result?.toJson(),
@@ -286,6 +293,14 @@ TaskStatus _statusFromJson(Object? value) {
   return TaskStatus.values.firstWhere(
     (status) => status.name == name,
     orElse: () => TaskStatus.pending,
+  );
+}
+
+AgentApprovalMode _approvalModeFromJson(Object? value) {
+  final name = value as String? ?? '';
+  return AgentApprovalMode.values.firstWhere(
+    (mode) => mode.name == name,
+    orElse: () => AgentApprovalMode.balanced,
   );
 }
 

@@ -113,6 +113,10 @@ Armin 拥有 shell 级别的会话抽象，而不是代理运行时：
 
 长期 Runtime 方向中，`tmux capture-pane` 只能作为观察输入，不能作为状态权威。短时间无新增输出或 pane 稳定只能表示 `outputQuieting` / `no visible update`；`turnIdle`、结果卡片和 TTS 播报应由 Runtime Event、SQLite 中的 durable state、明确等待用户输入、审批状态或 adapter 识别的强完成信号驱动。
 
+Codex / Qoder 是 TUI 程序，因此文本解析不可避免。规范要求解析边界集中在 Runtime Watcher / Agent Adapter：Adapter 只解析当前观察基线之后的新增文本，产出 `ApprovalRequested`、`TurnWaitingUser`、`DeliverableUpdated`、`ProcessExited` 等候选事件；Runtime reducer 再基于新增事件和持久化状态归约任务状态。完整 pane capture 只能用于审计、恢复和人工排查，不能直接产生状态变更事件。
+
+状态触发型事件必须具备“当前观察窗口的新证据”。旧 pane 中残留的 exit marker、approval prompt、terminal option prompt、thinking 文本、旧结果或 prompt echo 不能重新进入 reducer，不能触发 `needAttention`、`turnIdle`、结果卡片或自动 TTS。若需要从完整 capture 恢复状态，必须通过 offset、marker count、event id 或内容 fingerprint 做去重。
+
 Bridge Runtime 当前运行在 Flutter 进程内，属于过渡实现。长期应将 Runtime 的持久化边界放在 SQLite，并逐步支持断线续传或迁移为远端 Runtime daemon，使任务状态不依赖 App 进程生命周期。
 
 ### 历史和审计跟踪

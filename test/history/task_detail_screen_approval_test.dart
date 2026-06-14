@@ -828,6 +828,67 @@ Summer：海滩风格 Codex 宠物。
     expect(find.text('补充尺寸'), findsNothing);
   });
 
+  testWidgets('result card uses latest raw turn output over stale cleaned text',
+      (tester) async {
+    tester.view.physicalSize = const Size(430, 1600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final now = DateTime(2026, 5, 18);
+    final task = _task().copyWith(
+      status: TaskStatus.turnIdle,
+      turns: [
+        NativeOutputTurn(
+          id: 'turn-task-1-1',
+          taskId: 'task-1',
+          turnIndex: 1,
+          userInput: '实现 stats',
+          rawOutput: '旧结果',
+          cleanedOutput: '旧结果',
+          startedAt: now,
+          lastOutputAt: now,
+          status: NativeOutputTurnStatus.turnIdle,
+        ),
+        NativeOutputTurn(
+          id: 'turn-task-1-2',
+          taskId: 'task-1',
+          turnIndex: 2,
+          userInput: '确认 stats',
+          rawOutput: '''
+旧结果
+确认 stats
+Thinking
+ │ Everything is already in place and working.
+▪ GET /stats/{code} 已经实现了，3 个相关测试全部通过。
+''',
+          cleanedOutput: '这个已经在上一轮实现了。让我确认一下当前代码状态。',
+          startedAt: now,
+          lastOutputAt: now,
+          status: NativeOutputTurnStatus.turnIdle,
+        ),
+      ],
+    );
+    final state = ArminAppState(
+      store: _TaskStore(task),
+      agentSessionService: const _NoopAgent(),
+      voiceService: const _SilentVoiceService(),
+      outputSummaryProvider: _EchoDisplaySummaryProvider(),
+    );
+    await state.load();
+
+    await tester.pumpWidget(
+      AppStateScope(
+        state: state,
+        child: const MaterialApp(home: TaskDetailScreen(taskId: 'task-1')),
+      ),
+    );
+    await _tapDetailTab(tester, '结果');
+
+    expect(find.textContaining('GET /stats/{code} 已经实现了'), findsOneWidget);
+    expect(find.textContaining('让我确认一下当前代码状态'), findsNothing);
+  });
+
   testWidgets('result omits turns waiting for terminal interaction',
       (tester) async {
     tester.view.physicalSize = const Size(430, 1600);
@@ -1068,9 +1129,7 @@ README.md 已写入，包含三种模式的完整使用示例、公共参数表�
     expect(find.textContaining('world'), findsWidgets);
   });
 
-  testWidgets(
-      'resuming the app returns to latest result turn and scrolls to top',
-      (tester) async {
+  testWidgets('resuming the app does not force the result tab', (tester) async {
     tester.view.physicalSize = const Size(430, 900);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -1158,8 +1217,8 @@ README.md 已写入，包含三种模式的完整使用示例、公共参数表�
     await tester.pumpAndSettle();
 
     expect(find.text('产出'), findsOneWidget);
-    expect(find.text('摘要').hitTestable(), findsOneWidget);
-    expect(find.text('摘要 3').hitTestable(), findsOneWidget);
+    expect(find.text('指标渲染已暂停'), findsOneWidget);
+    expect(find.text('摘要').hitTestable(), findsNothing);
   });
 
   testWidgets('deliverable tab stays focused on task output', (tester) async {
@@ -1916,6 +1975,16 @@ class _CustomDisplaySummaryProvider implements OutputSummaryProvider {
     return const OutputSummary(
       displaySummary: '页面展示文本 hello world',
       speechSummary: '旧语音文本 should not win',
+    );
+  }
+}
+
+class _EchoDisplaySummaryProvider implements OutputSummaryProvider {
+  @override
+  Future<OutputSummary> summarize(OutputSummaryRequest request) async {
+    return OutputSummary(
+      displaySummary: request.cleanedOutput,
+      speechSummary: request.cleanedOutput,
     );
   }
 }

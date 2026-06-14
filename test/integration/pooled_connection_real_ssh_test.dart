@@ -55,7 +55,24 @@ AgentControlRequest _buildRequest() {
   );
 }
 
+String? _realSshSkipReason() {
+  final host = Platform.environment['ARMINTEST_SSH_HOST'];
+  final user = Platform.environment['ARMINTEST_SSH_USER'];
+  final password = Platform.environment['ARMINTEST_SSH_PASSWORD'];
+  if (host == null || host.isEmpty) {
+    return 'ARMINTEST_SSH_HOST is not set.';
+  }
+  if (user == null || user.isEmpty) {
+    return 'ARMINTEST_SSH_USER is not set.';
+  }
+  if (password == null || password.isEmpty) {
+    return 'ARMINTEST_SSH_PASSWORD is not set.';
+  }
+  return null;
+}
+
 void main() {
+  final realSshSkipReason = _realSshSkipReason();
   late SSHAgentSessionService service;
   late AgentControlRequest request;
 
@@ -87,6 +104,7 @@ void main() {
         expect(result2, isA<String>());
       },
       tags: ['real_ssh'],
+      skip: realSshSkipReason,
     );
 
     test(
@@ -103,6 +121,7 @@ void main() {
         }
       },
       tags: ['real_ssh'],
+      skip: realSshSkipReason,
     );
   });
 
@@ -125,6 +144,7 @@ void main() {
         expect(result2, isA<String>());
       },
       tags: ['real_ssh', 'slow'],
+      skip: realSshSkipReason,
       timeout: const Timeout(Duration(seconds: 60)),
     );
 
@@ -143,6 +163,7 @@ void main() {
         expect(result, isA<String>());
       },
       tags: ['real_ssh'],
+      skip: realSshSkipReason,
     );
   });
 
@@ -152,7 +173,7 @@ void main() {
       () async {
         // Use a deliberately invalid host to trigger a connection error
         // that goes through _dropControlConnection.
-        final badRequest = AgentControlRequest(
+        const badRequest = AgentControlRequest(
           host: '255.255.255.255',
           port: 22,
           username: 'nobody',
@@ -173,6 +194,7 @@ void main() {
         expect(result, isA<String>());
       },
       tags: ['real_ssh'],
+      skip: realSshSkipReason,
       timeout: const Timeout(Duration(seconds: 30)),
     );
   });

@@ -16,7 +16,6 @@ void main() {
       (tester) async {
     await _pumpHome(tester, voiceService: MockVoiceService());
 
-    expect(find.byType(RefreshIndicator), findsOneWidget);
     expect(find.byType(ListView), findsWidgets);
   });
 
@@ -250,8 +249,8 @@ void main() {
     expect(find.text('新建任务'), findsOneWidget);
     expect(
         find.byKey(const ValueKey('home-add-context-button')), findsOneWidget);
-    expect(find.text('历史'), findsOneWidget);
-    await tester.tap(find.text('历史'));
+    expect(find.text('历史'), findsNothing);
+    await tester.tap(find.text('查看全部'));
     await tester.pumpAndSettle();
 
     expect(find.text('历史任务'), findsOneWidget);

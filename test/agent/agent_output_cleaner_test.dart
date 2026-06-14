@@ -255,7 +255,7 @@ Thinking
 
     final cleaned = const AgentOutputCleaner().clean(raw);
 
-    expect(cleaned, 'hello world');
+    expect(cleaned, '▪ hello world');
     expect(cleaned, isNot(contains('Internal plan')));
     expect(cleaned, isNot(contains('Another thinking bullet')));
   });

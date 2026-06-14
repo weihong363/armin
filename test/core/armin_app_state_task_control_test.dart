@@ -229,6 +229,39 @@ void main() {
     );
   });
 
+  test('markTaskCompleted creates bridge task before completing it',
+      () async {
+    final task = _task(status: TaskStatus.running);
+    final store = _TaskStore(task);
+    final agent = _ControlAgent()..capturedLog = 'all done';
+    final runtimeStore = _CallRecordingRuntimeStore();
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: agent,
+      voiceService: const _SilentVoiceService(),
+      bridgeRuntime: BridgeRuntime(
+        taskStore: runtimeStore,
+        eventBus: RuntimeEventBus(),
+      ),
+    );
+    await state.load();
+
+    await state.markTaskCompleted(task);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(runtimeStore.callLog.length, greaterThanOrEqualTo(2));
+    final createIndex =
+        runtimeStore.callLog.indexWhere((log) => log.status == 'running');
+    final completeIndex = runtimeStore.callLog
+        .indexWhere((log) => log.status == 'completed');
+    expect(createIndex, greaterThanOrEqualTo(0));
+    expect(completeIndex, greaterThanOrEqualTo(0));
+    expect(createIndex, lessThan(completeIndex),
+        reason: 'bridgeRuntime.createTask must happen before completeTask');
+    expect(store.task!.status, TaskStatus.userCompleted);
+    expect(agent.events, containsAllInOrder(['captureLog', 'cleanup']));
+  });
+
   test('refreshTasks reloads task list from store', () async {
     final task = _task(status: TaskStatus.running);
     final store = _TaskStore(task);
@@ -1434,6 +1467,32 @@ class _BlockingRuntimeStore extends InMemoryRuntimeTaskStore {
     }
     return super.loadTask(taskId);
   }
+}
+
+class _CallRecordingRuntimeStore extends InMemoryRuntimeTaskStore {
+  final List<_RuntimeStoreCall> callLog = [];
+
+  @override
+  Future<void> saveTask(RuntimeTaskSnapshot task) async {
+    callLog.add(_RuntimeStoreCall(
+      taskId: task.taskId,
+      status: task.status.name,
+      timestamp: DateTime.now(),
+    ));
+    return super.saveTask(task);
+  }
+}
+
+class _RuntimeStoreCall {
+  const _RuntimeStoreCall({
+    required this.taskId,
+    required this.status,
+    required this.timestamp,
+  });
+
+  final String taskId;
+  final String status;
+  final DateTime timestamp;
 }
 
 class _ControlAgent implements AgentSessionService {

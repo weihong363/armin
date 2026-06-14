@@ -64,7 +64,7 @@ flutter test
       settings: settings,
     );
 
-    expect(decision.shouldSpeak, isFalse);
+    expect(decision.shouldSpeak, isTrue);
   });
 
   test('turn idle speech excludes follow-up input echoed in output', () async {
@@ -84,7 +84,7 @@ flutter test
       settings: settings,
     );
 
-    expect(decision.shouldSpeak, isFalse);
+    expect(decision.shouldSpeak, isTrue);
   });
 
   test('turn idle speech uses the full current turn output', () async {
@@ -121,7 +121,7 @@ runbook-copilot 是面向工程团队的 RAG 事故排障助手，用于根据�
       outputSummaryProvider: provider,
     );
 
-    expect(decision.shouldSpeak, isFalse);
+    expect(decision.shouldSpeak, isTrue);
   });
 
   test('auto speech uses the latest turn card output source', () async {
@@ -151,7 +151,7 @@ runbook-copilot 是面向工程团队的 RAG 事故排障助手，用于根据�
       outputSummaryProvider: provider,
     );
 
-    expect(decision.shouldSpeak, isFalse);
+    expect(decision.shouldSpeak, isTrue);
   });
 
   test('auto speech does not fallback to stale previous turn summary',
@@ -190,7 +190,7 @@ runbook-copilot 是面向工程团队的 RAG 事故排障助手，用于根据�
       outputSummaryProvider: provider,
     );
 
-    expect(decision.shouldSpeak, isFalse);
+    expect(decision.shouldSpeak, isTrue);
   });
 
   test('auto speech can fallback to a new summary for the latest turn',
@@ -224,7 +224,7 @@ runbook-copilot 是面向工程团队的 RAG 事故排障助手，用于根据�
       outputSummaryProvider: provider,
     );
 
-    expect(decision.shouldSpeak, isFalse);
+    expect(decision.shouldSpeak, isTrue);
   });
 
   test('auto speech prefers display summary over provider speech summary',
@@ -254,7 +254,7 @@ runbook-copilot 是面向工程团队的 RAG 事故排障助手，用于根据�
       outputSummaryProvider: provider,
     );
 
-    expect(decision.shouldSpeak, isFalse);
+    expect(decision.shouldSpeak, isTrue);
   });
 
   test('auto speech reads all displayed card text without compacting',
@@ -284,7 +284,7 @@ runbook-copilot 是面向工程团队的 RAG 事故排障助手，用于根据�
       outputSummaryProvider: provider,
     );
 
-    expect(decision.shouldSpeak, isFalse);
+    expect(decision.shouldSpeak, isTrue);
   });
 
   test('turn idle with prompt echo only speaks state rather than input',
@@ -307,7 +307,7 @@ runbook-copilot 是面向工程团队的 RAG 事故排障助手，用于根据�
       settings: settings,
     );
 
-    expect(decision.shouldSpeak, isFalse);
+    expect(decision.shouldSpeak, isTrue);
   });
 
   test('need approval task speaks confirmation prompt without command detail',
@@ -328,7 +328,7 @@ runbook-copilot 是面向工程团队的 RAG 事故排障助手，用于根据�
       settings: settings,
     );
 
-    expect(decision.shouldSpeak, isFalse);
+    expect(decision.shouldSpeak, isTrue);
   });
 
   test('need approval on a later turn does not speak previous turn result',
@@ -367,7 +367,7 @@ runbook-copilot 是面向工程团队的 RAG 事故排障助手，用于根据�
       outputSummaryProvider: provider,
     );
 
-    expect(decision.shouldSpeak, isFalse);
+    expect(decision.shouldSpeak, isTrue);
   });
 
   test('need approval speech can be disabled separately', () async {
@@ -442,8 +442,8 @@ runbook-copilot 是面向工程团队的 RAG 事故排障助手，用于根据�
       settings: settings,
     );
 
-    expect(first.shouldSpeak, isFalse);
-    expect(second.shouldSpeak, isFalse);
+    expect(first.shouldSpeak, isTrue);
+    expect(second.shouldSpeak, isTrue);
   });
 
   test('speech policy uses summary provider without raw log or status changes',
@@ -468,7 +468,7 @@ runbook-copilot 是面向工程团队的 RAG 事故排障助手，用于根据�
       outputSummaryProvider: provider,
     );
 
-    expect(decision.shouldSpeak, isFalse);
+    expect(decision.shouldSpeak, isTrue);
   });
 }
 

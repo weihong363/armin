@@ -437,6 +437,52 @@ void main() {
     expect(output, isNot(contains('head')));
   });
 
+  test('stream buffer keeps full content when under limit', () {
+    final service = SSHAgentSessionService();
+    final limit = service.streamTextLimitForTest;
+    final text = 'hello${List.filled(100, 'x').join()}';
+    final output = service.streamTextForChunksForTest([text]);
+
+    expect(output.length, text.length);
+    expect(output, contains('hello'));
+    expect(output.length, lessThan(limit));
+  });
+
+  test('stream buffer retains exactly at the boundary', () {
+    final service = SSHAgentSessionService();
+    final limit = service.streamTextLimitForTest;
+    final exactly = List.filled(limit, 'a').join();
+    final output = service.streamTextForChunksForTest([exactly]);
+
+    expect(output.length, limit);
+    expect(output, exactly);
+  });
+
+  test('stream buffer clips when single chunk exceeds limit', () {
+    final service = SSHAgentSessionService();
+    final limit = service.streamTextLimitForTest;
+    final huge = List.filled(limit * 2, 'z').join();
+    final output = service.streamTextForChunksForTest([huge]);
+
+    expect(output.length, limit);
+    expect(output, huge.substring(huge.length - limit));
+  });
+
+  test('stream buffer clips across multiple cumulative chunks', () {
+    final service = SSHAgentSessionService();
+    final limit = service.streamTextLimitForTest;
+    final first = List.filled(limit ~/ 2, 'a').join();
+    final over = List.filled(limit ~/ 2 + 100, 'b').join();
+    final output = service.streamTextForChunksForTest([first, over]);
+
+    expect(output.length, limit);
+    // Combined _streamText+text was clipped from the head by 100 chars,
+    // so some 'a's remain before the 'b' tail.
+    expect(output, contains('a'));
+    expect(output, contains('b'));
+    expect(output, endsWith('b'));
+  });
+
   test('approval decision is sent without runtime update wrapper', () async {
     final service = SSHAgentSessionService();
 

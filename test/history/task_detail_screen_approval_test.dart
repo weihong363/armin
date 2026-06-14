@@ -1476,6 +1476,45 @@ Summer 是一个桌面宠物。
     expect(find.text('新标题'), findsWidgets);
   });
 
+  testWidgets('title edit can clear text without showing old title hint',
+      (tester) async {
+    final task = _task().copyWith(title: '旧标题');
+    final state = ArminAppState(
+      store: _TaskStore(task),
+      agentSessionService: const _NoopAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await tester.pumpWidget(
+      AppStateScope(
+        state: state,
+        child: const MaterialApp(
+          home: TaskDetailScreen(taskId: 'task-1'),
+        ),
+      ),
+    );
+
+    await tester.tap(find.byTooltip('编辑标题'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('清除标题'));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('task-title-field')), findsOneWidget);
+    expect(find.text('旧标题'), findsNothing);
+    expect(find.text('输入任务标题'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('保存标题'));
+    await tester.pumpAndSettle();
+
+    final field = tester.widget<TextField>(
+      find.byKey(const Key('task-title-field')),
+    );
+    expect(field.controller?.text, isEmpty);
+    expect(state.tasks.single.title, '旧标题');
+    expect(find.text('标题不能为空。'), findsOneWidget);
+  });
+
   testWidgets('task title fallback is consistent across list and detail',
       (tester) async {
     final task = _task().copyWith(title: '');
@@ -1673,6 +1712,9 @@ class _TaskStore implements TaskHistoryStore {
 
   @override
   Future<void> saveHost(HostConfig host) async {}
+
+  @override
+  Future<void> deleteHost(String hostId) async {}
 
   @override
   Future<void> saveTask(TaskSession task) async {

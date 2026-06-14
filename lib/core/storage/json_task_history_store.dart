@@ -64,6 +64,14 @@ class JsonTaskHistoryStore implements TaskHistoryStore {
   }
 
   @override
+  Future<void> deleteHost(String hostId) async {
+    await _ensureLoaded();
+    _hosts!.removeWhere((item) => item.id == hostId);
+    await _passwordStore.deletePassword(hostId);
+    await _persist();
+  }
+
+  @override
   Future<void> saveTask(TaskSession task) async {
     await _ensureLoaded();
     // Dedup: remove ALL existing entries with this id before inserting.

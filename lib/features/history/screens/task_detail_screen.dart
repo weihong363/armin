@@ -461,6 +461,7 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
       MaterialPageRoute<void>(
         builder: (_) => TaskDraftScreen(
           initialTaskText: task.userText,
+          initialTaskTitle: task.title,
           selectedHostId: task.host.id,
           initialProjectPath: task.host.projectPath,
         ),
@@ -678,23 +679,52 @@ class _TaskHeaderState extends State<_TaskHeader> {
                       style: Theme.of(context).textTheme.titleLarge,
                       decoration: InputDecoration(
                         labelText: '标题',
-                        hintText: task.displayTitle,
+                        hintText: '输入任务标题',
+                        hintStyle:
+                            Theme.of(context).textTheme.titleLarge?.copyWith(
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .onSurface
+                                      .withValues(alpha: 0.22),
+                                ),
                         isDense: true,
                         border: const UnderlineInputBorder(),
-                        suffixIcon: IconButton(
-                          tooltip: '保存标题',
-                          icon: _savingTitle
-                              ? const SizedBox(
-                                  width: 18,
-                                  height: 18,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                  ),
-                                )
-                              : const Icon(Icons.save_outlined),
-                          onPressed: _savingTitle
-                              ? null
-                              : () => _saveTitle(context, task),
+                        suffixIcon: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            ValueListenableBuilder<TextEditingValue>(
+                              valueListenable: _titleController,
+                              builder: (context, value, _) {
+                                if (value.text.isEmpty) {
+                                  return const SizedBox.shrink();
+                                }
+                                return IconButton(
+                                  tooltip: '清除标题',
+                                  icon: const Icon(Icons.close),
+                                  onPressed: _savingTitle
+                                      ? null
+                                      : () {
+                                          _titleController.clear();
+                                        },
+                                );
+                              },
+                            ),
+                            IconButton(
+                              tooltip: '保存标题',
+                              icon: _savingTitle
+                                  ? const SizedBox(
+                                      width: 18,
+                                      height: 18,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                      ),
+                                    )
+                                  : const Icon(Icons.save_outlined),
+                              onPressed: _savingTitle
+                                  ? null
+                                  : () => _saveTitle(context, task),
+                            ),
+                          ],
                         ),
                       ),
                       onSubmitted: (_) => _saveTitle(context, task),
@@ -757,7 +787,6 @@ class _TaskHeaderState extends State<_TaskHeader> {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('标题不能为空。')),
       );
-      _titleController.text = task.title;
       return;
     }
     if (trimmed == task.title.trim()) {

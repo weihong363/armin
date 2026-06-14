@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../../app_state_scope.dart';
+import '../../../core/services/armin_app_state.dart';
 import '../../agent/services/agent_session_service.dart';
 import '../models/host_config.dart';
 
@@ -373,7 +374,28 @@ class _HostFormScreenState extends State<HostFormScreen> {
     );
 
     // First save the host
-    await state.saveHost(host);
+    try {
+      await state.saveHost(host);
+    } on HostEditBlockedException catch (e) {
+      if (mounted) {
+        await showDialog<void>(
+          context: context,
+          builder: (context) {
+            return AlertDialog(
+              title: const Text('无法编辑主机'),
+              content: Text(e.message),
+              actions: [
+                FilledButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: const Text('知道了'),
+                ),
+              ],
+            );
+          },
+        );
+      }
+      return;
+    }
 
     // If setting as default and there are multiple hosts, update all hosts
     if (shouldBeDefault && hostCount > 0) {

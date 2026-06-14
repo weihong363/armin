@@ -7,6 +7,8 @@ abstract class TaskHistoryStore {
 
   Future<void> saveHost(HostConfig host);
 
+  Future<void> deleteHost(String hostId);
+
   Future<List<TaskSession>> loadTasks();
 
   Future<void> saveTask(TaskSession task);

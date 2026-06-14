@@ -27,6 +27,11 @@ class InMemoryTaskHistoryStore implements TaskHistoryStore {
   }
 
   @override
+  Future<void> deleteHost(String hostId) async {
+    _hosts.removeWhere((item) => item.id == hostId);
+  }
+
+  @override
   Future<void> saveTask(TaskSession task) async {
     final index = _tasks.indexWhere((item) => item.id == task.id);
     if (index >= 0) {

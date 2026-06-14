@@ -91,6 +91,9 @@ class _HistoryStore implements TaskHistoryStore {
   Future<void> saveHost(HostConfig host) async {}
 
   @override
+  Future<void> deleteHost(String hostId) async {}
+
+  @override
   Future<void> saveProjectPath(ProjectPathConfig projectPath) async {}
 
   @override

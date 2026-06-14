@@ -229,8 +229,7 @@ void main() {
     );
   });
 
-  test('markTaskCompleted creates bridge task before completing it',
-      () async {
+  test('markTaskCompleted creates bridge task before completing it', () async {
     final task = _task(status: TaskStatus.running);
     final store = _TaskStore(task);
     final agent = _ControlAgent()..capturedLog = 'all done';
@@ -252,8 +251,8 @@ void main() {
     expect(runtimeStore.callLog.length, greaterThanOrEqualTo(2));
     final createIndex =
         runtimeStore.callLog.indexWhere((log) => log.status == 'running');
-    final completeIndex = runtimeStore.callLog
-        .indexWhere((log) => log.status == 'completed');
+    final completeIndex =
+        runtimeStore.callLog.indexWhere((log) => log.status == 'completed');
     expect(createIndex, greaterThanOrEqualTo(0));
     expect(completeIndex, greaterThanOrEqualTo(0));
     expect(createIndex, lessThan(completeIndex),
@@ -309,6 +308,113 @@ void main() {
 
     expect(store.deletedTaskId, isNull);
     expect(state.tasks.single.id, task.id);
+  });
+
+  test('saveHost rejects edits while active task uses host', () async {
+    final task = _task(status: TaskStatus.running);
+    final store = _TaskStore(task, hosts: [task.host]);
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: _ControlAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await expectLater(
+      state.saveHost(task.host.copyWith(name: 'Renamed')),
+      throwsA(isA<HostEditBlockedException>()),
+    );
+
+    expect(store.savedHosts, isEmpty);
+  });
+
+  test('deleteHost rejects deletion while active task uses host', () async {
+    final task = _task(status: TaskStatus.running);
+    final store = _TaskStore(task, hosts: [task.host]);
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: _ControlAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await expectLater(
+      state.deleteHost(task.host.id),
+      throwsA(isA<HostEditBlockedException>()),
+    );
+
+    expect(store.deletedHostId, isNull);
+    expect(state.hosts.single.id, task.host.id);
+  });
+
+  test('deleteHost removes inactive host from store', () async {
+    final task = _task(status: TaskStatus.completed);
+    final store = _TaskStore(task, hosts: [task.host]);
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: _ControlAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await state.deleteHost(task.host.id);
+
+    expect(store.deletedHostId, task.host.id);
+    expect(state.hosts, isEmpty);
+  });
+
+  test('saveProjectPath rejects editing path used by active task', () async {
+    final task = _task(status: TaskStatus.running);
+    final projectPath = _projectPath(
+      id: 'project-1',
+      path: task.host.projectPath,
+    );
+    final store = _TaskStore(
+      task,
+      hosts: [task.host],
+      projectPaths: [projectPath],
+    );
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: _ControlAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await expectLater(
+      state.saveProjectPath(projectPath.copyWith(path: '/tmp/other')),
+      throwsA(isA<ProjectPathEditBlockedException>()),
+    );
+
+    expect(store.savedProjectPaths, isEmpty);
+  });
+
+  test('deleteProjectPath rejects deletion while active task uses path',
+      () async {
+    final task = _task(status: TaskStatus.running);
+    final projectPath = _projectPath(
+      id: 'project-1',
+      path: task.host.projectPath,
+    );
+    final store = _TaskStore(
+      task,
+      hosts: [task.host],
+      projectPaths: [projectPath],
+    );
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: _ControlAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await expectLater(
+      state.deleteProjectPath(projectPath.id),
+      throwsA(isA<ProjectPathEditBlockedException>()),
+    );
+
+    expect(store.deletedProjectPathId, isNull);
+    expect(state.projectPaths.single.id, projectPath.id);
   });
 
   test('resolveApproval sends raw decision and marks task running', () async {
@@ -1387,20 +1493,43 @@ TaskSession _task({required TaskStatus status}) {
   );
 }
 
+ProjectPathConfig _projectPath({
+  required String id,
+  required String path,
+}) {
+  final now = DateTime(2026, 5, 17);
+  return ProjectPathConfig(
+    id: id,
+    name: 'Armin',
+    path: path,
+    createdAt: now,
+    updatedAt: now,
+  );
+}
+
 class _TaskStore implements TaskHistoryStore {
-  _TaskStore(this.task, {List<HostConfig>? hosts})
-      : _hosts = hosts,
+  _TaskStore(
+    this.task, {
+    List<HostConfig>? hosts,
+    List<ProjectPathConfig>? projectPaths,
+  })  : hosts = hosts ?? [if (task != null) task.host],
+        projectPaths = projectPaths ?? const [],
         tasks = [if (task != null) task];
 
   TaskSession? task;
   List<TaskSession> tasks;
   String? deletedTaskId;
-  final List<HostConfig>? _hosts;
+  String? deletedHostId;
+  String? deletedProjectPathId;
+  final List<HostConfig> hosts;
+  List<ProjectPathConfig> projectPaths;
+  final List<HostConfig> savedHosts = [];
+  final List<ProjectPathConfig> savedProjectPaths = [];
   int loadTasksCount = 0;
 
   @override
   Future<List<HostConfig>> loadHosts() async {
-    return _hosts ?? [for (final task in tasks) task.host];
+    return List.unmodifiable(hosts);
   }
 
   @override
@@ -1413,7 +1542,21 @@ class _TaskStore implements TaskHistoryStore {
   }
 
   @override
-  Future<void> saveHost(HostConfig host) async {}
+  Future<void> saveHost(HostConfig host) async {
+    savedHosts.add(host);
+    final index = hosts.indexWhere((item) => item.id == host.id);
+    if (index >= 0) {
+      hosts[index] = host;
+      return;
+    }
+    hosts.add(host);
+  }
+
+  @override
+  Future<void> deleteHost(String hostId) async {
+    deletedHostId = hostId;
+    hosts.removeWhere((item) => item.id == hostId);
+  }
 
   @override
   Future<void> saveTask(TaskSession task) async {
@@ -1436,13 +1579,28 @@ class _TaskStore implements TaskHistoryStore {
   }
 
   @override
-  Future<List<ProjectPathConfig>> loadProjectPaths() async => [];
+  Future<List<ProjectPathConfig>> loadProjectPaths() async {
+    return List.unmodifiable(projectPaths);
+  }
 
   @override
-  Future<void> saveProjectPath(ProjectPathConfig projectPath) async {}
+  Future<void> saveProjectPath(ProjectPathConfig projectPath) async {
+    savedProjectPaths.add(projectPath);
+    final index = projectPaths.indexWhere((item) => item.id == projectPath.id);
+    if (index >= 0) {
+      projectPaths[index] = projectPath;
+      return;
+    }
+    projectPaths = [...projectPaths, projectPath];
+  }
 
   @override
-  Future<void> deleteProjectPath(String projectPathId) async {}
+  Future<void> deleteProjectPath(String projectPathId) async {
+    deletedProjectPathId = projectPathId;
+    projectPaths = projectPaths
+        .where((item) => item.id != projectPathId)
+        .toList(growable: false);
+  }
 }
 
 class _BlockingRuntimeStore extends InMemoryRuntimeTaskStore {

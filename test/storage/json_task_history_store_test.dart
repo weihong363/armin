@@ -96,6 +96,43 @@ void main() {
     expect(reloadedHost.password, 'super-secret-password');
   });
 
+  test('JsonTaskHistoryStore deletes host and secure password', () async {
+    final tempDir = await Directory.systemTemp.createTemp('armin-store-test');
+    addTearDown(() => tempDir.delete(recursive: true));
+    final mockStorage = MockSecureStorage();
+    final passwordStore = SecurePasswordStore(storage: mockStorage);
+    final store = JsonTaskHistoryStore(
+      file: File('${tempDir.path}/history.json'),
+      passwordStore: passwordStore,
+    );
+    final now = DateTime(2026, 5, 17);
+    final host = HostConfig(
+      id: 'host-2',
+      name: 'Dev Server',
+      host: '192.168.1.100',
+      port: 22,
+      username: 'deploy',
+      authType: HostAuthType.password,
+      projectPath: '/var/www/app',
+      tmuxSessionName: 'armin-codex',
+      agentCommand: 'codex',
+      createdAt: now,
+      updatedAt: now,
+      password: 'super-secret-password',
+    );
+
+    await store.saveHost(host);
+    await store.deleteHost(host.id);
+
+    final reloaded = JsonTaskHistoryStore(
+      file: File('${tempDir.path}/history.json'),
+      passwordStore: passwordStore,
+    );
+    final hosts = await reloaded.loadHosts();
+    expect(hosts.where((item) => item.id == host.id), isEmpty);
+    expect(await passwordStore.loadPassword(host.id), isEmpty);
+  });
+
   test('JsonTaskHistoryStore persists project paths', () async {
     final tempDir = await Directory.systemTemp.createTemp('armin-store-test');
     addTearDown(() => tempDir.delete(recursive: true));

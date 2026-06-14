@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../../app_state_scope.dart';
+import '../../../core/services/armin_app_state.dart';
 import '../models/project_path_config.dart';
 
 class ProjectPathListScreen extends StatelessWidget {
@@ -85,7 +86,28 @@ class ProjectPathListScreen extends StatelessWidget {
       },
     );
     if (confirmed == true && context.mounted) {
-      await AppStateScope.of(context).deleteProjectPath(item.id);
+      try {
+        await AppStateScope.of(context).deleteProjectPath(item.id);
+      } on ProjectPathEditBlockedException catch (e) {
+        if (!context.mounted) {
+          return;
+        }
+        await showDialog<void>(
+          context: context,
+          builder: (context) {
+            return AlertDialog(
+              title: const Text('无法删除项目目录'),
+              content: Text(e.message),
+              actions: [
+                FilledButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: const Text('知道了'),
+                ),
+              ],
+            );
+          },
+        );
+      }
     }
   }
 }
@@ -176,28 +198,48 @@ class _ProjectPathFormScreenState extends State<ProjectPathFormScreen> {
       return;
     }
 
-    final state = AppStateScope.of(context);
-    final now = DateTime.now();
-    final existing = widget.projectPath;
-    final item = ProjectPathConfig(
-      id: existing?.id ?? 'project-${now.microsecondsSinceEpoch}',
-      name: _nameController.text.trim(),
-      path: normalizeRemoteProjectPath(_pathController.text),
-      createdAt: existing?.createdAt ?? now,
-      updatedAt: now,
-      isDefault: _isDefault || state.projectPaths.isEmpty,
-    );
+    try {
+      final state = AppStateScope.of(context);
+      final now = DateTime.now();
+      final existing = widget.projectPath;
+      final item = ProjectPathConfig(
+        id: existing?.id ?? 'project-${now.microsecondsSinceEpoch}',
+        name: _nameController.text.trim(),
+        path: normalizeRemoteProjectPath(_pathController.text),
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now,
+        isDefault: _isDefault || state.projectPaths.isEmpty,
+      );
 
-    if (item.isDefault) {
-      for (final path in state.projectPaths) {
-        if (path.id != item.id && path.isDefault) {
-          await state.saveProjectPath(path.copyWith(isDefault: false));
+      if (item.isDefault) {
+        for (final path in state.projectPaths) {
+          if (path.id != item.id && path.isDefault) {
+            await state.saveProjectPath(path.copyWith(isDefault: false));
+          }
         }
       }
-    }
-    await state.saveProjectPath(item);
-    if (mounted) {
-      Navigator.of(context).pop();
+      await state.saveProjectPath(item);
+      if (mounted) {
+        Navigator.of(context).pop();
+      }
+    } on ProjectPathEditBlockedException catch (e) {
+      if (mounted) {
+        await showDialog<void>(
+          context: context,
+          builder: (context) {
+            return AlertDialog(
+              title: const Text('无法编辑项目目录'),
+              content: Text(e.message),
+              actions: [
+                FilledButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: const Text('知道了'),
+                ),
+              ],
+            );
+          },
+        );
+      }
     }
   }
 }

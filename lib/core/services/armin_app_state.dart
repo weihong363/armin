@@ -135,6 +135,11 @@ class ArminAppState extends ChangeNotifier {
     };
   }
 
+  String _taskBlockingLabel(TaskSession task) {
+    final title = task.displayTitle;
+    return title.length > 20 ? '${title.substring(0, 20)}...' : title;
+  }
+
   final Map<String, StreamSubscription<AgentExecutionUpdate>>
       _runningExecutions = {};
   final Map<String, Timer> _autoDetachTimers = {};
@@ -190,22 +195,27 @@ class ArminAppState extends ChangeNotifier {
   }
 
   Future<void> saveHost(HostConfig host) async {
+    final blockingIds = activeTasks
+        .where((t) => t.host.id == host.id)
+        .map((t) => _taskBlockingLabel(t))
+        .toList();
+    if (blockingIds.isNotEmpty) {
+      throw HostEditBlockedException(blockingIds);
+    }
     await _store.saveHost(host);
     hosts = await _store.loadHosts();
     notifyListeners();
   }
 
   Future<void> deleteHost(String hostId) async {
-    // Load current hosts, remove the one to delete, and save the rest
-    final currentHosts = await _store.loadHosts();
-    final remainingHosts = currentHosts.where((h) => h.id != hostId).toList();
-
-    // Clear and re-save all remaining hosts
-    for (final host in remainingHosts) {
-      await _store.saveHost(host);
+    final blockingIds = activeTasks
+        .where((t) => t.host.id == hostId)
+        .map((t) => _taskBlockingLabel(t))
+        .toList();
+    if (blockingIds.isNotEmpty) {
+      throw HostEditBlockedException(blockingIds);
     }
-
-    // Reload to ensure consistency
+    await _store.deleteHost(hostId);
     hosts = await _store.loadHosts();
     notifyListeners();
   }
@@ -374,12 +384,39 @@ class ArminAppState extends ChangeNotifier {
   }
 
   Future<void> saveProjectPath(ProjectPathConfig projectPath) async {
+    final existingPaths = projectPaths
+        .where((p) => p.id == projectPath.id)
+        .map((p) => normalizeRemoteProjectPath(p.path))
+        .toSet()
+      ..add(normalizeRemoteProjectPath(projectPath.path));
+    final blockingIds = activeTasks
+        .where((t) => existingPaths
+            .contains(normalizeRemoteProjectPath(t.host.projectPath)))
+        .map((t) => _taskBlockingLabel(t))
+        .toList();
+    if (blockingIds.isNotEmpty) {
+      throw ProjectPathEditBlockedException(blockingIds);
+    }
     await _store.saveProjectPath(projectPath);
     projectPaths = await _store.loadProjectPaths();
     notifyListeners();
   }
 
   Future<void> deleteProjectPath(String projectPathId) async {
+    final pathToDelete = projectPaths
+        .where((p) => p.id == projectPathId)
+        .map((p) => normalizeRemoteProjectPath(p.path))
+        .firstOrNull;
+    if (pathToDelete != null) {
+      final blockingIds = activeTasks
+          .where((t) =>
+              normalizeRemoteProjectPath(t.host.projectPath) == pathToDelete)
+          .map((t) => _taskBlockingLabel(t))
+          .toList();
+      if (blockingIds.isNotEmpty) {
+        throw ProjectPathEditBlockedException(blockingIds);
+      }
+    }
     await _store.deleteProjectPath(projectPathId);
     projectPaths = await _store.loadProjectPaths();
     notifyListeners();
@@ -2250,4 +2287,32 @@ class HomeTaskSnapshot {
 
   final bool ready;
   final List<TaskSession> tasks;
+}
+
+class HostEditBlockedException implements Exception {
+  const HostEditBlockedException(this.blockingTaskLabels);
+
+  final List<String> blockingTaskLabels;
+
+  String get message {
+    if (blockingTaskLabels.isEmpty) {
+      return '无法编辑主机配置。';
+    }
+    final names = blockingTaskLabels.join('、');
+    return '以下任务正在使用此主机，请先将它们停止或完成：$names';
+  }
+}
+
+class ProjectPathEditBlockedException implements Exception {
+  const ProjectPathEditBlockedException(this.blockingTaskLabels);
+
+  final List<String> blockingTaskLabels;
+
+  String get message {
+    if (blockingTaskLabels.isEmpty) {
+      return '无法编辑项目目录。';
+    }
+    final names = blockingTaskLabels.join('、');
+    return '以下任务正在使用此项目目录，请先将它们停止或完成：$names';
+  }
 }

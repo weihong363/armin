@@ -13,6 +13,7 @@ Armin 是一个 Flutter 应用，采用本地优先的状态管理，并围绕�
 - `features/agent`: 代理会话抽象、测试 mock、SSH/tmux 服务、原生输出清洗/观察与 legacy 解析器
 - `features/hosts`: 主机配置模型和 UI
 - `features/history`: 任务详情审计视图
+- `features/runtime`: Bridge Runtime、RuntimeEventBus、SessionManager、TaskWatcher、WorkState/ApprovalState 模型与 reconcile 探测
 
 ## 本地存储
 
@@ -70,6 +71,19 @@ Armin 不负责代理的推理、规划、代码合并或调度。它仅管理 s
 
 `MetricEvent` 记录 shell 级别的事件，如任务创建、任务开始、接收到原始输出、请求批准和任务完成。第一阶段在任务详情时间线中显示这些事件。后续阶段可以聚合诸如持续时间、编辑次数、批准次数、中断次数、验证状态、变更文件数和原始日志大小等字段。
 
+### RuntimeEventBus（Phase 2.5）
+
+`RuntimeEventBus` 是 Bridge Runtime 的结构化事件流，承载 25 种事件类型，作为 UI 消费任务状态的主通道：
+
+- **任务生命周期**：`TASK_CREATED`、`TASK_STARTED`、`TASK_PROGRESS`、`TASK_WAITING_USER`、`TASK_COMPLETED`、`TASK_FAILED`、`TASK_CANCELLED`
+- **运行时控制**：`TASK_PAUSED`、`TASK_RESUMED`、`TASK_STOPPED`
+- **输出与交付物**：`OUTPUT_UPDATED`、`DELIVERABLE_UPDATED`
+- **审批生命周期**：`APPROVAL_REQUESTED`、`APPROVAL_RESOLVING`、`APPROVAL_RESOLVED`、`APPROVAL_REJECTED`、`APPROVAL_FAILED`
+- **观察者与连接**：`OBSERVER_ATTACHED`、`OBSERVER_DETACHED`、`CONNECTION_LOST`、`CONNECTION_RESTORED`
+- **审查与等待**：`REVIEW_SUBMITTED`、`WAITING_FOR_INSTRUCTION`、`WAITING_FOR_REVIEW`、`WAITING_FOR_APPROVAL`
+
+事件流通过 `BridgeRuntime` 的 `_publish()` / `_publishDirect()` 写入，UI 通过 `ArminAppState.runtimeEvents` 流订阅。`TaskWatcher` 的字符串匹配状态推断降级为 fallback，不再作为状态权威。
+
 ## UI 结构
 
 主页是一个任务队列，而非终端：
@@ -100,19 +114,62 @@ Armin 不负责代理的推理、规划、代码合并或调度。它仅管理 s
 - 折叠的原始日志
 - 指标时间线
 
+## Bridge Runtime（Phase 2.5）
+
+`BridgeRuntime` 是 Flutter 进程内的过渡 Runtime 实现，作为任务状态的唯一写入源。它消费 SSH/tmux 输出流，通过 `TaskWatcher` 解析增量输出，经由 `RuntimeEventBus` 分发结构化事件，并派生 `WorkState` 和 `ApprovalState` 供 UI 消费。长期方向是将持久化边界迁移至 SQLite，再逐步迁移至远端 Runtime daemon。
+
+### 核心组件
+
+| 组件 | 职责 |
+|------|------|
+| `BridgeRuntime` | 任务快照管理、状态转换、事件发布、reconcile 探测 |
+| `RuntimeEventBus` | 广播式事件流，25 种事件类型 |
+| `RuntimeSessionManager` | Session 创建/恢复、task-to-session 映射、状态生命周期（active → detached → destroyed） |
+| `TaskWatcher` | 增量输出解析、偏移量追踪、进度/动作/检查点提取、兼容性 fallback |
+| `RuntimeTaskStore` | 任务快照持久化接口（当前内存实现，SQLite 接口已预留） |
+
+### WorkState 与 ApprovalState
+
+UI 不直接消费 raw terminal state。`BridgeRuntime` 通过 `_updateWorkState()` 派生人类可读的 `WorkState`（`WorkPhase`：idle / working / turnIdle / needsApproval / completed / failed / stopped），UI 通过 `workState(taskId)` 读取当前阶段、标题和详情。
+
+审批状态通过 `ApprovalState` 枚举表达完整生命周期：
+
+```text
+none → pending → resolving → resolved
+                     ↘ failed
+```
+
+- `pending`：检测到审批请求，等待用户操作
+- `resolving`：用户操作已发送到终端，等待远端确认
+- `resolved`：审批 prompt 消失或 runtime 确认审批成功
+- `failed`：终端操作失败或超时
+
+审批区分两类：`NativeTerminalApproval`（CLI 交互式 prompt，如 Allow Once / Reject）和 `ReviewDecision`（工作流审查，如 Approve / Request Changes / Ask Question）。
+
+### Reconcile 探测
+
+`BridgeRuntime` 通过 `startReconcileLoop()` 周期扫描 running 任务（默认 30s），每次最多探测 3 个任务（超时 3s）。探测结果触发以下决策：
+
+- `sessionMissing`：远端 tmux session 不存在 → 标记 `runtimeLost`
+- `needsAttention`：远端输出包含审批/关注关键词 → 标记 `needAttention`
+- `exited`：远端 Agent 进程已退出 → 标记完成
+- `stableOutput`：连续两次探测输出 hash 不变 → 标记 `turnIdle`
+
+连续 6 次 `sessionMissing` 后自动排除该任务，避免无效 SSH 探测。`runtimeLost` 为终端状态，不计入活跃任务上限且可被删除。
+
 ## 运行时控制
 
 运行时控制仅限于 shell 和用户任务语义层：
 
 - 跟进指令直接发送到当前 tmux/Agent 会话，不添加私有结构化 marker。
 - 运行中的语音追加与语音控制会追加脱敏后的 `VoiceInput`，使历史可区分用户实际说过的推进或终止语义。
-- 暂停/恢复与停止控制当前远端会话。
-- 断开监听只移除手机侧 observer，远端 session 可继续运行；重新连接会 attach 到同一 session。
-- SSH 传输中断或手机网络掉线会进入可恢复的监听断开状态，不会自动判定远端任务失败或清理可能仍在运行的 session。
+- 暂停/恢复与停止控制当前远端会话；对应的 `TASK_PAUSED` / `TASK_RESUMED` / `TASK_STOPPED` 事件通过 RuntimeEventBus 发布。
+- 断开监听只移除手机侧 observer（发布 `OBSERVER_DETACHED`），远端 session 可继续运行；重新连接会 attach 到同一 session（发布 `OBSERVER_ATTACHED`）。
+- SSH 传输中断或手机网络掉线发布 `CONNECTION_LOST`，进入可恢复的监听断开状态，不会自动判定远端任务失败或清理可能仍在运行的 session；恢复后发布 `CONNECTION_RESTORED`。
 - `turnIdle` 表示本轮在强信号下进入等待用户继续，用户可以继续追加或确认结束，不等于完成；它不应由短时间无输出或 pane 稳定直接产生。
 - 用户标记完成/失败或停止时，Armin 保存 final capture 后清理 tmux session。
 - 如果 cleanup 未能确认成功，任务会保留提示和日志，终态详情页可再次请求清理远端 session。
-- `runtimeLost`（远端会话已不可用）属于终端状态：该任务不再被 reconcile 探测、不被 bridge 跟踪、不计入活跃任务上限，且可被删除。仅 `running` 和 `observerDetached` 会被周期性 reconcile 探测远端状态。
+- `runtimeLost`（远端会话已不可用）属于终端状态；该任务不再被 reconcile 探测、不被 bridge 跟踪、不计入活跃任务上限，且可被删除。仅 `running` 和 `observerDetached` 会被周期性 reconcile 探测远端状态。
 - `RuntimePolicy` 会按执行模式调整安静输出阈值：安全模式较短，平衡模式更长，激进 / YOLO 模式最长，以降低长时间 thinking、跑测试或自动执行时被误判为 `turnIdle` 的风险；单次运行仍有最长观察时限，监控窗口较短，final capture 窗口较完整。
 - 已结束、失败、停止或运行丢失的任务可重新执行，并预选原任务的 Host 和 project path；仍在交互中的任务不能通过重跑另起 session。
 

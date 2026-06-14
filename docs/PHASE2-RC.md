@@ -21,16 +21,22 @@ Phase 2 的真实设备主链路已通过人工验收：
 
 | 项目 | Codex  | Qoder  |
 | --- |--------|--------|
-| Host password 连接成功 | PASSED | PASSED |
-| project path 进入正确目录 | PASSED  | PASSED  |
-| 首轮任务进入等待继续 | PASSED    | PASSED    |
-| 文本追加进入同一 session | PASSED    | PASSED    |
-| 语音追加进入同一 session | PASSED    | PASSED    |
-| 暂停后可恢复 | PASSED    | PASSED    |
-| 断开监听后可重新监听 | PASSED    | PASSED    |
-| 停止或标记完成后 cleanup | PASSED    | PASSED    |
-| 结果卡片语义正确 | PASSED    | PASSED    |
-| 小喇叭可朗读当前结果 | PASSED    | PASSED    |
+| Host password 连接成功 |   |   |
+| project path 进入正确目录 |   |   |
+| 首轮任务进入等待继续 |   |   |
+| 文本追加进入同一 session |   |   |
+| 语音追加进入同一 session |   |   |
+| 上下文追加（从详情页补充指令） |   |   |
+| 暂停后可恢复 |   |   |
+| 断开监听后可重新监听 |   |   |
+| 停止任务后保存 final capture 并 cleanup |   |   |
+| 标记完成后保存 final capture 并 cleanup |   |   |
+| 标记失败后保存 final capture 并 cleanup |   |   |
+| 审批检测与处理（Allow/Reject 后任务继续） |   |   |
+| 结果卡片语义正确 |   |   |
+| 小喇叭可朗读当前结果 |   |   |
+| 活跃任务上限（默认 5）阻止超限创建 |   |   |
+| 使用中 Host/project path 不可编辑 |   |   |
 
 建议同时记录：
 
@@ -63,18 +69,36 @@ Phase 2 的真实设备主链路已通过人工验收：
 
 真机检查：
 
+**创建与配置：**
 - 从首页语音创建任务。
 - 从任务页文本创建任务。
 - 选择 Host 与 project path。
+- 使用中的 Host 和 project path 不可编辑（锁定保护）。
+
+**执行链路：**
 - Codex 任务可进入等待继续。
 - Qoder 任务可进入等待继续。
 - 文本追加和语音追加都进入同一 tmux session。
-- “读一下结果”会朗读当前任务结果。
-- 结果卡片小喇叭只朗读当前 turn 内容。
-- 暂停后可恢复。
+- 从任务详情页追加上下文（文本/语音）进入同一 session。
+
+**运行时控制：**
+- 暂停后可恢复（远端 session 保留，恢复后重新监听）。
 - 断开监听后远端 session 不被杀，且可重新监听。
 - 停止任务后保存 final capture 并 cleanup session。
 - 标记完成后保存 final capture 并 cleanup session。
+- 标记失败后保存 final capture 并 cleanup session。
+
+**审批：**
+- 检测到审批 prompt 后任务进入"需要你的决定"状态。
+- Allow / Reject 后任务继续执行，不卡在 resolving 状态。
+
+**活跃任务限制：**
+- 活跃任务达到上限（默认 5）时，新建任务被阻止并提示。
+- `runtimeLost` 任务不计入活跃上限，且可被删除。
+
+**输出与审计：**
+- "读一下结果"会朗读当前任务结果。
+- 结果卡片小喇叭只朗读当前 turn 内容。
 - 历史详情中 raw log、turn 输出、结果卡片和时间线一致。
 - JSON 历史、日志、metric、prompt 中不包含 SSH password 明文。
 

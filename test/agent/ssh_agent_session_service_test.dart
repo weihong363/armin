@@ -1,3 +1,4 @@
+import 'package:armin/features/agent/models/agent_approval_config.dart';
 import 'package:armin/features/agent/services/agent_session_service.dart';
 import 'package:armin/features/agent/services/runtime_policy.dart';
 import 'package:armin/features/agent/services/ssh_agent_session_service.dart';
@@ -315,6 +316,44 @@ void main() {
     expect(execution, contains('last_stable_emitted_hash'));
     expect(execution, contains('while [ "\$i" -lt 7 ]'));
     expect(finalCapture, contains('-S -120'));
+  });
+
+  test('execution mode configures quiet threshold in monitor script', () {
+    final service = SSHAgentSessionService(
+      pollInterval: const Duration(seconds: 1),
+    );
+
+    final balanced = service.buildExecutionCommandForTest(
+      const AgentExecutionRequest(
+        prompt: '',
+        host: '127.0.0.1',
+        username: 'ironion',
+        tmuxSessionName: 'armin-balanced',
+        password: 'secret-password',
+        attachOnly: true,
+        approvalConfig: AgentApprovalConfig(
+          agentType: AgentType.codex,
+          mode: AgentApprovalMode.balanced,
+        ),
+      ),
+    );
+    final aggressive = service.buildExecutionCommandForTest(
+      const AgentExecutionRequest(
+        prompt: '',
+        host: '127.0.0.1',
+        username: 'ironion',
+        tmuxSessionName: 'armin-aggressive',
+        password: 'secret-password',
+        attachOnly: true,
+        approvalConfig: AgentApprovalConfig(
+          agentType: AgentType.codex,
+          mode: AgentApprovalMode.aggressive,
+        ),
+      ),
+    );
+
+    expect(balanced, contains('stable_count" -ge 10'));
+    expect(aggressive, contains('stable_count" -ge 60'));
   });
 
   test('probe command checks session and captures recent pane only', () {

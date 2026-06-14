@@ -1703,26 +1703,27 @@ Apply this decision to the pending approval request.
     if (update.turnIdle || update.done) {
       final idleAt = DateTime.now();
       final summary = update.cleanedOutput?.trim() ?? '';
+      final shouldWriteResult = !update.needsAttention && summary.isNotEmpty;
       return taskWithTurn.copyWith(
         status: update.needsAttention
             ? TaskStatus.needAttention
             : TaskStatus.turnIdle,
         rawLog: rawLog,
-        result: summary.isEmpty
-            ? task.result
-            : TaskResult(
+        result: shouldWriteResult
+            ? TaskResult(
                 status: 'turn_idle',
                 summary: summary,
                 changedFiles: const [],
                 validation: const [],
                 risks: const [],
                 nextActions: const [],
-              ),
+              )
+            : task.result,
         updatedAt: idleAt,
         shortSummary: update.needsAttention
             ? 'Agent 可能需要用户处理'
             : (summary.isEmpty ? 'Agent 暂时停止输出' : summary),
-        summary: summary.isEmpty ? task.summary : summary,
+        summary: shouldWriteResult ? summary : task.summary,
         executionLogs: executionLogs,
         metricEvents: _metricEventsWithCreated(
           taskWithTurn.metricEvents,

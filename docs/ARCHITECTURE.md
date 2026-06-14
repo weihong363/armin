@@ -113,7 +113,7 @@ Armin 不负责代理的推理、规划、代码合并或调度。它仅管理 s
 - 用户标记完成/失败或停止时，Armin 保存 final capture 后清理 tmux session。
 - 如果 cleanup 未能确认成功，任务会保留提示和日志，终态详情页可再次请求清理远端 session。
 - `runtimeLost`（远端会话已不可用）属于终端状态：该任务不再被 reconcile 探测、不被 bridge 跟踪、不计入活跃任务上限，且可被删除。仅 `running` 和 `observerDetached` 会被周期性 reconcile 探测远端状态。
-- `RuntimePolicy` 当前默认以 20 秒安静输出判断一轮暂停，以 20 分钟作为单次运行的最长观察时限；监控窗口较短，final capture 窗口较完整。
+- `RuntimePolicy` 会按执行模式调整安静输出阈值：安全模式较短，平衡模式更长，激进 / YOLO 模式最长，以降低长时间 thinking、跑测试或自动执行时被误判为 `turnIdle` 的风险；单次运行仍有最长观察时限，监控窗口较短，final capture 窗口较完整。
 - 已结束、失败、停止或运行丢失的任务可重新执行，并预选原任务的 Host 和 project path；仍在交互中的任务不能通过重跑另起 session。
 
 Armin 不解释或重写 Agent 的执行逻辑。`SelectableOutputSummaryProvider` 支持用户打开实验性的端侧摘要增强，并在 runner 不存在、设备不支持、超时或失败时回落至脱敏后的规则摘要。生产包仍待接入实际 Android 模型 runner；它只用于 TTS/展示摘要，不参与 Agent 执行。

@@ -993,6 +993,28 @@ Apply this change?
     expect(store.task!.turns.single.rawOutput, contains('hello'));
   });
 
+  test('done update needing attention does not write a result summary',
+      () async {
+    final task = _task(status: TaskStatus.running);
+    final store = _TaskStore(task);
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: _DoneNeedsAttentionAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    state.startTaskExecution(
+      task,
+      const AgentExecutionRequest(prompt: 'Task'),
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    expect(store.task!.status, TaskStatus.needAttention);
+    expect(store.task!.result, isNull);
+    expect(store.task!.summary, task.summary);
+  });
+
   test('turn idle output is spoken once for repeated same summary', () async {
     final task = _task(status: TaskStatus.running);
     final store = _TaskStore(task);
@@ -1798,6 +1820,18 @@ class _TurnIdleAgent extends _ControlAgent {
       rawOutput: 'hello',
       cleanedOutput: 'hello',
       turnIdle: true,
+      done: true,
+    );
+  }
+}
+
+class _DoneNeedsAttentionAgent extends _ControlAgent {
+  @override
+  Stream<AgentExecutionUpdate> execute(AgentExecutionRequest request) async* {
+    yield const AgentExecutionUpdate(
+      rawOutput: 'Credits exhausted. Use /usage for details.',
+      cleanedOutput: 'Credits exhausted. Use /usage for details.',
+      needsAttention: true,
       done: true,
     );
   }

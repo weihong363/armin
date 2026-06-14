@@ -141,10 +141,11 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
       final command = _buildExecutionScript(request);
       final session = await client.execute(command);
       final output = _ExecutionOutputState();
+      final runtimePolicy = _runtimePolicyFor(request);
       final observer = NativeOutputObserver(
         cleaner: _cleaner,
-        idleThreshold: _runtimePolicy.idleThreshold,
-        reconnectThreshold: _runtimePolicy.reconnectThreshold,
+        idleThreshold: runtimePolicy.idleThreshold,
+        reconnectThreshold: runtimePolicy.reconnectThreshold,
       );
       late final StreamSubscription<String> stdoutSub;
       late final StreamSubscription<String> stderrSub;
@@ -217,6 +218,11 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
           final effectiveApproval = approval ??
               (isSafeMode ? null : _approvalFromTerminalPrompt(terminalPrompt));
           final snapshot = observer.observeSettled(observedOutput);
+          final shouldFinishUpdate = snapshot.turnIdle ||
+              snapshot.runtimeLost ||
+              snapshot.needsAttention ||
+              terminalPrompt != null ||
+              effectiveApproval != null;
           controller.add(
             AgentExecutionUpdate(
               rawOutput: '',
@@ -229,7 +235,7 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
                   effectiveApproval != null,
               approval: effectiveApproval,
               terminalPrompt: terminalPrompt,
-              done: true,
+              done: shouldFinishUpdate,
             ),
           );
           await controller.close();
@@ -623,6 +629,7 @@ $tmux send-keys -t "\$pane" C-m$clearHistory
   }
 
   String _buildExecutionScript(AgentExecutionRequest request) {
+    final runtimePolicy = _runtimePolicyFor(request);
     final tmux = _tmuxCommand(request.tmuxCommand);
     final session = _shellQuote(request.tmuxSessionName);
     final projectPath = _pathToken(request.projectPath);
@@ -634,9 +641,9 @@ $tmux send-keys -t "\$pane" C-m$clearHistory
     );
     final prompt = _shellQuote(request.prompt);
     final delayMs = _pollInterval.inMilliseconds;
-    final stablePolls = _runtimePolicy.stablePollCount(_pollInterval);
-    final maxPolls = _runtimePolicy.maxPollCount(_pollInterval);
-    final monitorStart = -_runtimePolicy.monitorCaptureLines;
+    final stablePolls = runtimePolicy.stablePollCount(_pollInterval);
+    final maxPolls = runtimePolicy.maxPollCount(_pollInterval);
+    final monitorStart = -runtimePolicy.monitorCaptureLines;
     final approvalPromptPattern = _approvalPromptPattern(profile);
     final sessionSetup = request.attachOnly
         ? '''
@@ -778,6 +785,10 @@ wait "\$pipe_cat_pid" 2>/dev/null || true
       pathPrepend: request.pathPrepend,
       shellWrapper: request.shellWrapper,
     );
+  }
+
+  RuntimePolicy _runtimePolicyFor(AgentExecutionRequest request) {
+    return _runtimePolicy.forApprovalMode(request.approvalConfig?.mode);
   }
 
   String _buildConnectionTestCommand(AgentConnectionTestRequest request) {

@@ -24,7 +24,7 @@ lib/
 │   ├── agent/                  # Agent 会话抽象、SSH/tmux 执行、输出清洗与观察
 │   │   ├── models/             # AgentExecutionUpdate 等
 │   │   ├── parsers/            # Legacy 结果/批准/终端提示解析器
-│   │   └── services/           # SSHAgentSessionService、CodexOutputCleaner、RuntimePolicy
+│   │   └── services/           # SSHAgentSessionService、AgentOutputCleaner、RuntimePolicy
 │   ├── history/                # 任务历史审计详情视图
 │   ├── hosts/                  # Host 配置管理与 UI
 │   ├── projects/               # Project path 配置与选择

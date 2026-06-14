@@ -1,3 +1,4 @@
+import '../models/agent_approval_config.dart';
 import 'agent_runtime_config.dart';
 
 class RuntimePolicy {
@@ -15,6 +16,37 @@ class RuntimePolicy {
   final Duration maxRuntime;
   final int monitorCaptureLines;
   final int finalCaptureLines;
+
+  RuntimePolicy forApprovalMode(AgentApprovalMode? mode) {
+    if (mode == null) {
+      return this;
+    }
+    return copyWith(
+      idleThreshold: switch (mode) {
+        AgentApprovalMode.safe => AgentRuntimeConfig.turnIdleThreshold,
+        AgentApprovalMode.balanced =>
+          AgentRuntimeConfig.balancedTurnIdleThreshold,
+        AgentApprovalMode.aggressive =>
+          AgentRuntimeConfig.aggressiveTurnIdleThreshold,
+      },
+    );
+  }
+
+  RuntimePolicy copyWith({
+    Duration? idleThreshold,
+    Duration? reconnectThreshold,
+    Duration? maxRuntime,
+    int? monitorCaptureLines,
+    int? finalCaptureLines,
+  }) {
+    return RuntimePolicy(
+      idleThreshold: idleThreshold ?? this.idleThreshold,
+      reconnectThreshold: reconnectThreshold ?? this.reconnectThreshold,
+      maxRuntime: maxRuntime ?? this.maxRuntime,
+      monitorCaptureLines: monitorCaptureLines ?? this.monitorCaptureLines,
+      finalCaptureLines: finalCaptureLines ?? this.finalCaptureLines,
+    );
+  }
 
   int stablePollCount(Duration pollInterval) {
     return _pollCount(idleThreshold, pollInterval);

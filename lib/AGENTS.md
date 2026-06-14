@@ -20,7 +20,7 @@
 
 - 使用 Dart/Flutter 现有模式；不要按根 `AGENTS.md` 的 TypeScript/React 偏好改写 Flutter 代码。
 - 优先修改已有 service、model、screen、widget，不新增抽象，除非能减少真实重复或隔离跨模块契约。
-- UI 文案和交互保持移动优先、语音优先；不要把 Armin 做成完整终端或通用聊天工具。
+- UI 文案和交互保持语言优先；不要把 Armin 做成完整终端或通用聊天工具。
 - 业务状态通过 `core/services/armin_app_state.dart` 协调；feature 内部不要私自持久化全局状态。
 - 敏感信息必须脱敏后进入历史、日志、摘要、语音播报。
 

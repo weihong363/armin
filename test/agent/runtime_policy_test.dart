@@ -1,4 +1,5 @@
 import 'package:armin/features/agent/services/agent_runtime_config.dart';
+import 'package:armin/features/agent/models/agent_approval_config.dart';
 import 'package:armin/features/agent/services/runtime_policy.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -25,6 +26,23 @@ void main() {
 
     expect(policy.stablePollCount(const Duration(seconds: 1)), 3);
     expect(policy.maxPollCount(const Duration(seconds: 1)), 6);
+  });
+
+  test('runtime policy maps approval modes to idle thresholds', () {
+    const policy = RuntimePolicy();
+
+    expect(
+      policy.forApprovalMode(AgentApprovalMode.safe).idleThreshold,
+      AgentRuntimeConfig.turnIdleThreshold,
+    );
+    expect(
+      policy.forApprovalMode(AgentApprovalMode.balanced).idleThreshold,
+      AgentRuntimeConfig.balancedTurnIdleThreshold,
+    );
+    expect(
+      policy.forApprovalMode(AgentApprovalMode.aggressive).idleThreshold,
+      AgentRuntimeConfig.aggressiveTurnIdleThreshold,
+    );
   });
 
   test('runtime policy rejects an invalid polling interval', () {

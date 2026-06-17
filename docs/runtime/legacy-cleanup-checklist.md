@@ -1,4 +1,4 @@
-# Legacy Logic Cleanup Checklist
+# 遗留逻辑清理清单
 
 > Phase 2.5 → Phase A 过渡期 — 旧逻辑向新 Runtime 架构迁移
 

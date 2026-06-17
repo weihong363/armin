@@ -2833,14 +2833,14 @@ class _TaskNeedsPanelState extends State<_TaskNeedsPanel> {
   }
 
   NativeTerminalApproval? _pendingApproval(TaskSession task) {
+    if (task.nativeApproval != null &&
+        task.nativeApproval!.state == ApprovalState.pending) {
+      return task.nativeApproval;
+    }
     for (final approval in task.nativeApprovalRequests.reversed) {
       if (approval.state == ApprovalState.pending) {
         return approval;
       }
-    }
-    if (task.nativeApproval != null &&
-        task.nativeApproval!.state == ApprovalState.pending) {
-      return task.nativeApproval;
     }
     return null;
   }

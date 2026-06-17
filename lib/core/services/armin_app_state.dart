@@ -162,12 +162,7 @@ class ArminAppState extends ChangeNotifier {
   Future<void> load() async {
     await bridgeRuntime.restoreDurableState();
     hosts = await _store.loadHosts();
-    tasks = await _store.loadTasks();
-    // Dedup: ensure no duplicate task ids leaked from storage.
-    if (tasks.length > 1) {
-      final seen = <String>{};
-      tasks = tasks.where((t) => seen.add(t.id)).toList();
-    }
+    tasks = await _loadDedupedTasks();
     projectPaths = await _store.loadProjectPaths();
     ready = true;
     // Only bridge active tasks — archived tasks don't need runtime tracking.
@@ -254,13 +249,14 @@ class ArminAppState extends ChangeNotifier {
   }
 
   Future<void> refreshTasks() async {
-    tasks = await _store.loadTasks();
+    tasks = await _loadDedupedTasks();
     for (final task in activeTasks) {
       await _bridgeEnsureTaskCreated(task);
     }
     _syncTaskSnapshots();
     _updateHomeSnapshot(force: true);
     notifyListeners();
+    unawaited(_refreshRemoteSnapshotsAfterManualRefresh());
   }
 
   Future<void> refreshTaskFromRemote(TaskSession task) async {
@@ -270,25 +266,62 @@ class ArminAppState extends ChangeNotifier {
       return;
     }
     final hadActiveObserver = _runningExecutions.containsKey(latest.id);
-    final snapshot = await _captureLogBestEffort(await _controlRequest(latest));
-    final trimmed = snapshot.trim();
-    if (trimmed.isNotEmpty) {
-      await _applyCapturedRemoteSnapshot(
-        latest,
-        snapshot,
-      );
-    }
-    // Only sync if something changed (remote output captured).
-    // Skip for sessionMissing probes to avoid wasted hash/signature work.
-    final changed = trimmed.isNotEmpty || hadActiveObserver;
-    if (changed) {
-      _syncTaskSnapshots(taskId: task.id);
-      _updateHomeSnapshot();
-    }
+    await _captureAndApplyRemoteSnapshot(latest);
     final synced = _latestTask(task.id) ?? latest;
     if (hadActiveObserver) {
       startTaskExecution(synced, _attachRequest(synced));
     }
+  }
+
+  Future<void> _refreshRemoteSnapshotsAfterManualRefresh() async {
+    final candidates =
+        tasks.where(_canManualRefreshRemoteSnapshot).toList(growable: false);
+    for (final task in candidates) {
+      _reconcileMissStreak.remove(task.id);
+      try {
+        await _captureAndApplyRemoteSnapshot(task);
+      } catch (error) {
+        debugPrint('Manual remote refresh skipped for ${task.id}: $error');
+      }
+    }
+  }
+
+  bool _canManualRefreshRemoteSnapshot(TaskSession task) {
+    if (_runningExecutions.containsKey(task.id)) {
+      return false;
+    }
+    return switch (task.status) {
+      TaskStatus.running || TaskStatus.observerDetached => true,
+      TaskStatus.draft ||
+      TaskStatus.pending ||
+      TaskStatus.paused ||
+      TaskStatus.stopped ||
+      TaskStatus.completed ||
+      TaskStatus.userCompleted ||
+      TaskStatus.failed ||
+      TaskStatus.userFailed ||
+      TaskStatus.needApproval ||
+      TaskStatus.needAttention ||
+      TaskStatus.turnIdle ||
+      TaskStatus.runtimeLost =>
+        false,
+    };
+  }
+
+  Future<bool> _captureAndApplyRemoteSnapshot(TaskSession task) async {
+    final latest = _latestTask(task.id) ?? task;
+    if (!_canRefreshRemoteState(latest)) {
+      return false;
+    }
+    final snapshot = await _captureLogBestEffort(await _controlRequest(latest));
+    final trimmed = snapshot.trim();
+    if (trimmed.isEmpty) {
+      return false;
+    }
+    await _applyCapturedRemoteSnapshot(latest, snapshot);
+    _syncTaskSnapshots(taskId: latest.id);
+    _updateHomeSnapshot();
+    return true;
   }
 
   Future<void> updateTaskTitle(TaskSession task, String title) async {
@@ -372,7 +405,7 @@ class ArminAppState extends ChangeNotifier {
       throw StateError('Only terminal tasks can be deleted.');
     }
     await _store.deleteTask(taskId);
-    tasks = await _store.loadTasks();
+    tasks = await _loadDedupedTasks();
     _updateTaskSnapshotById(taskId);
     _updateHomeSnapshot(force: true);
     notifyListeners();
@@ -516,11 +549,8 @@ class ArminAppState extends ChangeNotifier {
       TaskSession task, NativeApprovalOption option,
       {String customResponse = '', bool? approvalDecision}) async {
     final latest = _latestTask(task.id) ?? task;
-    final nativeApproval = latest.nativeApproval ?? task.nativeApproval;
-    final hasNativeOption = nativeApproval?.options
-            .any((candidate) => candidate.key == option.key) ??
-        false;
-    if (!hasNativeOption) {
+    final nativeApproval = _nativeApprovalForOption(latest, task, option);
+    if (nativeApproval == null) {
       throw StateError('Terminal prompt option is no longer available.');
     }
     await agentSessionService.selectTerminalOption(
@@ -534,12 +564,12 @@ class ArminAppState extends ChangeNotifier {
       );
     }
     final taskForSave = approvalDecision == null
-        ? latest.copyWith(
-            clearNativeApproval: true,
-          )
+        ? _taskWithTerminalOptionSelection(latest, nativeApproval, option)
         : _taskWithApprovalDecision(
             latest,
             approved: approvalDecision,
+            nativeApproval: nativeApproval,
+            selectedOptionKey: option.key,
           );
     await _saveControlledTask(
       taskForSave,
@@ -549,6 +579,30 @@ class ArminAppState extends ChangeNotifier {
     );
     final updatedTask = _latestTask(task.id) ?? latest;
     startTaskExecution(updatedTask, _attachRequest(updatedTask));
+  }
+
+  NativeTerminalApproval? _nativeApprovalForOption(
+    TaskSession latest,
+    TaskSession fallback,
+    NativeApprovalOption option,
+  ) {
+    NativeTerminalApproval? findIn(TaskSession task) {
+      final current = task.nativeApproval;
+      if (current != null &&
+          current.state == ApprovalState.pending &&
+          current.options.any((candidate) => candidate.key == option.key)) {
+        return current;
+      }
+      for (final approval in task.nativeApprovalRequests.reversed) {
+        if (approval.state == ApprovalState.pending &&
+            approval.options.any((candidate) => candidate.key == option.key)) {
+          return approval;
+        }
+      }
+      return null;
+    }
+
+    return findIn(latest) ?? findIn(fallback);
   }
 
   Future<void> reconnectTask(
@@ -1592,6 +1646,19 @@ Apply this decision to the pending approval request.
     return null;
   }
 
+  Future<List<TaskSession>> _loadDedupedTasks() async {
+    final loaded = await _store.loadTasks();
+    return _dedupeTasks(loaded);
+  }
+
+  List<TaskSession> _dedupeTasks(Iterable<TaskSession> source) {
+    final seen = <String>{};
+    return [
+      for (final task in source)
+        if (seen.add(task.id)) task,
+    ];
+  }
+
   /// Returns true if processing [update] would change the task's status.
   bool _updateWouldChangeStatus(TaskSession task, AgentExecutionUpdate update) {
     if (update.nativeApproval != null) return true;
@@ -2331,16 +2398,22 @@ Apply this decision to the pending approval request.
   TaskSession _taskWithApprovalDecision(
     TaskSession task, {
     required bool approved,
+    NativeTerminalApproval? nativeApproval,
+    String? selectedOptionKey,
   }) {
     final now = DateTime.now();
-    final pendingNativeApproval = task.nativeApproval;
-    final nativeSelectedOptionKey = pendingNativeApproval == null
-        ? (approved ? 'approve' : 'reject')
-        : _nativeApprovalOptionKeyForDecision(pendingNativeApproval, approved);
+    final pendingNativeApproval = nativeApproval ?? task.nativeApproval;
+    final nativeSelectedOptionKey = selectedOptionKey ??
+        (pendingNativeApproval == null
+            ? (approved ? 'approve' : 'reject')
+            : _nativeApprovalOptionKeyForDecision(
+                pendingNativeApproval,
+                approved,
+              ));
     var resolvedExistingNativeApproval = false;
     final nativeApprovalRequests = task.nativeApprovalRequests.map((approval) {
       final matchesCurrentApproval = pendingNativeApproval != null &&
-          approval.id == pendingNativeApproval.id;
+          _sameNativeApproval(approval, pendingNativeApproval);
       if (matchesCurrentApproval) {
         resolvedExistingNativeApproval = true;
         return approval.copyWith(
@@ -2364,6 +2437,54 @@ Apply this decision to the pending approval request.
       nativeApprovalRequests: nativeApprovalRequests,
       clearNativeApproval: true,
     );
+  }
+
+  TaskSession _taskWithTerminalOptionSelection(
+    TaskSession task,
+    NativeTerminalApproval nativeApproval,
+    NativeApprovalOption option,
+  ) {
+    final now = DateTime.now();
+    var resolvedExistingNativeApproval = false;
+    final nativeApprovalRequests = task.nativeApprovalRequests.map((approval) {
+      if (_sameNativeApproval(approval, nativeApproval)) {
+        resolvedExistingNativeApproval = true;
+        return approval.copyWith(
+          state: ApprovalState.resolved,
+          selectedOptionKey: option.key,
+          stateChangedAt: now,
+        );
+      }
+      return approval;
+    }).toList();
+    if (!resolvedExistingNativeApproval) {
+      nativeApprovalRequests.add(
+        nativeApproval.copyWith(
+          state: ApprovalState.resolved,
+          selectedOptionKey: option.key,
+          stateChangedAt: now,
+        ),
+      );
+    }
+    return task.copyWith(
+      nativeApprovalRequests: nativeApprovalRequests,
+      clearNativeApproval: true,
+    );
+  }
+
+  bool _sameNativeApproval(
+    NativeTerminalApproval a,
+    NativeTerminalApproval b,
+  ) {
+    if (a.id.isNotEmpty && b.id.isNotEmpty && a.id == b.id) {
+      return true;
+    }
+    if (a.question.trim() != b.question.trim()) {
+      return false;
+    }
+    final aOptionKeys = a.options.map((option) => option.key).toSet();
+    final bOptionKeys = b.options.map((option) => option.key).toSet();
+    return aOptionKeys.intersection(bOptionKeys).isNotEmpty;
   }
 
   DateTime? _completedAtFor(

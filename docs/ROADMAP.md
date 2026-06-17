@@ -102,6 +102,17 @@ Survey / 社区验证方向：
 - 最烦的是等待、审批、查看状态、补充指令、上下文丢失，还是结果不可读？
 - 如果 Agent 需要你时主动通知，而不是你主动查看，你是否愿意？
 
+### Phase 2.6：Runtime 收口与交互效率评估
+
+不新增复杂工作流，也不引入多 Agent 编排。先把 Phase 2.5 的任务执行主链路收口为可度量、可复盘的单任务循环：
+
+- RuntimeEventBus + WorkState 作为状态、审批、结果和 TTS 的主路径，parser / tmux capture 只作为观察输入和审计 fallback
+- 结果卡片、手动朗读和自动 TTS 使用同一个 latest turn deliverable source，避免 prompt echo、thinking、旧 turn 或 reconnect snapshot 污染
+- 记录轻量效率指标：用户输入长度、输出摘要长度、追加次数、审批次数、重试次数、用户等待时间和任务到可验收结果的耗时
+- 记录结果符合预期程度：用户是否接受结果、是否继续补充、是否拒绝/重做、是否标记完成
+- 观察 token 消耗和有效产出之间的关系，避免为了更长输出牺牲用户每次交互效率
+- 引入轻量 Loop Engineering 视角：Plan → Execute → Observe → Evaluate → Adjust → Verify，但只用于任务级评估和提示改进，不做通用 workflow engine
+
 ## 第三阶段
 
 - Runtime 持久化边界收敛到 SQLite：任务、turn、runtime event、work state、approval state、session binding、watcher offset 和 deliverable 可恢复
@@ -112,6 +123,8 @@ Survey / 社区验证方向：
 - 任务级上下文延续
 - 手动子任务组织
 - 委托质量和注意力成本指标
+- token 消耗、结果符合预期程度和用户返工次数的综合评估
+- 基于历史任务循环反馈优化下一次任务提示和上下文组织
 - 可搜索/可导出的审计历史
 
 ## 第四阶段

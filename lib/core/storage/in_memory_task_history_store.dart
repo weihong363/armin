@@ -33,11 +33,7 @@ class InMemoryTaskHistoryStore implements TaskHistoryStore {
 
   @override
   Future<void> saveTask(TaskSession task) async {
-    final index = _tasks.indexWhere((item) => item.id == task.id);
-    if (index >= 0) {
-      _tasks[index] = task;
-      return;
-    }
+    _tasks.removeWhere((item) => item.id == task.id);
     _tasks.insert(0, task);
   }
 

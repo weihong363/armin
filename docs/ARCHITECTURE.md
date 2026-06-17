@@ -93,6 +93,10 @@ Adapter 可以解析文本中的审批、等待输入、进度、交付结果和
 
 `MetricEvent` 记录 shell 级别的事件，如任务创建、任务开始、接收到原始输出、请求批准和任务完成。第一阶段在任务详情时间线中显示这些事件。后续阶段可以聚合诸如持续时间、编辑次数、批准次数、中断次数、验证状态、变更文件数和原始日志大小等字段。
 
+后续指标层还应覆盖单次任务交互效率，而不是只记录 runtime 事件数量。重点观察用户 token 消耗、Agent 输出长度、有效结果占比、追加/重试次数、审批次数、等待时间、用户是否接受结果，以及任务从创建到可验收的耗时。这些指标服务于“每次交互是否更高效、结果是否更符合预期”，不用于把 Armin 扩展成模型基准测试平台。
+
+Armin 适合采用轻量 Loop Engineering 视角：Plan → Execute → Observe → Evaluate → Adjust → Verify。该 loop 描述用户围绕任务持续补充上下文、观察结果和确认下一步的产品循环；它不是 workflow engine，也不代表自动多 Agent 编排。Runtime 负责可靠观察和状态归约，评估层负责记录本轮循环是否消耗过高、是否需要返工、是否达到用户预期。
+
 ### RuntimeEventBus（Phase 2.5）
 
 `RuntimeEventBus` 是 Bridge Runtime 的结构化事件流，承载 25 种事件类型，作为 UI 消费任务状态的主通道：
@@ -196,3 +200,14 @@ none → pending → resolving → resolved
 - 已结束、失败、停止或运行丢失的任务可重新执行，并预选原任务的 Host 和 project path；仍在交互中的任务不能通过重跑另起 session。
 
 Armin 不解释或重写 Agent 的执行逻辑。`SelectableOutputSummaryProvider` 支持用户打开实验性的端侧摘要增强，并在 runner 不存在、设备不支持、超时或失败时回落至脱敏后的规则摘要。生产包仍待接入实际 Android 模型 runner；它只用于 TTS/展示摘要，不参与 Agent 执行。
+
+## 交互效率与 Loop Engineering
+
+长期上，Armin 不只判断“任务有没有结束”，还要帮助用户判断“这轮 Agent 交互是否值得继续用同样方式推进”。效率评估应绑定到 Task / Turn，而不是绑定到某个聊天会话：
+
+- 输入侧：任务描述长度、上下文追加次数、语音/文本比例、审批次数和用户等待时间
+- 输出侧：deliverable 是否存在、摘要是否可读、TTS 是否同源、无效输出和 thinking/CLI 噪声是否被过滤
+- 结果侧：用户接受、继续、拒绝、重做或标记完成的行为
+- 成本侧：token 消耗、重复执行次数、用户返工次数和从任务创建到验收的时长
+
+Loop Engineering 在 Armin 中的边界是单任务闭环优化：更清楚地计划任务、更可靠地观察执行、更早发现偏离、更低成本地追加上下文和验收结果。它不应变成复杂工作流系统、自动 fork/join runtime 或多 Agent 调度器。

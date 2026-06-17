@@ -1,48 +1,48 @@
-# Approval State Machine
+# 审批状态机
 
-> Phase 2.5 — Explicit approval lifecycle for runtime reliability
+> Phase 2.5 — 用显式审批生命周期提升 runtime 可靠性
 
-## Problem
+## 问题
 
-Current approval flow conflates two distinct concepts and lacks an explicit lifecycle:
+当前审批流程曾经混合了两个不同概念，并且缺少显式生命周期：
 
-1. **Native Terminal Approval** (CLI interactive prompts) — "Allow Once", "Allow Session", "Reject"
-2. **Review Decisions** (workflow decisions) — "Approve", "Request Changes", "Ask Question"
+1. **原生终端审批**（CLI 交互式 prompt）：`Allow Once`、`Allow Session`、`Reject`
+2. **Review 决策**（工作流决策）：`Approve`、`Request Changes`、`Ask Question`
 
-Both flow through the same `resolveApproval()` path, with status immediately set to `running` after button press — no verification that the terminal action succeeded.
+如果二者都走同一条 `resolveApproval()` 路径，并在按钮点击后立即把状态设为 `running`，就无法确认终端动作是否真的成功。
 
 ---
 
-## Proposed State Machine
+## 目标状态机
 
-### Native Terminal Approval
+### 原生终端审批
 
-```
+```text
                   ┌─────────────────┐
-                  │  PendingApproval │  ← NativeTerminalApproval detected from terminal prompt
+                  │  PendingApproval │  ← 从终端 prompt 检测到 NativeTerminalApproval
                   └────────┬────────┘
                            │
-                    User presses Approve/Reject
+                    用户点击 Approve/Reject
                            │
                   ┌────────▼────────┐
-                  │ ResolvingApproval│  ← Terminal action sent, awaiting confirmation
+                  │ ResolvingApproval│  ← 终端动作已发送，等待确认
                   └────────┬────────┘
                            │
               ┌────────────┼────────────┐
               │            │            │
-     Action succeeds   Prompt    Action fails
-     & prompt gone    disappears  (error/timeout)
+       动作成功且       Prompt        动作失败
+       prompt 消失       消失       （错误/超时）
               │            │            │
      ┌────────▼───┐ ┌─────▼──────┐ ┌───▼──────────┐
      │ApprovalRslvd│ │ApprovalRslvd│ │ApprovalFailed │
      └────────────┘ └────────────┘ └──────────────┘
 ```
 
-**Key rule**: Approval only resolves when terminal action succeeds AND runtime confirms.
+**关键规则**：只有终端动作成功且 runtime 确认后，审批才算解决。
 
-### Review Decision
+### Review 决策
 
-```
+```text
                   ┌─────────────────┐
                   │  PendingReview   │
                   └────────┬────────┘
@@ -58,17 +58,17 @@ Both flow through the same `resolveApproval()` path, with status immediately set
 
 ---
 
-## Data Model
+## 数据模型
 
-### ApprovalState (enum)
+### ApprovalState（enum）
 
 ```dart
 enum ApprovalState {
-  none,           // No pending approval
-  pending,        // Approval requested, awaiting user action
-  resolving,      // User action sent, awaiting runtime confirmation
-  resolved,       // Approval confirmed resolved
-  failed,         // Approval action failed
+  none,           // 没有 pending approval
+  pending,        // 已请求审批，等待用户操作
+  resolving,      // 用户动作已发送，等待 runtime 确认
+  resolved,       // 已确认解决
+  failed,         // 审批动作失败
 }
 ```
 
@@ -104,42 +104,45 @@ class ReviewDecision {
 
 ---
 
-## Integration with RuntimeEventBus
+## 与 RuntimeEventBus 集成
 
-New events:
-```
-ApprovalRequested   — NativeTerminalApproval detected
-ApprovalResolving   — User chose an option, action sent
-ApprovalResolved    — Terminal confirmed resolution
-ApprovalRejected    — User explicitly rejected
-ApprovalFailed      — Terminal action failed
-ReviewSubmitted     — User submitted review decision
+新增事件：
+
+```text
+ApprovalRequested   — 检测到 NativeTerminalApproval
+ApprovalResolving   — 用户选择了选项，动作已发送
+ApprovalResolved    — 终端确认审批已解决
+ApprovalRejected    — 用户明确拒绝
+ApprovalFailed      — 终端动作失败
+ReviewSubmitted     — 用户提交 review 决策
 ```
 
 ---
 
-## Integration with Existing Flow
+## 与现有流程集成
 
-### Before (current):
-```
+### 之前：
+
+```text
 resolveApproval() → sendFollowUp/sendKeys → _saveApprovalDecision → running
 ```
 
-### After (proposed):
-```
+### 之后：
+
+```text
 resolveApproval() → publish(ApprovalResolving) → sendFollowUp/sendKeys
-    ↓ (wait for stream confirmation)
-    ↓ Approval prompt disappears OR action succeeds
+    ↓（等待 stream 确认）
+    ↓ Approval prompt 消失或动作成功
     ↓
 publish(ApprovalResolved) → running
 ```
 
 ---
 
-## Transition Rules
+## 状态转换规则
 
-1. **Pending → Resolving**: Only when user action is successfully sent to terminal
-2. **Resolving → Resolved**: When approval prompt disappears from output OR runtime confirms
-3. **Resolving → Failed**: If terminal action errors or times out without confirmation
-4. **Pending → Rejected**: If user explicitly rejects (not "Resolving → Rejected")
-5. **Resolving state is transitory**: UI should show loading/spinner during this state
+1. **Pending → Resolving**：只有用户动作成功发送到终端后发生
+2. **Resolving → Resolved**：审批 prompt 从输出中消失，或 runtime 确认
+3. **Resolving → Failed**：终端动作报错，或超时仍无确认
+4. **Pending → Rejected**：用户明确拒绝；不是 `Resolving → Rejected`
+5. **Resolving 是过渡态**：UI 应在该状态展示 loading/spinner

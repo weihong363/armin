@@ -172,6 +172,57 @@ void main() {
     expect(find.text('Allow once'), findsNothing);
   });
 
+  testWidgets('selecting refreshed approval option hides stale approval card',
+      (tester) async {
+    const option = NativeApprovalOption(
+      key: '2',
+      label: 'Allow for this session',
+    );
+    final staleApproval = _nativeApproval(
+      question: 'Apply this change?',
+      options: const [
+        NativeApprovalOption(key: '1', label: 'Allow once'),
+        option,
+        NativeApprovalOption(key: '4', label: 'Reject and type something'),
+      ],
+    ).copyWith(id: 'approval-old');
+    final currentApproval = staleApproval.copyWith(
+      id: 'approval-new',
+      createdAt: DateTime(2026, 5, 19),
+    );
+    final task = _task().copyWith(
+      status: TaskStatus.needApproval,
+      nativeApproval: currentApproval,
+      nativeApprovalRequests: [staleApproval],
+    );
+    final agent = _CapturingAgent();
+    final state = ArminAppState(
+      store: _TaskStore(task),
+      agentSessionService: agent,
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await tester.pumpWidget(
+      AppStateScope(
+        state: state,
+        child: const MaterialApp(home: TaskDetailScreen(taskId: 'task-1')),
+      ),
+    );
+
+    expect(find.text('Allow for this session'), findsWidgets);
+    await tester.tap(find.text('Allow for this session').first);
+    await tester.pumpAndSettle();
+
+    expect(agent.selectedTerminalOption, '2');
+    expect(find.text('Allow for this session'), findsNothing);
+    expect(
+      state.tasks.single.nativeApprovalRequests
+          .where((approval) => approval.state == ApprovalState.pending),
+      isEmpty,
+    );
+  });
+
   testWidgets('attention task highlights attention banner and next action',
       (tester) async {
     final task = _task().copyWith(status: TaskStatus.turnIdle);

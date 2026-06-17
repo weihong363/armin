@@ -1670,6 +1670,7 @@ class _ResultPanelState extends State<_ResultPanel> {
   static const _recentOutputWindowChars = 12000;
   static const _recentOutputLineLimit = 80;
   static const _recentOutputPreviewLineLimit = 30;
+  static const _summaryPageSize = 3;
 
   final GlobalKey _topAnchorKey = GlobalKey();
   Future<List<_TurnOutputSummary>>? _summariesFuture;
@@ -1679,6 +1680,7 @@ class _ResultPanelState extends State<_ResultPanel> {
   bool _summaryScheduled = false;
   bool _recentPreviewScheduled = false;
   int _handledRevealToken = 0;
+  int _visibleSummaryCount = _summaryPageSize;
 
   String? _activeVoiceCardId;
   _VoicePlaybackState _voicePlaybackState = _VoicePlaybackState.idle;
@@ -1762,6 +1764,10 @@ class _ResultPanelState extends State<_ResultPanel> {
         oldWidget.task.summary != widget.task.summary ||
         oldWidget.task.shortSummary != widget.task.shortSummary ||
         _turnsSignature(oldWidget.task) != _turnsSignature(widget.task)) {
+      if (oldWidget.task.id != widget.task.id ||
+          _turnsSignature(oldWidget.task) != _turnsSignature(widget.task)) {
+        _visibleSummaryCount = _summaryPageSize;
+      }
       _syncResultWork(force: deepChanged);
     }
     if (oldWidget.revealLatestTurnToken != widget.revealLatestTurnToken) {
@@ -1813,8 +1819,11 @@ class _ResultPanelState extends State<_ResultPanel> {
   ) async {
     await Future<void>.delayed(Duration.zero);
     final summaries = <_TurnOutputSummary>[];
-    final indexedTurn = _latestResultTurn(task);
-    if (indexedTurn != null) {
+    final indexedTurns = _resultTurns(task, limit: _visibleSummaryCount);
+    for (var visibleIndex = 0;
+        visibleIndex < indexedTurns.length;
+        visibleIndex += 1) {
+      final indexedTurn = indexedTurns[visibleIndex];
       final index = indexedTurn.index;
       final turn = indexedTurn.turn;
       final cleanedOutput = _readableTurnOutput(task.turns, index);
@@ -1834,7 +1843,7 @@ class _ResultPanelState extends State<_ResultPanel> {
       if (text.isNotEmpty) {
         summaries.add(
           _TurnOutputSummary(
-            title: _deliverableTitle(turn.turnIndex, true),
+            title: _deliverableTitle(turn.turnIndex, visibleIndex == 0),
             text: text,
             speechText: speechText,
             fullOutputForSpeech: text,
@@ -1899,6 +1908,24 @@ class _ResultPanelState extends State<_ResultPanel> {
       }
     }
     return null;
+  }
+
+  List<_IndexedTurn> _resultTurns(TaskSession task, {required int limit}) {
+    final turns = <_IndexedTurn>[];
+    for (var index = task.turns.length - 1; index >= 0; index--) {
+      final turn = task.turns[index];
+      if (_isResultTurn(turn.status)) {
+        turns.add(_IndexedTurn(index: index, turn: turn));
+        if (turns.length >= limit) {
+          break;
+        }
+      }
+    }
+    return turns;
+  }
+
+  int _resultTurnCount(TaskSession task) {
+    return task.turns.where((turn) => _isResultTurn(turn.status)).length;
   }
 
   String _readableTurnOutput(List<NativeOutputTurn> turns, int index) {
@@ -2015,6 +2042,9 @@ class _ResultPanelState extends State<_ResultPanel> {
     if (outputs.isEmpty) {
       return const Text('暂无结果');
     }
+    final totalResultTurns = _resultTurnCount(widget.task);
+    final hasMore = totalResultTurns > outputs.length;
+    final remaining = totalResultTurns - outputs.length;
     return Column(
       children: [
         for (final output in outputs)
@@ -2032,8 +2062,28 @@ class _ResultPanelState extends State<_ResultPanel> {
             onVoicePause: _onVoicePause,
             onVoiceStop: _onVoiceStop,
           ),
+        if (hasMore)
+          Padding(
+            padding: const EdgeInsets.only(top: 10),
+            child: OutlinedButton.icon(
+              onPressed: _loadMoreSummaries,
+              icon: const Icon(Icons.expand_more),
+              label: Text(
+                '加载更多 ${remaining >= _summaryPageSize ? _summaryPageSize : remaining} 个结果',
+              ),
+            ),
+          ),
       ],
     );
+  }
+
+  void _loadMoreSummaries() {
+    setState(() {
+      _visibleSummaryCount += _summaryPageSize;
+      _summarySignature = '';
+      _summariesFuture = null;
+    });
+    _syncResultWork(force: true);
   }
 
   Widget _buildRecentOutputPreview() {
@@ -2112,6 +2162,7 @@ class _ResultPanelState extends State<_ResultPanel> {
     return [
       task.id,
       task.status.name,
+      _visibleSummaryCount,
       task.summary?.hashCode ?? 0,
       task.shortSummary.hashCode,
       if (resultTurn != null) ...[
@@ -2166,6 +2217,7 @@ class _ResultPanelState extends State<_ResultPanel> {
       'shortSummary': task.shortSummary,
       'agentCommand': task.host.agentCommand,
       'maxOutputChars': _summaryOutputWindowChars,
+      'summaryLimit': _visibleSummaryCount,
       'turns': task.turns.map((turn) => turn.toJson()).toList(growable: false),
     };
   }
@@ -2255,12 +2307,16 @@ Future<List<Map<String, Object?>>> _buildOutputSummariesInBackground(
       .toList(growable: false));
   const provider = RuleBasedOutputSummaryProvider();
   final summaries = <_TurnOutputSummary>[];
-  final indexedTurn = _latestResultTurnFrom(turns);
+  final summaryLimit = job['summaryLimit'] as int? ?? 3;
+  final indexedTurns = _resultTurnsFrom(turns, limit: summaryLimit);
   final taskTitle = job['taskTitle'] as String? ?? '';
   final agentCommand = job['agentCommand'] as String? ?? '';
   final maxOutputChars = job['maxOutputChars'] as int? ?? 40000;
 
-  if (indexedTurn != null) {
+  for (var visibleIndex = 0;
+      visibleIndex < indexedTurns.length;
+      visibleIndex += 1) {
+    final indexedTurn = indexedTurns[visibleIndex];
     final turn = indexedTurn.turn;
     final cleanedOutput = _readableTurnOutputFrom(
       turns,
@@ -2283,7 +2339,7 @@ Future<List<Map<String, Object?>>> _buildOutputSummariesInBackground(
     if (text.isNotEmpty) {
       summaries.add(
         _TurnOutputSummary(
-          title: _deliverableTitle(turn.turnIndex, true),
+          title: _deliverableTitle(turn.turnIndex, visibleIndex == 0),
           text: text,
           speechText: speechText,
           fullOutputForSpeech: text,
@@ -2335,14 +2391,21 @@ TaskStatus _taskStatusFromName(String name) {
   );
 }
 
-_IndexedTurn? _latestResultTurnFrom(List<NativeOutputTurn> turns) {
+List<_IndexedTurn> _resultTurnsFrom(
+  List<NativeOutputTurn> turns, {
+  required int limit,
+}) {
+  final result = <_IndexedTurn>[];
   for (var index = turns.length - 1; index >= 0; index--) {
     final turn = turns[index];
     if (_isResultTurnStatus(turn.status)) {
-      return _IndexedTurn(index: index, turn: turn);
+      result.add(_IndexedTurn(index: index, turn: turn));
+      if (result.length >= limit) {
+        break;
+      }
     }
   }
-  return null;
+  return result;
 }
 
 bool _isResultTurnStatus(NativeOutputTurnStatus status) {

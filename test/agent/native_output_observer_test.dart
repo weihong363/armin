@@ -87,6 +87,35 @@ Credits exhausted. Use /usage for details or /upgrade for more.
     expect(snapshot.turnIdle, isTrue);
   });
 
+  test('credits exhausted is not hidden by trailing yolo status chrome', () {
+    final observer = NativeOutputObserver(
+      idleThreshold: const Duration(seconds: 1),
+    );
+    const output = '''
+Thinking
+ │ Everything looks clean. FlipCountdown is fully removed.
+ ▪ Done. FlipCountdown 已完全移除。当前 package 只包含：
+
+   - CircularCountdown - 圆形进度环倒计时
+   - LinearCountdown - 线性进度条倒计时
+
+   请确认后我再继续下一步。
+ Credits exhausted. Use /usage for details or /upgrade for more.
+
+──────────────────────────────────────────────────────────────────────────
+ YOLO Shift+Tab to Auto Mode
+''';
+
+    final snapshot = observer.observeSettled(
+      output,
+      now: DateTime(2026, 5, 23, 12),
+    );
+
+    expect(snapshot.state, NativeOutputObserverState.turnIdle);
+    expect(snapshot.needsAttention, isFalse);
+    expect(snapshot.turnIdle, isTrue);
+  });
+
   test('credits exhausted without deliverable still requires attention', () {
     final observer = NativeOutputObserver(
       idleThreshold: const Duration(seconds: 1),

@@ -724,7 +724,7 @@ Summer：一位迷人的美国沙滩女孩 Codex 宠物。
     expect(find.textContaining('Signed in Browser Login'), findsNothing);
   });
 
-  testWidgets('result shows only latest semantic turn without prompt echoes',
+  testWidgets('result shows recent semantic turns without prompt echoes',
       (tester) async {
     final now = DateTime(2026, 5, 18);
     final task = _task().copyWith(
@@ -793,13 +793,75 @@ Summer：海滩风格 Codex 宠物。
     await _tapDetailTab(tester, '结果');
 
     expect(find.text('摘要'), findsOneWidget);
-    expect(find.text('摘要 1'), findsNothing);
-    expect(find.text('摘要 2'), findsNothing);
-    expect(find.textContaining('实际宠物：momo、Summer'), findsNothing);
-    expect(find.textContaining('Summer：海滩风格 Codex 宠物'), findsNothing);
+    expect(find.text('摘要 1'), findsOneWidget);
+    expect(find.text('摘要 2'), findsOneWidget);
+    expect(find.textContaining('实际宠物：momo、Summer'), findsOneWidget);
+    expect(find.textContaining('Summer：海滩风格 Codex 宠物'), findsOneWidget);
     expect(find.textContaining('精灵图集尺寸为 1536 x 1872'), findsOneWidget);
     expect(find.text('继续输出 Summer'), findsNothing);
     expect(find.text('补充尺寸'), findsNothing);
+  });
+
+  testWidgets('result loads older summaries three at a time', (tester) async {
+    tester.view.physicalSize = const Size(430, 1600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final now = DateTime(2026, 5, 18);
+    final task = _task().copyWith(
+      status: TaskStatus.turnIdle,
+      turns: [
+        for (var index = 1; index <= 7; index++)
+          NativeOutputTurn(
+            id: 'turn-task-1-$index',
+            taskId: 'task-1',
+            turnIndex: index,
+            userInput: '输出第 $index 段',
+            rawOutput: '第 $index 段结果已经完成。',
+            cleanedOutput: '第 $index 段结果已经完成。',
+            startedAt: now.add(Duration(seconds: index)),
+            lastOutputAt: now.add(Duration(seconds: index)),
+            status: NativeOutputTurnStatus.turnIdle,
+          ),
+      ],
+    );
+    final state = ArminAppState(
+      store: _TaskStore(task),
+      agentSessionService: const _NoopAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await tester.pumpWidget(
+      AppStateScope(
+        state: state,
+        child: const MaterialApp(home: TaskDetailScreen(taskId: 'task-1')),
+      ),
+    );
+    await _tapDetailTab(tester, '结果');
+
+    expect(find.text('摘要'), findsOneWidget);
+    expect(find.text('摘要 7'), findsNothing);
+    expect(find.text('摘要 6'), findsOneWidget);
+    expect(find.text('摘要 5'), findsOneWidget);
+    expect(find.text('摘要 4'), findsNothing);
+    expect(find.text('加载更多 3 个结果'), findsOneWidget);
+
+    await tester.tap(find.text('加载更多 3 个结果'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('摘要 4'), findsOneWidget);
+    expect(find.text('摘要 3'), findsOneWidget);
+    expect(find.text('摘要 2'), findsOneWidget);
+    expect(find.text('摘要 1'), findsNothing);
+    expect(find.text('加载更多 1 个结果'), findsOneWidget);
+
+    await tester.tap(find.text('加载更多 1 个结果'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('摘要 1'), findsOneWidget);
+    expect(find.textContaining('加载更多'), findsNothing);
   });
 
   testWidgets('result card uses latest raw turn output over stale cleaned text',

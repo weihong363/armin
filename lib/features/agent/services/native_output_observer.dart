@@ -1,5 +1,5 @@
-import 'agent_runtime_config.dart';
 import 'agent_output_cleaner.dart';
+import 'agent_runtime_config.dart';
 
 enum NativeOutputObserverState {
   running,
@@ -53,6 +53,8 @@ class NativeOutputObserver {
 
     final statusLines = _recentStatusLines(cleaned);
     final rawStatusLines = _recentStatusLines(output);
+    final terminalSignalLines = _recentStatusLines(cleaned, limit: 30);
+    final rawTerminalSignalLines = _recentStatusLines(output, limit: 30);
     if (_containsAttention(statusLines)) {
       return NativeOutputSnapshot(
         rawOutput: output,
@@ -64,7 +66,9 @@ class NativeOutputObserver {
       );
     }
 
-    if (_containsQuotaExhausted([...statusLines, ...rawStatusLines])) {
+    if (_containsQuotaExhausted(
+      [...terminalSignalLines, ...rawTerminalSignalLines],
+    )) {
       if (_hasDeliverableBeforeQuota(cleaned) ||
           _hasDeliverableBeforeQuota(output)) {
         return NativeOutputSnapshot(
@@ -135,14 +139,14 @@ class NativeOutputObserver {
     return observe(output, now: observedAt.add(idleThreshold));
   }
 
-  List<String> _recentStatusLines(String cleaned) {
+  List<String> _recentStatusLines(String cleaned, {int limit = 5}) {
     final lines = cleaned
         .split('\n')
         .map((line) => line.trim().toLowerCase())
         .map((line) => line.replaceAll(RegExp(r'\x1B\[[0-?]*[ -/]*[@-~]'), ''))
         .where((line) => line.isNotEmpty)
         .toList(growable: false);
-    final start = lines.length > 5 ? lines.length - 5 : 0;
+    final start = lines.length > limit ? lines.length - limit : 0;
     return lines.sublist(start);
   }
 

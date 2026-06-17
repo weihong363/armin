@@ -789,6 +789,57 @@ Thinking
     expect(agent.events, contains('captureLog'));
   });
 
+  test('refreshTaskFromRemote settles completed yolo output after credits',
+      () async {
+    final task = _task(status: TaskStatus.running).copyWith(
+      turns: [
+        NativeOutputTurn(
+          id: 'turn-task-1-1',
+          taskId: 'task-1',
+          turnIndex: 1,
+          userInput: '移除 FlipCountdown',
+          rawOutput: '',
+          cleanedOutput: '',
+          startedAt: DateTime(2026, 5, 18),
+          lastOutputAt: DateTime(2026, 5, 18),
+          status: NativeOutputTurnStatus.running,
+        ),
+      ],
+    );
+    final store = _TaskStore(task);
+    final agent = _ControlAgent()
+      ..capturedLog = '''
+Thinking
+ │ Everything looks clean. FlipCountdown is fully removed.
+ ▪ Done. FlipCountdown 已完全移除。当前 package 只包含：
+
+   - CircularCountdown - 圆形进度环倒计时（lib/src/circular_countdown.dart）
+   - LinearCountdown - 线性进度条倒计时（lib/src/linear_countdown.dart）
+
+   请确认后我再继续下一步。
+ Credits exhausted. Use /usage for details or /upgrade for more.
+
+──────────────────────────────────────────────────────────────────────────
+ YOLO Shift+Tab to Auto Mode
+''';
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: agent,
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await state.refreshTaskFromRemote(task);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(store.task!.status, TaskStatus.turnIdle);
+    expect(store.task!.turns.last.status, NativeOutputTurnStatus.turnIdle);
+    expect(store.task!.summary, contains('FlipCountdown 已完全移除'));
+    expect(store.task!.summary, contains('Credits exhausted'));
+    expect(agent.lastExecuteRequest, isNull);
+    expect(agent.events, contains('captureLog'));
+  });
+
   test('refreshTaskFromRemote replaces observer only when one is active',
       () async {
     final task = _task(status: TaskStatus.running);

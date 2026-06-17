@@ -9,6 +9,8 @@ import '../../features/agent/parsers/terminal_prompt_parser.dart';
 import '../../features/agent/services/agent_output_cleaner.dart';
 import '../../features/agent/services/agent_runtime_config.dart';
 import '../../features/agent/services/agent_session_service.dart';
+import '../../features/agent/services/native_output_observer.dart';
+import '../../features/agent/services/runtime_policy.dart';
 import '../../features/agent/services/ssh_agent_session_service.dart';
 import '../../features/hosts/models/host_config.dart';
 import '../../features/projects/models/project_path_config.dart';
@@ -830,11 +832,23 @@ class ArminAppState extends ChangeNotifier {
             DateTime.now(),
           )
         : null;
+    final observed = NativeOutputObserver(
+      idleThreshold: const RuntimePolicy()
+          .forApprovalMode(task.approvalMode)
+          .idleThreshold,
+    ).observeSettled(snapshot);
     final update = AgentExecutionUpdate(
       rawOutput: snapshot,
-      cleanedOutput: const AgentOutputCleaner().clean(snapshot),
-      needsAttention: hasAttention,
+      cleanedOutput: observed.cleanedOutput,
+      observerState: observed.state,
+      turnIdle: !hasAttention && observed.turnIdle,
+      runtimeLost: observed.runtimeLost,
+      needsAttention: hasAttention || observed.needsAttention,
       nativeApproval: nativeApproval,
+      done: !hasAttention &&
+          (observed.turnIdle ||
+              observed.runtimeLost ||
+              observed.needsAttention),
     );
     final updated =
         _taskWithExecutionUpdate(task, update, reopenResolvedApproval: true);

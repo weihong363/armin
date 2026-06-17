@@ -1,8 +1,7 @@
 import 'package:armin/core/models/task_status.dart';
-import 'package:armin/features/agent/parsers/approval_request.dart';
 import 'package:armin/features/agent/parsers/task_result.dart';
-import 'package:armin/features/agent/parsers/terminal_prompt.dart';
 import 'package:armin/features/hosts/models/host_config.dart';
+import 'package:armin/features/runtime/models/approval_state.dart';
 import 'package:armin/features/tasks/models/native_output_turn.dart';
 import 'package:armin/features/tasks/models/task_session.dart';
 import 'package:armin/features/tasks/services/output_summary_provider.dart';
@@ -362,11 +361,7 @@ Thinking
     final previous = _task(status: TaskStatus.running);
     final current = previous.copyWith(
       status: TaskStatus.needApproval,
-      approval: const ApprovalRequest(
-        reason: '删除临时构建产物，风险中等。',
-        command: 'rm -rf build',
-        risk: 'medium',
-      ),
+      nativeApproval: _approval('删除临时构建产物，风险中等。'),
     );
 
     final decision = await policy.decide(
@@ -384,11 +379,8 @@ Thinking
     final current = previous.copyWith(
       status: TaskStatus.needApproval,
       summary: 'Turn 1 old result should not be spoken',
-      approval: const ApprovalRequest(
-        reason: 'Turn 2 needs permission to inspect build output.',
-        command: 'cat build.log',
-        risk: 'low',
-      ),
+      nativeApproval:
+          _approval('Turn 2 needs permission to inspect build output.'),
       turns: [
         _turnWithInput(1, '输出旧结果').copyWith(
           rawOutput: 'Turn 1 old result',
@@ -421,11 +413,7 @@ Thinking
     final previous = _task(status: TaskStatus.running);
     final current = previous.copyWith(
       status: TaskStatus.needApproval,
-      approval: const ApprovalRequest(
-        reason: '请确认删除临时文件。',
-        command: 'rm -rf build',
-        risk: 'medium',
-      ),
+      nativeApproval: _approval('请确认删除临时文件。'),
     );
 
     final decision = await policy.decide(
@@ -502,13 +490,7 @@ Thinking
     final current = previous.copyWith(
       status: TaskStatus.needAttention,
       summary: '旧摘要不应该被播报',
-      terminalPrompt: const TerminalPrompt(
-        question: 'Apply this change?',
-        options: [
-          TerminalPromptOption(key: '1', label: 'Allow once'),
-          TerminalPromptOption(key: '2', label: 'Reject'),
-        ],
-      ),
+      nativeApproval: _approval('Apply this change?'),
     );
 
     final decision = await policy.decide(
@@ -604,6 +586,20 @@ TaskSession _task({required TaskStatus status}) {
     finalPrompt: 'Task',
     secretRecords: const [],
     rawLog: '',
+  );
+}
+
+NativeTerminalApproval _approval(String question) {
+  return NativeTerminalApproval(
+    id: 'approval-1',
+    taskId: 'task-1',
+    question: question,
+    options: const [
+      NativeApprovalOption(key: '1', label: 'Allow once'),
+      NativeApprovalOption(key: '2', label: 'Reject'),
+    ],
+    state: ApprovalState.pending,
+    createdAt: DateTime(2026, 5, 24),
   );
 }
 

@@ -1,29 +1,33 @@
 import 'dart:async';
+import 'dart:isolate';
 import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 import '../../../app_state_scope.dart';
-import '../../../core/services/armin_app_state.dart';
 import '../../../core/models/task_status.dart';
-import '../../runtime/services/runtime_event_bus.dart';
-import '../../runtime/models/runtime_task_snapshot.dart';
+import '../../../core/services/armin_app_state.dart';
 import '../../../shared/scroll/armin_scroll_behavior.dart';
 import '../../../shared/theme/armin_theme.dart';
-import '../../agent/parsers/approval_request.dart';
 import '../../agent/parsers/task_result.dart';
-import '../../agent/parsers/terminal_prompt.dart';
 import '../../agent/services/agent_output_cleaner.dart';
-import '../../voice/services/device_voice_service.dart';
-import '../../voice/services/voice_service.dart';
+import '../../hosts/models/host_config.dart';
+import '../../projects/models/project_path_config.dart';
+import '../../runtime/models/approval_state.dart';
+import '../../runtime/models/runtime_task_snapshot.dart';
+import '../../runtime/models/work_state.dart';
+import '../../runtime/services/runtime_event_bus.dart';
 import '../../tasks/models/native_output_turn.dart';
 import '../../tasks/models/task_session.dart';
 import '../../tasks/models/voice_input.dart';
+import '../../tasks/screens/task_draft_screen.dart';
 import '../../tasks/services/output_summary_provider.dart';
 import '../../tasks/services/semantic_snippet_builder.dart';
 import '../../tasks/services/turn_output_slicer.dart';
 import '../../tasks/services/voice_task_command_processor.dart';
-import '../../tasks/screens/task_draft_screen.dart';
 import '../../tasks/widgets/add_context_sheet.dart';
+import '../../voice/services/device_voice_service.dart';
+import '../../voice/services/voice_service.dart';
 
 enum _TaskDetailAction {
   rerun,
@@ -33,6 +37,79 @@ enum _TaskDetailAction {
 }
 
 const _taskDetailTabScrollPhysics = ClampingScrollPhysics();
+const _summaryCacheLimit = 3;
+const _recentPreviewCacheLimit = 3;
+const _timelineCacheLimit = 12;
+
+final _outputSummaryCache = <String, List<_TurnOutputSummary>>{};
+final _outputSummaryInFlight = <String, Future<List<_TurnOutputSummary>>>{};
+final _recentPreviewCache = <String, String>{};
+final _timelineCache = <String, _TimelineViewModel>{};
+
+List<_TurnOutputSummary>? _cachedOutputSummary(String signature) {
+  return _outputSummaryCache[signature];
+}
+
+void _cacheOutputSummary(
+  String signature,
+  List<_TurnOutputSummary> summaries,
+) {
+  _outputSummaryCache[signature] = summaries;
+  while (_outputSummaryCache.length > _summaryCacheLimit) {
+    _outputSummaryCache.remove(_outputSummaryCache.keys.first);
+  }
+}
+
+String? _cachedRecentPreview(String signature) {
+  return _recentPreviewCache[signature];
+}
+
+void _cacheRecentPreview(String signature, String preview) {
+  _recentPreviewCache[signature] = preview;
+  while (_recentPreviewCache.length > _recentPreviewCacheLimit) {
+    _recentPreviewCache.remove(_recentPreviewCache.keys.first);
+  }
+}
+
+_TimelineViewModel? _cachedTimeline(String signature) {
+  return _timelineCache[signature];
+}
+
+void _cacheTimeline(String signature, _TimelineViewModel model) {
+  _timelineCache[signature] = model;
+  while (_timelineCache.length > _timelineCacheLimit) {
+    _timelineCache.remove(_timelineCache.keys.first);
+  }
+}
+
+Future<List<_TurnOutputSummary>> _cachedBackgroundOutputSummary(
+  String signature,
+  Map<String, Object?> job,
+) {
+  final cached = _cachedOutputSummary(signature);
+  if (cached != null) {
+    return Future.value(cached);
+  }
+  final running = _outputSummaryInFlight[signature];
+  if (running != null) {
+    return running;
+  }
+  late final Future<List<_TurnOutputSummary>> future;
+  future = Isolate.run(
+    () => _buildOutputSummariesInBackground(job),
+  ).then((payloads) {
+    final summaries =
+        payloads.map(_TurnOutputSummary.fromPayload).toList(growable: false);
+    _cacheOutputSummary(signature, summaries);
+    return summaries;
+  }).whenComplete(() {
+    if (identical(_outputSummaryInFlight[signature], future)) {
+      _outputSummaryInFlight.remove(signature);
+    }
+  });
+  _outputSummaryInFlight[signature] = future;
+  return future;
+}
 
 class TaskDetailScreen extends StatefulWidget {
   const TaskDetailScreen({required this.taskId, super.key});
@@ -68,7 +145,7 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
   bool _topRefreshRunning = false;
   double _topRefreshDragDistance = 0;
   double _lastTopRefreshPaintDistance = 0;
-  int _visibleTabIndex = 0;
+  final ValueNotifier<int> _visibleTabIndexNotifier = ValueNotifier<int>(0);
   ArminAppState? _appState;
 
   @override
@@ -86,6 +163,7 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
   void dispose() {
     _eventSubscription?.cancel();
     _progressNotifier.dispose();
+    _visibleTabIndexNotifier.dispose();
     WidgetsBinding.instance.removeObserver(this);
     _tabController.removeListener(_handleTabChanged);
     _tabController.dispose();
@@ -96,12 +174,39 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
 
   void _handleTabChanged() {
     final nextIndex = _tabController.index;
-    if (_visibleTabIndex == nextIndex || !mounted) {
+    if (_visibleTabIndexNotifier.value == nextIndex || !mounted) {
       return;
     }
-    setState(() {
-      _visibleTabIndex = nextIndex;
-    });
+    _visibleTabIndexNotifier.value = nextIndex;
+  }
+
+  void _selectTab(int index) {
+    if (!mounted || index < 0 || index >= _tabController.length) {
+      return;
+    }
+    if (_visibleTabIndexNotifier.value != index) {
+      _visibleTabIndexNotifier.value = index;
+    }
+    if (_tabController.index != index) {
+      _tabController.index = index;
+      return;
+    }
+    final animationValue = _tabController.animation?.value;
+    final isSettled =
+        animationValue == null || (animationValue - index).abs() < 0.001;
+    if (!_tabController.indexIsChanging && !isSettled) {
+      _tabController.offset = 0;
+    }
+  }
+
+  Widget _detailTab(String label, int index) {
+    return Tab(
+      child: Listener(
+        behavior: HitTestBehavior.translucent,
+        onPointerDown: (_) => _selectTab(index),
+        child: Center(child: Text(label)),
+      ),
+    );
   }
 
   @override
@@ -118,9 +223,7 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
     setState(() {
       _latestTurnRevealToken++;
     });
-    if (_tabController.index != _resultTabIndex) {
-      _tabController.animateTo(_resultTabIndex);
-    }
+    _selectTab(_resultTabIndex);
   }
 
   void _onRuntimeEvent(RuntimeEvent event) {
@@ -192,7 +295,11 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
         body: const Center(child: Text('任务不存在或已删除')),
       );
     }
-    _maybeRevealAttentionAction(task);
+    final workState = _effectiveWorkStateFor(
+      task,
+      AppStateScope.read(context).workState(task.id),
+    );
+    _maybeRevealAttentionAction(task, workState);
 
     return Scaffold(
       resizeToAvoidBottomInset: false,
@@ -257,8 +364,12 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
                     headerSliverBuilder: (context, innerBoxIsScrolled) => [
                       SliverPadding(
                         padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
-                        sliver:
-                            SliverToBoxAdapter(child: _TaskHeader(task: task)),
+                        sliver: SliverToBoxAdapter(
+                          child: _TaskHeader(
+                            task: task,
+                            workState: workState,
+                          ),
+                        ),
                       ),
                       SliverPadding(
                         padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
@@ -268,6 +379,7 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
                             builder: (context, progressSnapshot, _) {
                               return _CurrentSituationCard(
                                 task: task,
+                                workState: workState,
                                 progressSnapshot: progressSnapshot,
                               );
                             },
@@ -281,6 +393,7 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
                             key: _attentionAnchorKey,
                             child: _TaskNeedsPanel(
                               task: task,
+                              workState: workState,
                               onViewResult: _revealLatestResult,
                             ),
                           ),
@@ -292,26 +405,32 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
                         delegate: _TabBarHeaderDelegate(
                           TabBar(
                             controller: _tabController,
+                            onTap: _selectTab,
                             isScrollable: false,
                             labelColor: ArminTheme.ink,
                             indicatorColor: ArminTheme.primary,
-                            tabs: const [
-                              Tab(text: '动态'),
-                              Tab(text: '产出'),
-                              Tab(text: '高级'),
+                            tabs: [
+                              _detailTab('动态', 0),
+                              _detailTab('产出', 1),
+                              _detailTab('高级', 2),
                             ],
                           ),
                         ),
                       ),
                     ],
-                    body: _CurrentTaskTabPanel(
-                      key: ValueKey<String>(
-                        'task-detail-tab-body-${task.id}-$_visibleTabIndex',
-                      ),
-                      index: _visibleTabIndex,
-                      task: task,
-                      revealLatestTurnToken: _latestTurnRevealToken,
-                      resultVersion: _resultVersion,
+                    body: ValueListenableBuilder<int>(
+                      valueListenable: _visibleTabIndexNotifier,
+                      builder: (context, visibleTabIndex, _) {
+                        return _CurrentTaskTabPanel(
+                          key: ValueKey<String>(
+                            'task-detail-tab-body-${task.id}',
+                          ),
+                          index: visibleTabIndex,
+                          task: task,
+                          revealLatestTurnToken: _latestTurnRevealToken,
+                          resultVersion: _resultVersion,
+                        );
+                      },
                     ),
                   ),
                 ),
@@ -431,12 +550,12 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
     return false;
   }
 
-  void _maybeRevealAttentionAction(TaskSession task) {
-    if (!_isAttentionRequired(task.status) || _isTestEnvironment) {
+  void _maybeRevealAttentionAction(TaskSession task, WorkState? workState) {
+    if (!_isAttentionRequired(task.status, workState) || _isTestEnvironment) {
       return;
     }
-    final signature =
-        '${task.id}:${task.status.name}:${task.updatedAt.microsecondsSinceEpoch}';
+    final signature = '${task.id}:${_workPhaseName(workState, task.status)}:'
+        '${task.updatedAt.microsecondsSinceEpoch}';
     if (_handledAttentionRevealSignature == signature) {
       return;
     }
@@ -618,9 +737,13 @@ class _CurrentTaskTabPanel extends StatelessWidget {
 }
 
 class _TaskHeader extends StatefulWidget {
-  const _TaskHeader({required this.task});
+  const _TaskHeader({
+    required this.task,
+    required this.workState,
+  });
 
   final TaskSession task;
+  final WorkState? workState;
 
   @override
   State<_TaskHeader> createState() => _TaskHeaderState();
@@ -660,7 +783,7 @@ class _TaskHeaderState extends State<_TaskHeader> {
   @override
   Widget build(BuildContext context) {
     final task = widget.task;
-    final statusColor = _detailStatusColor(task.status);
+    final statusColor = _detailStatusColor(task.status, widget.workState);
     return DecoratedBox(
       decoration: BoxDecoration(
         color: statusColor.withValues(alpha: 0.08),
@@ -774,11 +897,52 @@ class _TaskHeaderState extends State<_TaskHeader> {
               children: [
                 _MiniBadge(
                   key: const Key('runtime-control-state-badge'),
-                  label: _detailStatusLabel(task.status),
+                  label: _detailStatusLabel(task.status, widget.workState),
                   color: statusColor,
-                  animate: task.status == TaskStatus.running,
+                  animate: _workPhaseFor(widget.workState, task.status) ==
+                      WorkPhase.working,
                 ),
                 _TaskTimingText(task: task),
+                GestureDetector(
+                  onTap: () => _showHostEditor(context, task),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.dns_outlined,
+                        size: 14,
+                        color: Theme.of(context)
+                            .colorScheme
+                            .onSurface
+                            .withValues(alpha: 0.55),
+                      ),
+                      const SizedBox(width: 4),
+                      Flexible(
+                        child: Text(
+                          '${task.host.name}  ·  ${task.host.projectPath}',
+                          style:
+                              Theme.of(context).textTheme.bodySmall?.copyWith(
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .onSurface
+                                        .withValues(alpha: 0.55),
+                                  ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      const SizedBox(width: 4),
+                      Icon(
+                        Icons.edit_outlined,
+                        size: 14,
+                        color: Theme.of(context)
+                            .colorScheme
+                            .onSurface
+                            .withValues(alpha: 0.55),
+                      ),
+                    ],
+                  ),
+                ),
               ],
             ),
           ],
@@ -826,6 +990,184 @@ class _TaskHeaderState extends State<_TaskHeader> {
         setState(() => _savingTitle = false);
       }
     }
+  }
+
+  Future<void> _showHostEditor(BuildContext context, TaskSession task) async {
+    final appState = AppStateScope.read(context);
+    final hosts = appState.hosts;
+
+    final result = await showDialog<HostConfig>(
+      context: context,
+      builder: (ctx) => _HostEditDialog(
+        currentHost: task.host,
+        hosts: hosts,
+        projectPaths: appState.projectPaths,
+      ),
+    );
+
+    if (result == null || !mounted || !context.mounted) {
+      return;
+    }
+
+    // Show confirmation dialog before applying the change.
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('确认变更主机/项目'),
+        content: Text(
+          '将任务「${task.displayTitle}」的\n'
+          '主机变更为「${result.name}」，\n'
+          '项目路径变更为「${result.projectPath}」？',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('确认'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true || !mounted || !context.mounted) {
+      return;
+    }
+
+    try {
+      await appState.updateTaskHost(task, result);
+      if (mounted && context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('主机/项目已更新。')),
+        );
+      }
+    } catch (error) {
+      if (mounted && context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('主机/项目更新失败：$error')),
+        );
+      }
+    }
+  }
+}
+
+class _HostEditDialog extends StatefulWidget {
+  const _HostEditDialog({
+    required this.currentHost,
+    required this.hosts,
+    required this.projectPaths,
+  });
+
+  final HostConfig currentHost;
+  final List<HostConfig> hosts;
+  final List<ProjectPathConfig> projectPaths;
+
+  @override
+  State<_HostEditDialog> createState() => _HostEditDialogState();
+}
+
+class _HostEditDialogState extends State<_HostEditDialog> {
+  late String _selectedHostId;
+  late String _selectedProjectPathId;
+
+  @override
+  void initState() {
+    super.initState();
+    _selectedHostId = widget.currentHost.id;
+    final currentPath = widget.currentHost.projectPath;
+    final matched =
+        widget.projectPaths.where((p) => p.path == currentPath).firstOrNull;
+    _selectedProjectPathId = matched?.id ?? '';
+  }
+
+  String get _selectedProjectPath =>
+      widget.projectPaths
+          .where((p) => p.id == _selectedProjectPathId)
+          .firstOrNull
+          ?.path ??
+      widget.currentHost.projectPath;
+
+  HostConfig _buildResultHost() {
+    final selectedHost = widget.hosts.firstWhere(
+      (h) => h.id == _selectedHostId,
+      orElse: () => widget.currentHost,
+    );
+    return selectedHost.copyWith(
+      projectPath: _selectedProjectPath,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('编辑主机/项目'),
+      content: SizedBox(
+        width: double.maxFinite,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            DropdownButtonFormField<String>(
+              initialValue: _selectedHostId,
+              decoration: const InputDecoration(
+                labelText: '主机',
+                border: OutlineInputBorder(),
+                isDense: true,
+              ),
+              items: widget.hosts.map((host) {
+                return DropdownMenuItem(
+                  value: host.id,
+                  child: Text(
+                    host.name,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                );
+              }).toList(),
+              onChanged: (value) {
+                if (value != null) {
+                  setState(() => _selectedHostId = value);
+                }
+              },
+            ),
+            const SizedBox(height: 16),
+            DropdownButtonFormField<String>(
+              initialValue: _selectedProjectPathId,
+              decoration: const InputDecoration(
+                labelText: '项目路径',
+                border: OutlineInputBorder(),
+                isDense: true,
+              ),
+              items: widget.projectPaths.map((pp) {
+                return DropdownMenuItem(
+                  value: pp.id,
+                  child: Text(
+                    pp.name,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                );
+              }).toList(),
+              onChanged: (value) {
+                if (value != null) {
+                  setState(() => _selectedProjectPathId = value);
+                }
+              },
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(context, _buildResultHost()),
+          child: const Text('保存'),
+        ),
+      ],
+    );
   }
 }
 
@@ -916,16 +1258,22 @@ class _TaskTimingTextState extends State<_TaskTimingText>
 }
 
 class _CurrentSituationCard extends StatelessWidget {
-  const _CurrentSituationCard({required this.task, this.progressSnapshot});
+  const _CurrentSituationCard({
+    required this.task,
+    required this.workState,
+    this.progressSnapshot,
+  });
 
   final TaskSession task;
+  final WorkState? workState;
   final RuntimeTaskSnapshot? progressSnapshot;
 
   @override
   Widget build(BuildContext context) {
-    final text = progressSnapshot != null && task.status == TaskStatus.running
+    final text = progressSnapshot != null &&
+            _workPhaseFor(workState, task.status) == WorkPhase.working
         ? _progressSituationText(task, progressSnapshot!)
-        : _currentSituationText(task);
+        : _currentSituationText(task, workState);
     return _InfoCard(
       title: '当前状况',
       child: Text(
@@ -947,29 +1295,73 @@ class _TimelinePanel extends StatefulWidget {
 }
 
 class _TimelinePanelState extends State<_TimelinePanel> {
-  String _cachedReadableSummary = '';
   String _cachedSignature = '';
+  late _TimelineViewModel _viewModel;
 
   static String _computeSignature(TaskSession task) {
     return '${task.id}:${task.status.name}:${task.shortSummary}:'
-        '${task.completedAt?.microsecondsSinceEpoch}';
+        '${task.updatedAt.microsecondsSinceEpoch}:'
+        '${task.completedAt?.microsecondsSinceEpoch}:'
+        '${task.voiceInputs.length}:${task.turns.length}';
   }
 
-  static String _computeReadableSummary(TaskSession task) {
-    return const SemanticSnippetBuilder()
+  static _TimelineViewModel _timelineViewModelFor(TaskSession task) {
+    final signature = _computeSignature(task);
+    final cached = _cachedTimeline(signature);
+    if (cached != null) {
+      return cached;
+    }
+    final readableSummary = const SemanticSnippetBuilder()
         .build(
           const AgentOutputCleaner().clean(task.shortSummary),
           contentType: SnippetContentType.agentSummary,
           maxChars: 220,
         )
         .visibleText;
+    final allItems = [
+      _TimelineItemData(
+        icon: Icons.add_task_outlined,
+        time: _timeLabel(task.createdAt),
+        title: '任务已创建',
+        subtitle: _cleanSnippet(task.userText, maxChars: 120),
+      ),
+      _TimelineItemData(
+        icon: Icons.send_outlined,
+        time: _timeLabel(task.updatedAt),
+        title: '工作已开始',
+        subtitle: '从任务简述开始工作',
+      ),
+      for (final input in _followUpVoiceInputsFor(task))
+        _TimelineItemData(
+          icon: Icons.add_comment_outlined,
+          time: _timeLabel(input.createdAt),
+          title: '上下文已添加',
+          subtitle: _cleanSnippet(input.rawSttText, maxChars: 120),
+        ),
+      _TimelineItemData(
+        icon: _timelineResultIcon(task.status),
+        time:
+            task.completedAt == null ? '--:--' : _timeLabel(task.completedAt!),
+        title: _timelineResultTitle(task.status),
+        subtitle: readableSummary.isEmpty
+            ? _currentSituationText(task)
+            : readableSummary,
+        color: _timelineResultColor(task.status),
+      ),
+    ];
+    final model = _TimelineViewModel(
+      visibleItems: allItems.reversed.take(3).toList(growable: false),
+      hasTurns: task.turns.isNotEmpty,
+    );
+    _cacheTimeline(signature, model);
+    return model;
   }
 
   @override
   void initState() {
     super.initState();
     _cachedSignature = _computeSignature(widget.task);
-    _cachedReadableSummary = _computeReadableSummary(widget.task);
+    _viewModel = _timelineViewModelFor(widget.task);
   }
 
   @override
@@ -978,57 +1370,22 @@ class _TimelinePanelState extends State<_TimelinePanel> {
     final newSignature = _computeSignature(widget.task);
     if (newSignature != _cachedSignature) {
       _cachedSignature = newSignature;
-      _cachedReadableSummary = _computeReadableSummary(widget.task);
+      _viewModel = _timelineViewModelFor(widget.task);
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final readableSummary = _cachedReadableSummary;
-    final items = [
-      _TimelineItem(
-        icon: Icons.add_task_outlined,
-        time: _timeLabel(widget.task.createdAt),
-        title: '\u4efb\u52a1\u5df2\u521b\u5efa',
-        subtitle: _cleanSnippet(widget.task.userText, maxChars: 120),
-      ),
-      _TimelineItem(
-        icon: Icons.send_outlined,
-        time: _timeLabel(widget.task.updatedAt),
-        title: '\u5de5\u4f5c\u5df2\u5f00\u59cb',
-        subtitle: '\u4ece\u4efb\u52a1\u7b80\u8ff0\u5f00\u59cb\u5de5\u4f5c',
-      ),
-      for (final input in _followUpVoiceInputs(widget.task))
-        _TimelineItem(
-          icon: Icons.add_comment_outlined,
-          time: _timeLabel(input.createdAt),
-          title: '\u4e0a\u4e0b\u6587\u5df2\u6dfb\u52a0',
-          subtitle: _cleanSnippet(input.rawSttText, maxChars: 120),
-        ),
-      _TimelineItem(
-        icon: _timelineResultIcon(widget.task.status),
-        time: widget.task.completedAt == null
-            ? '--:--'
-            : _timeLabel(widget.task.completedAt!),
-        title: _timelineResultTitle(widget.task.status),
-        subtitle: readableSummary.isEmpty
-            ? _currentSituationText(widget.task)
-            : readableSummary,
-        color: _timelineResultColor(widget.task.status),
-      ),
-    ];
-    final visibleItems = items.reversed.take(3).toList(growable: false);
-
     return ListView.separated(
       key:
           PageStorageKey<String>('task-detail-timeline-list-${widget.task.id}'),
       physics: _taskDetailTabScrollPhysics,
       padding: const EdgeInsets.all(20),
-      itemCount: visibleItems.length + (widget.task.turns.isEmpty ? 0 : 1),
+      itemCount: _viewModel.visibleItems.length + (_viewModel.hasTurns ? 1 : 0),
       separatorBuilder: (_, __) => const SizedBox(height: 12),
       itemBuilder: (context, index) {
-        if (index < visibleItems.length) {
-          return visibleItems[index];
+        if (index < _viewModel.visibleItems.length) {
+          return _TimelineItem.fromData(_viewModel.visibleItems[index]);
         }
         return _InfoCard(
           title: '\u4efb\u52a1\u8f93\u51fa\u5386\u53f2',
@@ -1038,7 +1395,7 @@ class _TimelinePanelState extends State<_TimelinePanel> {
     );
   }
 
-  Iterable<VoiceInput> _followUpVoiceInputs(TaskSession task) {
+  static Iterable<VoiceInput> _followUpVoiceInputsFor(TaskSession task) {
     final hasInitialVoice = task.rawSttText.trim().isNotEmpty &&
         task.voiceInputs.isNotEmpty &&
         task.voiceInputs.first.rawSttText.trim() == task.rawSttText.trim();
@@ -1249,6 +1606,16 @@ class _TimelineItem extends StatelessWidget {
     this.color,
   });
 
+  factory _TimelineItem.fromData(_TimelineItemData data) {
+    return _TimelineItem(
+      icon: data.icon,
+      time: data.time,
+      title: data.title,
+      subtitle: data.subtitle,
+      color: data.color,
+    );
+  }
+
   final IconData icon;
   final String time;
   final String title;
@@ -1299,9 +1666,18 @@ class _ResultPanel extends StatefulWidget {
 class _ResultPanelState extends State<_ResultPanel> {
   static const _turnOutputSlicer = TurnOutputSlicer();
   static const _foldLineLimit = 20;
+  static const _summaryOutputWindowChars = 40000;
+  static const _recentOutputWindowChars = 12000;
+  static const _recentOutputLineLimit = 80;
+  static const _recentOutputPreviewLineLimit = 30;
 
   final GlobalKey _topAnchorKey = GlobalKey();
   Future<List<_TurnOutputSummary>>? _summariesFuture;
+  Future<String>? _recentPreviewFuture;
+  String _summarySignature = '';
+  String _recentPreviewSignature = '';
+  bool _summaryScheduled = false;
+  bool _recentPreviewScheduled = false;
   int _handledRevealToken = 0;
 
   String? _activeVoiceCardId;
@@ -1358,8 +1734,8 @@ class _ResultPanelState extends State<_ResultPanel> {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    _voiceService = AppStateScope.of(context).voiceService;
-    _summariesFuture ??= _outputSummaries(widget.task);
+    _voiceService = AppStateScope.read(context).voiceService;
+    _syncResultWork();
     _maybeRevealLatestTurn();
   }
 
@@ -1387,7 +1763,7 @@ class _ResultPanelState extends State<_ResultPanel> {
         oldWidget.task.shortSummary != widget.task.shortSummary ||
         oldWidget.task.result?.summary != widget.task.result?.summary ||
         _turnsSignature(oldWidget.task) != _turnsSignature(widget.task)) {
-      _summariesFuture = _outputSummaries(widget.task);
+      _syncResultWork(force: deepChanged);
     }
     if (oldWidget.revealLatestTurnToken != widget.revealLatestTurnToken) {
       _maybeRevealLatestTurn();
@@ -1411,34 +1787,9 @@ class _ResultPanelState extends State<_ResultPanel> {
                   color: ArminTheme.ink.withValues(alpha: 0.45),
                 ),
           ),
-          child: FutureBuilder<List<_TurnOutputSummary>>(
-            future: _summariesFuture,
-            builder: (context, snapshot) {
-              final outputs = snapshot.data ?? const [];
-              if (outputs.isEmpty) {
-                return const Text('暂无结果');
-              }
-              return Column(
-                children: [
-                  for (final output in outputs)
-                    _OutputSegmentCard(
-                      title: output.title,
-                      text: output.text,
-                      speechText: output.speechText,
-                      fullOutputForSpeech: output.fullOutputForSpeech,
-                      foldLineLimit: _foldLineLimit,
-                      cardId: output.title,
-                      voicePlaybackState: _activeVoiceCardId == output.title
-                          ? _voicePlaybackState
-                          : _VoicePlaybackState.idle,
-                      onVoicePlay: _onVoicePlay,
-                      onVoicePause: _onVoicePause,
-                      onVoiceStop: _onVoiceStop,
-                    ),
-                ],
-              );
-            },
-          ),
+          child: _shouldBuildResultSummary(widget.task)
+              ? _buildResultSummary()
+              : _buildRecentOutputPreview(),
         ),
         if (_hasAnyDetails(result))
           _InfoCard(
@@ -1472,19 +1823,30 @@ class _ResultPanelState extends State<_ResultPanel> {
     });
   }
 
-  Future<List<_TurnOutputSummary>> _outputSummaries(TaskSession task) async {
-    final provider = AppStateScope.of(context).outputSummaryProvider;
+  Future<List<_TurnOutputSummary>> _outputSummaries(
+    TaskSession task,
+    String signature,
+  ) async {
+    final provider = AppStateScope.read(context).outputSummaryProvider;
+    if (_canUseBackgroundSummary(provider)) {
+      return _cachedBackgroundOutputSummary(
+        signature,
+        _summaryJobForTask(task),
+      );
+    }
+    return _outputSummariesWithProvider(task, provider);
+  }
+
+  Future<List<_TurnOutputSummary>> _outputSummariesWithProvider(
+    TaskSession task,
+    OutputSummaryProvider provider,
+  ) async {
+    await Future<void>.delayed(Duration.zero);
     final summaries = <_TurnOutputSummary>[];
-    final indexedTurns = [
-      for (var index = 0; index < task.turns.length; index++)
-        _IndexedTurn(index: index, turn: task.turns[index]),
-    ]..sort((a, b) => b.turn.turnIndex.compareTo(a.turn.turnIndex));
-    for (final indexedTurn in indexedTurns) {
+    final indexedTurn = _latestResultTurn(task);
+    if (indexedTurn != null) {
       final index = indexedTurn.index;
       final turn = indexedTurn.turn;
-      if (!_isResultTurn(turn.status)) {
-        continue;
-      }
       final cleanedOutput = _readableTurnOutput(task.turns, index);
       final summary = await provider.summarize(
         OutputSummaryRequest(
@@ -1502,7 +1864,7 @@ class _ResultPanelState extends State<_ResultPanel> {
       if (text.isNotEmpty) {
         summaries.add(
           _TurnOutputSummary(
-            title: _deliverableTitle(turn.turnIndex, summaries.isEmpty),
+            title: _deliverableTitle(turn.turnIndex, true),
             text: text,
             speechText: speechText,
             fullOutputForSpeech: text,
@@ -1546,8 +1908,9 @@ class _ResultPanelState extends State<_ResultPanel> {
 
   bool _isResultTurn(NativeOutputTurnStatus status) {
     return switch (status) {
-      NativeOutputTurnStatus.needAttention => false,
-      NativeOutputTurnStatus.running ||
+      NativeOutputTurnStatus.needAttention ||
+      NativeOutputTurnStatus.running =>
+        false,
       NativeOutputTurnStatus.turnIdle ||
       NativeOutputTurnStatus.runtimeLost ||
       NativeOutputTurnStatus.failed ||
@@ -1558,12 +1921,30 @@ class _ResultPanelState extends State<_ResultPanel> {
     };
   }
 
+  _IndexedTurn? _latestResultTurn(TaskSession task) {
+    for (var index = task.turns.length - 1; index >= 0; index--) {
+      final turn = task.turns[index];
+      if (_isResultTurn(turn.status)) {
+        return _IndexedTurn(index: index, turn: turn);
+      }
+    }
+    return null;
+  }
+
   String _readableTurnOutput(List<NativeOutputTurn> turns, int index) {
-    final rawOutput = _turnOutputSlicer.rawOutputForTurn(turns, index);
+    final rawOutput = _turnOutputSlicer.rawOutputForTurn(
+      turns,
+      index,
+      maxOutputChars: _summaryOutputWindowChars,
+    );
     if (rawOutput.trim().isNotEmpty) {
       return rawOutput;
     }
-    return _turnOutputSlicer.outputForTurn(turns, index);
+    return _turnOutputSlicer.outputForTurn(
+      turns,
+      index,
+      maxOutputChars: _summaryOutputWindowChars,
+    );
   }
 
   void _maybeRevealLatestTurn() {
@@ -1596,11 +1977,263 @@ class _ResultPanelState extends State<_ResultPanel> {
               t.turnIndex,
               t.status.name,
               t.userInput.hashCode,
-              t.cleanedOutput.hashCode,
-              t.rawOutput.hashCode,
+              t.cleanedOutput.length,
+              t.rawOutput.length,
               t.lastOutputAt.microsecondsSinceEpoch,
             ].join(':'))
         .join('|');
+  }
+
+  void _syncResultWork({bool force = false}) {
+    if (_shouldBuildResultSummary(widget.task)) {
+      _recentPreviewFuture = null;
+      _recentPreviewSignature = '';
+      final signature = _resultSummarySignature(widget.task);
+      if (force || _summarySignature != signature) {
+        _summarySignature = signature;
+        _summariesFuture = null;
+        final provider = AppStateScope.read(context).outputSummaryProvider;
+        if (!_canUseBackgroundSummary(provider) ||
+            _cachedOutputSummary(signature) == null) {
+          _scheduleSummaryBuild(signature);
+        }
+      }
+      return;
+    }
+
+    _summariesFuture = null;
+    _summarySignature = '';
+    final signature = _recentOutputSignature(widget.task);
+    if (force || _recentPreviewSignature != signature) {
+      _recentPreviewSignature = signature;
+      _recentPreviewFuture = null;
+      if (_cachedRecentPreview(signature) == null) {
+        _scheduleRecentPreviewBuild(signature);
+      }
+    }
+  }
+
+  Widget _buildResultSummary() {
+    final provider = AppStateScope.read(context).outputSummaryProvider;
+    final cached = _canUseBackgroundSummary(provider)
+        ? _cachedOutputSummary(_summarySignature)
+        : null;
+    if (cached != null) {
+      return _buildOutputSummaries(cached);
+    }
+    final future = _summariesFuture;
+    if (future == null) {
+      return const Text('正在整理产出…');
+    }
+    return FutureBuilder<List<_TurnOutputSummary>>(
+      future: future,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState != ConnectionState.done &&
+            !snapshot.hasData) {
+          return const Text('正在整理产出…');
+        }
+        final outputs = snapshot.data ?? const [];
+        if (outputs.isEmpty) {
+          return const Text('暂无结果');
+        }
+        return _buildOutputSummaries(outputs);
+      },
+    );
+  }
+
+  Widget _buildOutputSummaries(List<_TurnOutputSummary> outputs) {
+    if (outputs.isEmpty) {
+      return const Text('暂无结果');
+    }
+    return Column(
+      children: [
+        for (final output in outputs)
+          _OutputSegmentCard(
+            title: output.title,
+            text: output.text,
+            speechText: output.speechText,
+            fullOutputForSpeech: output.fullOutputForSpeech,
+            foldLineLimit: _foldLineLimit,
+            cardId: output.title,
+            voicePlaybackState: _activeVoiceCardId == output.title
+                ? _voicePlaybackState
+                : _VoicePlaybackState.idle,
+            onVoicePlay: _onVoicePlay,
+            onVoicePause: _onVoicePause,
+            onVoiceStop: _onVoiceStop,
+          ),
+      ],
+    );
+  }
+
+  Widget _buildRecentOutputPreview() {
+    final cached = _cachedRecentPreview(_recentPreviewSignature);
+    if (cached != null) {
+      return _RecentOutputPreview(
+        text: cached,
+        previewLineLimit: _recentOutputPreviewLineLimit,
+      );
+    }
+    final future = _recentPreviewFuture;
+    if (future == null) {
+      return const Text('正在整理最近输出…');
+    }
+    return FutureBuilder<String>(
+      future: future,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState != ConnectionState.done &&
+            !snapshot.hasData) {
+          return const Text('正在整理最近输出…');
+        }
+        return _RecentOutputPreview(
+          text: snapshot.data ?? '',
+          previewLineLimit: _recentOutputPreviewLineLimit,
+        );
+      },
+    );
+  }
+
+  void _scheduleSummaryBuild(String signature) {
+    if (_summaryScheduled) {
+      return;
+    }
+    _summaryScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+      if (_summarySignature != signature ||
+          !_shouldBuildResultSummary(widget.task)) {
+        _summaryScheduled = false;
+        _syncResultWork();
+        return;
+      }
+      setState(() {
+        _summaryScheduled = false;
+        _summariesFuture = _outputSummaries(widget.task, signature);
+      });
+    });
+  }
+
+  void _scheduleRecentPreviewBuild(String signature) {
+    if (_recentPreviewScheduled) {
+      return;
+    }
+    _recentPreviewScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+      if (_recentPreviewSignature != signature ||
+          _shouldBuildResultSummary(widget.task)) {
+        _recentPreviewScheduled = false;
+        _syncResultWork();
+        return;
+      }
+      setState(() {
+        _recentPreviewScheduled = false;
+        _recentPreviewFuture = _recentOutputPreview(widget.task, signature);
+      });
+    });
+  }
+
+  String _resultSummarySignature(TaskSession task) {
+    final resultTurn = _latestResultTurn(task);
+    return [
+      task.id,
+      task.status.name,
+      task.result?.summary.hashCode ?? 0,
+      task.summary?.hashCode ?? 0,
+      task.shortSummary.hashCode,
+      if (resultTurn != null) ...[
+        resultTurn.turn.id,
+        resultTurn.turn.status.name,
+        resultTurn.turn.rawOutput.length,
+        resultTurn.turn.cleanedOutput.length,
+        resultTurn.turn.lastOutputAt.microsecondsSinceEpoch,
+      ],
+    ].join(':');
+  }
+
+  String _recentOutputSignature(TaskSession task) {
+    final latest = task.turns.isEmpty ? null : task.turns.last;
+    return [
+      task.id,
+      task.status.name,
+      if (latest != null) ...[
+        latest.id,
+        latest.status.name,
+        latest.rawOutput.length,
+        latest.cleanedOutput.length,
+        latest.lastOutputAt.microsecondsSinceEpoch,
+      ],
+    ].join(':');
+  }
+
+  bool _shouldBuildResultSummary(TaskSession task) {
+    return !_usesRecentOutputPreview(task.status);
+  }
+
+  bool _canUseBackgroundSummary(OutputSummaryProvider provider) {
+    if (_isTestEnvironment) {
+      return false;
+    }
+    return provider is RuleBasedOutputSummaryProvider ||
+        (provider is SelectableOutputSummaryProvider &&
+            !provider.preferLocalModel);
+  }
+
+  bool get _isTestEnvironment {
+    final bindingName = WidgetsBinding.instance.runtimeType.toString();
+    return bindingName.contains('Test') || bindingName.contains('Automated');
+  }
+
+  Map<String, Object?> _summaryJobForTask(TaskSession task) {
+    return {
+      'taskTitle': task.title,
+      'status': task.status.name,
+      'userText': task.userText,
+      'summary': task.summary ?? '',
+      'shortSummary': task.shortSummary,
+      'resultSummary': task.result?.summary ?? '',
+      'agentCommand': task.host.agentCommand,
+      'maxOutputChars': _summaryOutputWindowChars,
+      'turns': task.turns.map((turn) => turn.toJson()).toList(growable: false),
+    };
+  }
+
+  Future<String> _recentOutputPreview(
+      TaskSession task, String signature) async {
+    await Future<void>.delayed(Duration.zero);
+    if (task.turns.isEmpty) {
+      return '';
+    }
+    final latest = task.turns.last;
+    final source = latest.rawOutput.trim().isNotEmpty
+        ? latest.rawOutput
+        : latest.cleanedOutput;
+    if (source.trim().isEmpty) {
+      return '';
+    }
+    final tail = _tailWindow(source, _recentOutputWindowChars);
+    final cleaned = const AgentOutputCleaner().clean(tail).trim();
+    if (cleaned.isEmpty) {
+      return '';
+    }
+    final lines = cleaned
+        .split('\n')
+        .map((line) => line.trimRight())
+        .where((line) => line.trim().isNotEmpty)
+        .toList(growable: false);
+    if (lines.length <= _recentOutputLineLimit) {
+      final preview = lines.join('\n');
+      _cacheRecentPreview(signature, preview);
+      return preview;
+    }
+    final preview =
+        lines.skip(lines.length - _recentOutputLineLimit).join('\n');
+    _cacheRecentPreview(signature, preview);
+    return preview;
   }
 }
 
@@ -1698,10 +2331,182 @@ class _TurnOutputSummary {
     required this.fullOutputForSpeech,
   });
 
+  factory _TurnOutputSummary.fromPayload(Map<String, Object?> payload) {
+    return _TurnOutputSummary(
+      title: payload['title'] as String? ?? '',
+      text: payload['text'] as String? ?? '',
+      speechText: payload['speechText'] as String? ?? '',
+      fullOutputForSpeech: payload['fullOutputForSpeech'] as String? ?? '',
+    );
+  }
+
   final String title;
   final String text;
   final String speechText;
   final String fullOutputForSpeech;
+
+  Map<String, Object?> toPayload() {
+    return {
+      'title': title,
+      'text': text,
+      'speechText': speechText,
+      'fullOutputForSpeech': fullOutputForSpeech,
+    };
+  }
+}
+
+Future<List<Map<String, Object?>>> _buildOutputSummariesInBackground(
+  Map<String, Object?> job,
+) async {
+  final status = _taskStatusFromName(job['status'] as String? ?? '');
+  final turns = ((job['turns'] as List<Object?>? ?? const [])
+      .whereType<Map<Object?, Object?>>()
+      .map((turn) => turn.map((key, value) => MapEntry('$key', value)))
+      .map(NativeOutputTurn.fromJson)
+      .toList(growable: false));
+  const provider = RuleBasedOutputSummaryProvider();
+  final summaries = <_TurnOutputSummary>[];
+  final indexedTurn = _latestResultTurnFrom(turns);
+  final taskTitle = job['taskTitle'] as String? ?? '';
+  final agentCommand = job['agentCommand'] as String? ?? '';
+  final maxOutputChars = job['maxOutputChars'] as int? ?? 40000;
+
+  if (indexedTurn != null) {
+    final turn = indexedTurn.turn;
+    final cleanedOutput = _readableTurnOutputFrom(
+      turns,
+      indexedTurn.index,
+      maxOutputChars,
+    );
+    final summary = await provider.summarize(
+      OutputSummaryRequest(
+        cleanedOutput: cleanedOutput,
+        status: status,
+        taskTitle: taskTitle,
+        promptInputs: [turn.userInput],
+        agentCommand: agentCommand,
+      ),
+    );
+    final text = summary.displaySummary.trim();
+    final speechText = summary.speechSummary.trim().isNotEmpty
+        ? summary.speechSummary.trim()
+        : DeviceVoiceService.cleanSpeechText(text);
+    if (text.isNotEmpty) {
+      summaries.add(
+        _TurnOutputSummary(
+          title: _deliverableTitle(turn.turnIndex, true),
+          text: text,
+          speechText: speechText,
+          fullOutputForSpeech: text,
+        ),
+      );
+    }
+  }
+  if (summaries.isNotEmpty) {
+    return summaries.map((summary) => summary.toPayload()).toList();
+  }
+
+  final legacySource = _legacyOutputSourceFrom(job, status);
+  if (legacySource.isEmpty) {
+    return const [];
+  }
+  final legacy = await provider.summarize(
+    OutputSummaryRequest(
+      cleanedOutput: legacySource,
+      status: status,
+      taskTitle: taskTitle,
+      promptInputs: [
+        job['userText'] as String? ?? '',
+        ...turns.map((turn) => turn.userInput),
+      ],
+      agentCommand: agentCommand,
+    ),
+  );
+  final text = legacy.displaySummary.trim();
+  if (text.isEmpty) {
+    return const [];
+  }
+  final speechText = legacy.speechSummary.trim().isNotEmpty
+      ? legacy.speechSummary.trim()
+      : DeviceVoiceService.cleanSpeechText(text);
+  return [
+    _TurnOutputSummary(
+      title: '结果',
+      text: text,
+      speechText: speechText,
+      fullOutputForSpeech: text,
+    ).toPayload(),
+  ];
+}
+
+TaskStatus _taskStatusFromName(String name) {
+  return TaskStatus.values.firstWhere(
+    (status) => status.name == name,
+    orElse: () => TaskStatus.completed,
+  );
+}
+
+_IndexedTurn? _latestResultTurnFrom(List<NativeOutputTurn> turns) {
+  for (var index = turns.length - 1; index >= 0; index--) {
+    final turn = turns[index];
+    if (_isResultTurnStatus(turn.status)) {
+      return _IndexedTurn(index: index, turn: turn);
+    }
+  }
+  return null;
+}
+
+bool _isResultTurnStatus(NativeOutputTurnStatus status) {
+  return switch (status) {
+    NativeOutputTurnStatus.needAttention ||
+    NativeOutputTurnStatus.running =>
+      false,
+    NativeOutputTurnStatus.turnIdle ||
+    NativeOutputTurnStatus.runtimeLost ||
+    NativeOutputTurnStatus.failed ||
+    NativeOutputTurnStatus.completedByUser ||
+    NativeOutputTurnStatus.failedByUser ||
+    NativeOutputTurnStatus.stopped =>
+      true,
+  };
+}
+
+String _readableTurnOutputFrom(
+  List<NativeOutputTurn> turns,
+  int index,
+  int maxOutputChars,
+) {
+  const slicer = TurnOutputSlicer();
+  final rawOutput = slicer.rawOutputForTurn(
+    turns,
+    index,
+    maxOutputChars: maxOutputChars,
+  );
+  if (rawOutput.trim().isNotEmpty) {
+    return rawOutput;
+  }
+  return slicer.outputForTurn(
+    turns,
+    index,
+    maxOutputChars: maxOutputChars,
+  );
+}
+
+String _legacyOutputSourceFrom(Map<String, Object?> job, TaskStatus status) {
+  if (_usesRecentOutputPreview(status)) {
+    return '';
+  }
+  final candidates = [
+    job['resultSummary'] as String? ?? '',
+    job['summary'] as String? ?? '',
+    job['shortSummary'] as String? ?? '',
+  ];
+  for (final candidate in candidates) {
+    if (const AgentOutputCleaner().clean(candidate).trim().isNotEmpty) {
+      return candidate;
+    }
+  }
+  return '';
 }
 
 class _OutputSegmentCard extends StatefulWidget {
@@ -1887,13 +2692,41 @@ class _DetailList extends StatelessWidget {
   }
 }
 
+class _TimelineViewModel {
+  const _TimelineViewModel({
+    required this.visibleItems,
+    required this.hasTurns,
+  });
+
+  final List<_TimelineItemData> visibleItems;
+  final bool hasTurns;
+}
+
+class _TimelineItemData {
+  const _TimelineItemData({
+    required this.icon,
+    required this.time,
+    required this.title,
+    required this.subtitle,
+    this.color,
+  });
+
+  final IconData icon;
+  final String time;
+  final String title;
+  final String subtitle;
+  final Color? color;
+}
+
 class _TaskNeedsPanel extends StatefulWidget {
   const _TaskNeedsPanel({
     required this.task,
+    required this.workState,
     required this.onViewResult,
   });
 
   final TaskSession task;
+  final WorkState? workState;
   final VoidCallback onViewResult;
 
   @override
@@ -1907,7 +2740,7 @@ class _TaskNeedsPanelState extends State<_TaskNeedsPanel> {
   @override
   Widget build(BuildContext context) {
     final task = widget.task;
-    final nextAction = _nextActionForTask(task.status);
+    final nextAction = _nextActionForTask(task.status, widget.workState);
     return _InfoCard(
       title: '这个任务需要什么',
       child: Column(
@@ -1950,34 +2783,23 @@ class _TaskNeedsPanelState extends State<_TaskNeedsPanel> {
                 () => AppStateScope.read(context)
                     .resolveApproval(task, approved: false),
               ),
-              onVoice: () => _showFollowUpSheet(
-                context,
-                title: '审批处理',
-                hintText: '说“批准”或“拒绝”',
-                approval: _pendingApproval(task),
-              ),
-            ),
-            const SizedBox(height: 12),
-          ],
-          if (task.terminalPrompt != null &&
-              _pendingApproval(task) == null) ...[
-            _TerminalPromptCard(
-              prompt: task.terminalPrompt!,
-              onSelect: (option) => _selectTerminalPromptOption(
+              onSelectOption: (option) => _selectApprovalOption(
                 context,
                 task,
                 option,
               ),
               onVoice: () => _showFollowUpSheet(
                 context,
-                title: '选择终端选项',
-                hintText: _terminalPromptVoiceHint(task.terminalPrompt!),
+                title: '审批处理',
+                hintText: _approvalVoiceHint(_pendingApproval(task)!),
+                approval: _pendingApproval(task),
               ),
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: 12),
           ],
           _PrimaryTaskActionButton(
             task: task,
+            workState: widget.workState,
             onAddContext: () => _showFollowUpSheet(context),
             onViewResult: widget.onViewResult,
             onResume: () => _runControlAction(
@@ -2010,15 +2832,18 @@ class _TaskNeedsPanelState extends State<_TaskNeedsPanel> {
     }
   }
 
-  Future<void> _selectTerminalPromptOption(
+  Future<void> _selectApprovalOption(
     BuildContext context,
     TaskSession task,
-    TerminalPromptOption option,
+    NativeApprovalOption option,
   ) async {
-    final needsText = _optionNeedsManualInput(option);
-    final customResponse =
-        needsText ? await _askTerminalPromptResponse(context, option) : null;
-    if (!context.mounted || (needsText && customResponse == null)) {
+    final customResponse = _approvalOptionNeedsManualInput(option)
+        ? await _askApprovalOptionResponse(context, option)
+        : '';
+    if (!context.mounted) {
+      return;
+    }
+    if (_approvalOptionNeedsManualInput(option) && customResponse == null) {
       return;
     }
     await _runControlAction(
@@ -2031,73 +2856,87 @@ class _TaskNeedsPanelState extends State<_TaskNeedsPanel> {
     );
   }
 
-  bool _optionNeedsManualInput(TerminalPromptOption option) {
+  bool _approvalOptionNeedsManualInput(NativeApprovalOption option) {
     final label = option.label.toLowerCase();
     return label.contains('type something') ||
-        label.contains('input') ||
-        label.contains('message') ||
+        label.contains('external editor') ||
+        label.contains('modify') ||
         label.contains('输入') ||
-        label.contains('填写') ||
-        label.contains('补充');
+        label.contains('编辑');
   }
 
-  String _terminalPromptVoiceHint(TerminalPrompt prompt) {
-    final labels = prompt.options
-        .where((option) => !_optionNeedsManualInput(option))
-        .map((option) => _readableOptionLabel(option))
+  String _approvalVoiceHint(NativeTerminalApproval approval) {
+    if (approval.options.isEmpty) {
+      return '说“批准”或“拒绝”';
+    }
+    final normalOptions = approval.options
+        .where((option) => !_approvalOptionNeedsManualInput(option))
+        .map((option) => option.label.trim())
         .where((label) => label.isNotEmpty)
         .take(3)
         .toList(growable: false);
-    if (labels.isEmpty) {
-      return '说出要选择的编号，或直接说明要输入的内容';
+    final manual = approval.options.any(_approvalOptionNeedsManualInput);
+    final quoted = normalOptions.map((label) => '“$label”').join('、');
+    if (quoted.isEmpty) {
+      return manual ? '说“输入内容”' : '说“批准”或“拒绝”';
     }
-    final quoted = labels.map((label) => '“$label”').toList(growable: false);
-    final examples = quoted.length == 1
-        ? quoted.single
-        : '${quoted.take(quoted.length - 1).join('、')}或${quoted.last}';
-    final hasManualInput = prompt.options.any(_optionNeedsManualInput);
-    return hasManualInput ? '说$examples，或说“输入内容”' : '说$examples';
+    return manual ? '说$quoted，或说“输入内容”' : '说$quoted';
   }
 
-  String _readableOptionLabel(TerminalPromptOption option) {
-    final label = option.label.trim();
-    if (label.isNotEmpty) {
-      return label;
-    }
-    return '选 ${option.key}';
-  }
-
-  Future<String?> _askTerminalPromptResponse(
+  Future<String?> _askApprovalOptionResponse(
     BuildContext context,
-    TerminalPromptOption option,
+    NativeApprovalOption option,
   ) async {
+    final controller = TextEditingController();
     return showDialog<String>(
       context: context,
-      builder: (_) => _TerminalPromptResponseDialog(option: option),
+      builder: (context) {
+        return AlertDialog(
+          title: Text(option.label),
+          content: TextField(
+            controller: controller,
+            autofocus: true,
+            minLines: 2,
+            maxLines: 5,
+            decoration: const InputDecoration(
+              hintText: '补充你希望远端执行的处理方式',
+              border: OutlineInputBorder(),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () =>
+                  Navigator.of(context).pop(controller.text.trim()),
+              child: const Text('发送'),
+            ),
+          ],
+        );
+      },
     );
   }
 
-  ApprovalRequest? _pendingApproval(TaskSession task) {
-    for (final approval in task.approvalRequests) {
-      if (_isPendingApproval(approval.status)) {
+  NativeTerminalApproval? _pendingApproval(TaskSession task) {
+    for (final approval in task.nativeApprovalRequests.reversed) {
+      if (approval.state == ApprovalState.pending) {
         return approval;
       }
     }
-    if (task.approval != null && _isPendingApproval(task.approval!.status)) {
-      return task.approval;
+    if (task.nativeApproval != null &&
+        task.nativeApproval!.state == ApprovalState.pending) {
+      return task.nativeApproval;
     }
     return null;
-  }
-
-  bool _isPendingApproval(String status) {
-    return status.trim().toLowerCase() == 'pending';
   }
 
   void _showFollowUpSheet(
     BuildContext context, {
     String title = '继续任务',
     String hintText = '接下来需要做什么？',
-    ApprovalRequest? approval,
+    NativeTerminalApproval? approval,
   }) {
     AddContextSheet.show(
       context,
@@ -2145,7 +2984,7 @@ class _TaskNeedsPanelState extends State<_TaskNeedsPanel> {
         ),
       VoiceTaskAction.selectTerminalOption => state.selectTerminalOption(
           widget.task,
-          TerminalPromptOption(
+          NativeApprovalOption(
             key: command.terminalOptionKey ?? '',
             label: command.label,
           ),
@@ -2245,15 +3084,99 @@ class _TaskNeedsPanelState extends State<_TaskNeedsPanel> {
   }
 
   String _readableResultOutput(List<NativeOutputTurn> turns, int index) {
-    final rawOutput = _turnOutputSlicer.rawOutputForTurn(turns, index);
+    final rawOutput = _turnOutputSlicer.rawOutputForTurn(
+      turns,
+      index,
+      maxOutputChars: _ResultPanelState._summaryOutputWindowChars,
+    );
     if (rawOutput.trim().isNotEmpty) {
       return rawOutput;
     }
-    return _turnOutputSlicer.outputForTurn(turns, index);
+    return _turnOutputSlicer.outputForTurn(
+      turns,
+      index,
+      maxOutputChars: _ResultPanelState._summaryOutputWindowChars,
+    );
+  }
+}
+
+class _RecentOutputPreview extends StatefulWidget {
+  const _RecentOutputPreview({
+    required this.text,
+    required this.previewLineLimit,
+  });
+
+  final String text;
+  final int previewLineLimit;
+
+  @override
+  State<_RecentOutputPreview> createState() => _RecentOutputPreviewState();
+}
+
+class _RecentOutputPreviewState extends State<_RecentOutputPreview> {
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final text = widget.text;
+    if (text.trim().isEmpty) {
+      return const Text('任务正在等待你的处理，暂无可展示的正式结果。');
+    }
+    final lines = text.split('\n');
+    final needsExpansion = lines.length > widget.previewLineLimit;
+    final previewText = needsExpansion && !_expanded
+        ? lines.take(widget.previewLineLimit).join('\n')
+        : text;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          '任务正在等待你的处理。下面是最近输出，正式结果会在任务完成或进入明确结果状态后整理。',
+          style: Theme.of(context).textTheme.bodyMedium,
+        ),
+        const SizedBox(height: 12),
+        DecoratedBox(
+          decoration: BoxDecoration(
+            color: const Color(0xFFF8FAF8),
+            border: Border.all(color: ArminTheme.border),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: _expanded
+                ? SelectableText(
+                    previewText,
+                    style: Theme.of(context).textTheme.bodySmall,
+                  )
+                : Text(
+                    previewText,
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+          ),
+        ),
+        if (needsExpansion) ...[
+          const SizedBox(height: 4),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              onPressed: () => setState(() => _expanded = !_expanded),
+              icon: Icon(
+                _expanded ? Icons.expand_less : Icons.expand_more,
+                size: 18,
+              ),
+              label: Text(_expanded ? '收起最近输出' : '展开最近输出'),
+            ),
+          ),
+        ],
+      ],
+    );
   }
 }
 
 String _legacyOutputSource(TaskSession task) {
+  if (_usesRecentOutputPreview(task.status)) {
+    return '';
+  }
   final candidates = [
     task.result?.summary ?? '',
     task.summary ?? '',
@@ -2265,6 +3188,34 @@ String _legacyOutputSource(TaskSession task) {
     }
   }
   return '';
+}
+
+bool _usesRecentOutputPreview(TaskStatus status) {
+  return switch (status) {
+    TaskStatus.draft ||
+    TaskStatus.pending ||
+    TaskStatus.running ||
+    TaskStatus.paused ||
+    TaskStatus.needApproval ||
+    TaskStatus.needAttention ||
+    TaskStatus.observerDetached ||
+    TaskStatus.runtimeLost =>
+      true,
+    TaskStatus.turnIdle ||
+    TaskStatus.stopped ||
+    TaskStatus.userCompleted ||
+    TaskStatus.userFailed ||
+    TaskStatus.completed ||
+    TaskStatus.failed =>
+      false,
+  };
+}
+
+String _tailWindow(String output, int maxChars) {
+  if (output.length <= maxChars) {
+    return output;
+  }
+  return output.substring(output.length - maxChars);
 }
 
 class _AddContextEntry extends StatelessWidget {
@@ -2372,7 +3323,7 @@ class _AddContextPanelState extends State<_AddContextPanel> {
         ),
       VoiceTaskAction.selectTerminalOption => state.selectTerminalOption(
           widget.task,
-          TerminalPromptOption(
+          NativeApprovalOption(
             key: command.terminalOptionKey ?? '',
             label: command.label,
           ),
@@ -2392,6 +3343,7 @@ class _AddContextPanelState extends State<_AddContextPanel> {
 class _PrimaryTaskActionButton extends StatelessWidget {
   const _PrimaryTaskActionButton({
     required this.task,
+    required this.workState,
     required this.onAddContext,
     required this.onViewResult,
     required this.onResume,
@@ -2399,6 +3351,7 @@ class _PrimaryTaskActionButton extends StatelessWidget {
   });
 
   final TaskSession task;
+  final WorkState? workState;
   final VoidCallback onAddContext;
   final VoidCallback onViewResult;
   final VoidCallback onResume;
@@ -2406,7 +3359,7 @@ class _PrimaryTaskActionButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final action = _primaryTaskActionFor(task.status);
+    final action = _primaryTaskActionFor(task.status, workState);
     if (action == null) {
       return const SizedBox.shrink();
     }
@@ -2450,12 +3403,14 @@ class _ApprovalPromptCard extends StatelessWidget {
     required this.approval,
     required this.onApprove,
     required this.onReject,
+    required this.onSelectOption,
     required this.onVoice,
   });
 
-  final ApprovalRequest approval;
+  final NativeTerminalApproval approval;
   final VoidCallback onApprove;
   final VoidCallback onReject;
+  final ValueChanged<NativeApprovalOption> onSelectOption;
   final VoidCallback onVoice;
 
   @override
@@ -2483,40 +3438,40 @@ class _ApprovalPromptCard extends StatelessWidget {
           ),
           const SizedBox(height: 12),
           Text(
-            approval.reason,
+            approval.question,
             style: Theme.of(context).textTheme.bodyMedium,
           ),
           const SizedBox(height: 8),
-          Text(
-            approval.command,
-            style: Theme.of(context)
-                .textTheme
-                .bodySmall
-                ?.copyWith(color: Colors.grey.shade700),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            '风险：${approval.risk}',
-            style: Theme.of(context)
-                .textTheme
-                .bodySmall
-                ?.copyWith(color: Colors.grey.shade700),
-          ),
+          if (approval.options.isNotEmpty)
+            Text(
+              approval.options.map((option) => option.label).join(' / '),
+              style: Theme.of(context)
+                  .textTheme
+                  .bodySmall
+                  ?.copyWith(color: Colors.grey.shade700),
+            ),
           const SizedBox(height: 12),
           Wrap(
             spacing: 8,
             runSpacing: 8,
             children: [
-              FilledButton.icon(
-                onPressed: onApprove,
-                icon: const Icon(Icons.check_outlined),
-                label: const Text('允许'),
-              ),
-              OutlinedButton.icon(
-                onPressed: onReject,
-                icon: const Icon(Icons.close_outlined),
-                label: const Text('拒绝'),
-              ),
+              if (approval.options.isEmpty) ...[
+                FilledButton.icon(
+                  onPressed: onApprove,
+                  icon: const Icon(Icons.check_outlined),
+                  label: const Text('允许'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: onReject,
+                  icon: const Icon(Icons.close_outlined),
+                  label: const Text('拒绝'),
+                ),
+              ] else
+                for (final option in approval.options)
+                  _ApprovalOptionButton(
+                    option: option,
+                    onPressed: () => onSelectOption(option),
+                  ),
               TextButton.icon(
                 onPressed: onVoice,
                 icon: const Icon(Icons.mic_none_outlined),
@@ -2530,130 +3485,29 @@ class _ApprovalPromptCard extends StatelessWidget {
   }
 }
 
-class _TerminalPromptCard extends StatelessWidget {
-  const _TerminalPromptCard({
-    required this.prompt,
-    required this.onSelect,
-    required this.onVoice,
+class _ApprovalOptionButton extends StatelessWidget {
+  const _ApprovalOptionButton({
+    required this.option,
+    required this.onPressed,
   });
 
-  final TerminalPrompt prompt;
-  final ValueChanged<TerminalPromptOption> onSelect;
-  final VoidCallback onVoice;
+  final NativeApprovalOption option;
+  final VoidCallback onPressed;
 
   @override
   Widget build(BuildContext context) {
-    final command = prompt.command.trim();
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.amber.shade50,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.amber.shade200),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(Icons.pause_circle_outline, color: Colors.amber.shade800),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  prompt.question,
-                  style: Theme.of(context).textTheme.titleSmall,
-                ),
-              ),
-              IconButton.filledTonal(
-                tooltip: '语音选择',
-                icon: const Icon(Icons.mic_none_outlined, size: 18),
-                onPressed: onVoice,
-                visualDensity: VisualDensity.compact,
-              ),
-            ],
-          ),
-          if (command.isNotEmpty) ...[
-            const SizedBox(height: 8),
-            SelectableText(
-              command,
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Colors.grey.shade800,
-                    fontFamily: 'monospace',
-                  ),
-            ),
-          ],
-          const SizedBox(height: 10),
-          Wrap(
-            spacing: 6,
-            runSpacing: 6,
-            children: [
-              for (final option in prompt.options)
-                ActionChip(
-                  visualDensity: VisualDensity.compact,
-                  labelPadding: const EdgeInsets.symmetric(horizontal: 4),
-                  avatar: Text(option.key),
-                  label: Text(option.label),
-                  onPressed: () => onSelect(option),
-                ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _TerminalPromptResponseDialog extends StatefulWidget {
-  const _TerminalPromptResponseDialog({required this.option});
-
-  final TerminalPromptOption option;
-
-  @override
-  State<_TerminalPromptResponseDialog> createState() =>
-      _TerminalPromptResponseDialogState();
-}
-
-class _TerminalPromptResponseDialogState
-    extends State<_TerminalPromptResponseDialog> {
-  final _controller = TextEditingController();
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final option = widget.option;
-    return AlertDialog(
-      title: Text('${option.key}. ${option.label}'),
-      content: TextField(
-        controller: _controller,
-        autofocus: true,
-        minLines: 3,
-        maxLines: 5,
-        decoration: const InputDecoration(
-          hintText: '输入要发送给远端 CLI 的内容',
-        ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('取消'),
-        ),
-        FilledButton(
-          onPressed: () {
-            final text = _controller.text.trim();
-            if (text.isEmpty) {
-              return;
-            }
-            Navigator.of(context).pop(text);
-          },
-          child: const Text('发送'),
-        ),
-      ],
+    final label = option.label.toLowerCase();
+    final isPositive =
+        label.contains('allow') || label.contains('approve') || label == 'yes';
+    if (isPositive) {
+      return FilledButton(
+        onPressed: onPressed,
+        child: Text(option.label),
+      );
+    }
+    return OutlinedButton(
+      onPressed: onPressed,
+      child: Text(option.label),
     );
   }
 }
@@ -2791,9 +3645,7 @@ class _AdvancedDebugPanelState extends State<_AdvancedDebugPanel> {
   }
 
   Widget _approvalHistoryContent(BuildContext context, TaskSession task) {
-    final approvals = task.approvalRequests.isEmpty
-        ? [if (task.approval != null) task.approval!]
-        : task.approvalRequests;
+    final approvals = task.nativeApprovalRequests;
     if (approvals.isEmpty) {
       return const Text('无');
     }
@@ -2812,19 +3664,18 @@ class _AdvancedDebugPanelState extends State<_AdvancedDebugPanel> {
   Widget _approvalHistoryRow(
     BuildContext context,
     TaskSession task,
-    ApprovalRequest approval,
+    NativeTerminalApproval approval,
   ) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
-          'reason: ${approval.reason}\n'
-          'command: ${approval.command}\n'
-          'risk: ${approval.risk}\n'
-          'status: ${approval.status}',
+          'question: ${approval.question}\n'
+          'selected: ${approval.selectedOptionKey ?? '-'}\n'
+          'status: ${approval.state.name}',
         ),
         const SizedBox(height: 10),
-        if (_isPendingApproval(approval.status))
+        if (approval.state == ApprovalState.pending)
           Wrap(
             spacing: 8,
             children: [
@@ -2850,8 +3701,8 @@ class _AdvancedDebugPanelState extends State<_AdvancedDebugPanel> {
           )
         else
           _MiniBadge(
-            label: _approvalStatusLabel(approval.status),
-            color: _approvalStatusColor(approval.status),
+            label: _approvalStatusLabel(approval.state),
+            color: _approvalStatusColor(approval.state),
           ),
       ],
     );
@@ -2883,36 +3734,33 @@ class _AdvancedDebugPanelState extends State<_AdvancedDebugPanel> {
   }
 
   String _approvalHistoryCollapsedText(TaskSession task) {
-    final approvals = task.approvalRequests.isEmpty
-        ? [if (task.approval != null) task.approval!]
-        : task.approvalRequests;
+    final approvals = task.nativeApprovalRequests;
     if (approvals.isEmpty) {
       return '无审批记录';
     }
     if (approvals.length == 1) {
-      return _approvalStatusLabel(approvals.single.status);
+      return _approvalStatusLabel(approvals.single.state);
     }
     return '${approvals.length} 条审批记录，点开查看';
   }
 
-  bool _isPendingApproval(String status) {
-    return status.trim().toLowerCase() == 'pending';
-  }
-
-  String _approvalStatusLabel(String status) {
-    return switch (status.trim().toLowerCase()) {
-      'approved' => '已允许',
-      'rejected' => '已拒绝',
-      final value when value.isNotEmpty => value,
-      _ => '已处理',
+  String _approvalStatusLabel(ApprovalState status) {
+    return switch (status) {
+      ApprovalState.pending => '等待处理',
+      ApprovalState.resolving => '处理中',
+      ApprovalState.resolved => '已处理',
+      ApprovalState.failed => '处理失败',
+      ApprovalState.none => '无',
     };
   }
 
-  Color _approvalStatusColor(String status) {
-    return switch (status.trim().toLowerCase()) {
-      'approved' => Colors.green.shade700,
-      'rejected' => Colors.red.shade700,
-      _ => Colors.grey.shade700,
+  Color _approvalStatusColor(ApprovalState status) {
+    return switch (status) {
+      ApprovalState.pending => Colors.orange.shade700,
+      ApprovalState.resolving => ArminTheme.primary,
+      ApprovalState.resolved => Colors.green.shade700,
+      ApprovalState.failed => Colors.red.shade700,
+      ApprovalState.none => Colors.grey.shade700,
     };
   }
 
@@ -3239,36 +4087,95 @@ class _NextAction {
   final Color color;
 }
 
-String _detailStatusLabel(TaskStatus status) {
-  return switch (status) {
-    TaskStatus.draft || TaskStatus.pending => '等待开始',
-    TaskStatus.running => '进行中',
-    TaskStatus.paused => '已暂停',
-    TaskStatus.stopped => '已停止',
-    TaskStatus.needApproval => '需要你决定',
-    TaskStatus.turnIdle => '等待你的下一步指令',
-    TaskStatus.needAttention => '需要你关注',
-    TaskStatus.observerDetached => '更新已暂停',
-    TaskStatus.runtimeLost => '连接已暂停',
-    TaskStatus.userCompleted || TaskStatus.completed => '可查看',
-    TaskStatus.userFailed || TaskStatus.failed => '需要查看',
+WorkPhase _workPhaseFor(WorkState? workState, TaskStatus fallbackStatus) {
+  if (workState != null) {
+    return workState.phase;
+  }
+  return switch (fallbackStatus) {
+    TaskStatus.draft || TaskStatus.pending => WorkPhase.idle,
+    TaskStatus.running => WorkPhase.working,
+    TaskStatus.paused => WorkPhase.quieting,
+    TaskStatus.needApproval => WorkPhase.needsApproval,
+    TaskStatus.turnIdle => WorkPhase.turnIdle,
+    TaskStatus.needAttention => WorkPhase.needsInstruction,
+    TaskStatus.observerDetached || TaskStatus.runtimeLost => WorkPhase.quieting,
+    TaskStatus.userCompleted || TaskStatus.completed => WorkPhase.completed,
+    TaskStatus.userFailed || TaskStatus.failed => WorkPhase.failed,
+    TaskStatus.stopped => WorkPhase.stopped,
   };
 }
 
-Color _detailStatusColor(TaskStatus status) {
-  return switch (status) {
-    TaskStatus.needApproval ||
-    TaskStatus.turnIdle ||
-    TaskStatus.needAttention =>
+WorkState? _effectiveWorkStateFor(TaskSession task, WorkState? workState) {
+  if (workState == null) {
+    return null;
+  }
+  final phase = workState.phase;
+  if (phase == WorkPhase.idle &&
+      task.status != TaskStatus.draft &&
+      task.status != TaskStatus.pending) {
+    return null;
+  }
+  if (phase == WorkPhase.working &&
+      task.status != TaskStatus.running &&
+      task.status != TaskStatus.pending) {
+    return null;
+  }
+  if ((phase == WorkPhase.completed ||
+          phase == WorkPhase.failed ||
+          phase == WorkPhase.stopped) &&
+      !_isTaskTerminal(task.status)) {
+    return null;
+  }
+  return workState;
+}
+
+String _workPhaseName(WorkState? workState, TaskStatus fallbackStatus) {
+  return _workPhaseFor(workState, fallbackStatus).name;
+}
+
+String _detailStatusLabel(TaskStatus status, [WorkState? workState]) {
+  if (workState != null && workState.headline.trim().isNotEmpty) {
+    return workState.headline.trim();
+  }
+  switch (_workPhaseFor(workState, status)) {
+    case WorkPhase.idle:
+      return '等待开始';
+    case WorkPhase.working:
+      return '进行中';
+    case WorkPhase.quieting:
+      return status == TaskStatus.paused ? '已暂停' : '更新已暂停';
+    case WorkPhase.turnIdle:
+      return '等待你的下一步指令';
+    case WorkPhase.needsApproval:
+      return '需要你决定';
+    case WorkPhase.needsDecision:
+      return '需要你决定';
+    case WorkPhase.needsReview:
+      return '需要查看';
+    case WorkPhase.needsInstruction:
+      return '需要你的指令';
+    case WorkPhase.completed:
+      return '可查看';
+    case WorkPhase.failed:
+      return '需要查看';
+    case WorkPhase.stopped:
+      return '已停止';
+  }
+}
+
+Color _detailStatusColor(TaskStatus status, [WorkState? workState]) {
+  return switch (_workPhaseFor(workState, status)) {
+    WorkPhase.needsApproval ||
+    WorkPhase.needsDecision ||
+    WorkPhase.needsReview ||
+    WorkPhase.needsInstruction ||
+    WorkPhase.turnIdle =>
       Colors.orange.shade700,
-    TaskStatus.running || TaskStatus.pending => ArminTheme.primary,
-    TaskStatus.paused ||
-    TaskStatus.observerDetached ||
-    TaskStatus.runtimeLost =>
-      Colors.blueGrey.shade700,
-    TaskStatus.failed || TaskStatus.userFailed => Colors.red.shade700,
-    TaskStatus.completed || TaskStatus.userCompleted => Colors.green.shade700,
-    TaskStatus.draft || TaskStatus.stopped => Colors.grey.shade700,
+    WorkPhase.working || WorkPhase.idle => ArminTheme.primary,
+    WorkPhase.quieting => Colors.blueGrey.shade700,
+    WorkPhase.failed => Colors.red.shade700,
+    WorkPhase.completed => Colors.green.shade700,
+    WorkPhase.stopped => Colors.grey.shade700,
   };
 }
 
@@ -3314,7 +4221,25 @@ bool _isTaskLive(TaskStatus status) {
   };
 }
 
-bool _isAttentionRequired(TaskStatus status) {
+bool _isTaskTerminal(TaskStatus status) {
+  return switch (status) {
+    TaskStatus.completed ||
+    TaskStatus.failed ||
+    TaskStatus.userCompleted ||
+    TaskStatus.userFailed ||
+    TaskStatus.stopped ||
+    TaskStatus.runtimeLost =>
+      true,
+    _ => false,
+  };
+}
+
+bool _isAttentionRequired(TaskStatus status, [WorkState? workState]) {
+  if (workState != null) {
+    return workState.needsAttention ||
+        workState.phase == WorkPhase.turnIdle ||
+        workState.phase == WorkPhase.failed;
+  }
   return switch (status) {
     TaskStatus.needApproval ||
     TaskStatus.turnIdle ||
@@ -3339,14 +4264,20 @@ String _cleanSnippet(String value, {int maxChars = 160}) {
       .trim();
 }
 
-String _currentSituationText(TaskSession task) {
+String _currentSituationText(TaskSession task, [WorkState? workState]) {
+  if (workState != null) {
+    final statusText = workState.statusText.trim();
+    if (statusText.isNotEmpty) {
+      return statusText;
+    }
+  }
   final hasOutput = _hasMeaningfulOutput(task);
   return switch (task.status) {
     TaskStatus.turnIdle => hasOutput
         ? '最新结果已就绪。\n'
             '等待你的下一步指令。'
         : '此任务正在等待你的下一步指令才能继续。',
-    TaskStatus.needAttention when task.terminalPrompt != null => hasOutput
+    TaskStatus.needAttention when task.nativeApproval != null => hasOutput
         ? '最新结果已就绪。\n'
             '从下方选项中选择如何继续。'
         : '此任务正在等待你的选择才能继续。',
@@ -3435,112 +4366,125 @@ bool _isUnreadableProgressLine(String line) {
       ).hasMatch(compact);
 }
 
-_NextAction _nextActionForTask(TaskStatus status) {
-  return switch (status) {
-    TaskStatus.needApproval => _NextAction(
+_NextAction _nextActionForTask(TaskStatus status, [WorkState? workState]) {
+  switch (_workPhaseFor(workState, status)) {
+    case WorkPhase.needsApproval:
+      return _NextAction(
         title: '需要你决定',
         description: '选择此任务是否可以继续执行提议的操作。',
         icon: Icons.rule_outlined,
         color: Colors.orange.shade700,
-      ),
-    TaskStatus.turnIdle || TaskStatus.needAttention => _NextAction(
+      );
+    case WorkPhase.turnIdle:
+    case WorkPhase.needsInstruction:
+    case WorkPhase.needsDecision:
+      return _NextAction(
         title: '需要你的指令',
         description: '发送下一步指令、约束或决定。',
         icon: Icons.add_comment_outlined,
         color: Colors.orange.shade700,
-      ),
-    TaskStatus.running || TaskStatus.pending => const _NextAction(
+      );
+    case WorkPhase.working:
+    case WorkPhase.idle:
+      return const _NextAction(
         title: '当前无需操作',
         description: '任务仍在推进。你可以让它继续运行或暂停它。',
         icon: Icons.play_circle_outline,
         color: ArminTheme.primary,
-      ),
-    TaskStatus.completed || TaskStatus.userCompleted => _NextAction(
+      );
+    case WorkPhase.completed:
+    case WorkPhase.needsReview:
+      return _NextAction(
         title: '可查看',
         description: '检查交付成果，然后接受或继续添加上下文。',
         icon: Icons.fact_check_outlined,
         color: Colors.green.shade700,
-      ),
-    TaskStatus.failed || TaskStatus.userFailed => _NextAction(
+      );
+    case WorkPhase.failed:
+      return _NextAction(
         title: '需要查看',
         description: '检查发生的情况，并决定是否从此处继续。',
         icon: Icons.error_outline,
         color: Colors.red.shade700,
-      ),
-    TaskStatus.paused => _NextAction(
-        title: '已暂停',
-        description: '准备好后恢复此任务。',
-        icon: Icons.pause_circle_outline,
-        color: Colors.blueGrey.shade700,
-      ),
-    TaskStatus.observerDetached => _NextAction(
-        title: '需要时重新连接',
+      );
+    case WorkPhase.quieting:
+      if (status == TaskStatus.paused) {
+        return _NextAction(
+          title: '已暂停',
+          description: '准备好后恢复此任务。',
+          icon: Icons.pause_circle_outline,
+          color: Colors.blueGrey.shade700,
+        );
+      }
+      return _NextAction(
+        title: '连接已暂停',
         description: '更新已暂停。继续前请重新连接或查看详情。',
         icon: Icons.wifi_off_outlined,
         color: Colors.blueGrey.shade700,
-      ),
-    TaskStatus.runtimeLost => _NextAction(
-        title: '连接已暂停',
-        description: '远端会话不再可用。准备好后处理任务状态。',
-        icon: Icons.task_alt_outlined,
-        color: Colors.blueGrey.shade700,
-      ),
-    TaskStatus.draft => _NextAction(
-        title: '准备任务',
-        description: '此任务尚未启动。',
-        icon: Icons.edit_note_outlined,
-        color: Colors.grey.shade700,
-      ),
-    TaskStatus.stopped => _NextAction(
+      );
+    case WorkPhase.stopped:
+      return _NextAction(
         title: '查看详情',
         description: '此任务已停止。查看历史记录或启动新运行。',
         icon: Icons.stop_circle_outlined,
         color: Colors.grey.shade700,
-      ),
-  };
+      );
+  }
 }
 
-_PrimaryTaskAction? _primaryTaskActionFor(TaskStatus status) {
-  return switch (status) {
-    TaskStatus.needApproval => const _PrimaryTaskAction(
+_PrimaryTaskAction? _primaryTaskActionFor(
+  TaskStatus status, [
+  WorkState? workState,
+]) {
+  switch (_workPhaseFor(workState, status)) {
+    case WorkPhase.needsApproval:
+      return const _PrimaryTaskAction(
         label: '查看',
         icon: Icons.rule_outlined,
         kind: _PrimaryTaskActionKind.addContext,
-      ),
-    TaskStatus.turnIdle || TaskStatus.needAttention => const _PrimaryTaskAction(
+      );
+    case WorkPhase.turnIdle:
+    case WorkPhase.needsInstruction:
+    case WorkPhase.needsDecision:
+      return const _PrimaryTaskAction(
         label: '继续',
         icon: Icons.add_comment_outlined,
         kind: _PrimaryTaskActionKind.addContext,
-      ),
-    TaskStatus.failed || TaskStatus.userFailed => const _PrimaryTaskAction(
+      );
+    case WorkPhase.failed:
+      return const _PrimaryTaskAction(
         label: '查看问题',
         icon: Icons.error_outline,
         kind: _PrimaryTaskActionKind.viewResult,
-      ),
-    TaskStatus.completed ||
-    TaskStatus.userCompleted =>
-      const _PrimaryTaskAction(
+      );
+    case WorkPhase.completed:
+    case WorkPhase.needsReview:
+      return const _PrimaryTaskAction(
         label: '查看结果',
         icon: Icons.fact_check_outlined,
         kind: _PrimaryTaskActionKind.viewResult,
-      ),
-    TaskStatus.paused => const _PrimaryTaskAction(
-        label: '恢复',
-        icon: Icons.play_arrow_outlined,
-        kind: _PrimaryTaskActionKind.resume,
-      ),
-    TaskStatus.runtimeLost => const _PrimaryTaskAction(
-        label: '标记完成',
-        icon: Icons.check_circle_outline,
-        kind: _PrimaryTaskActionKind.markCompleted,
-      ),
-    TaskStatus.running ||
-    TaskStatus.pending ||
-    TaskStatus.draft ||
-    TaskStatus.stopped ||
-    TaskStatus.observerDetached =>
-      null,
-  };
+      );
+    case WorkPhase.quieting:
+      if (status == TaskStatus.paused) {
+        return const _PrimaryTaskAction(
+          label: '恢复',
+          icon: Icons.play_arrow_outlined,
+          kind: _PrimaryTaskActionKind.resume,
+        );
+      }
+      if (status == TaskStatus.runtimeLost) {
+        return const _PrimaryTaskAction(
+          label: '标记完成',
+          icon: Icons.check_circle_outline,
+          kind: _PrimaryTaskActionKind.markCompleted,
+        );
+      }
+      return null;
+    case WorkPhase.working:
+    case WorkPhase.idle:
+    case WorkPhase.stopped:
+      return null;
+  }
 }
 
 extension RuntimeControlStateLabel on RuntimeControlState {

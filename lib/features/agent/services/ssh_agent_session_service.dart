@@ -5,15 +5,16 @@ import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter/foundation.dart';
 
 import '../../hosts/models/host_config.dart';
+import '../../runtime/models/approval_state.dart';
 import '../../tasks/services/agent_instruction_discovery.dart';
 import '../models/agent_approval_config.dart';
 import '../parsers/approval_parser.dart';
 import '../parsers/approval_request.dart';
 import '../parsers/terminal_prompt.dart';
 import '../parsers/terminal_prompt_parser.dart';
-import 'agent_session_service.dart';
-import 'agent_runtime_config.dart';
 import 'agent_output_cleaner.dart';
+import 'agent_runtime_config.dart';
+import 'agent_session_service.dart';
 import 'native_output_observer.dart';
 import 'runtime_policy.dart';
 
@@ -254,8 +255,10 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
               needsAttention: terminalPrompt != null ||
                   snapshot.needsAttention ||
                   effectiveApproval != null,
-              approval: effectiveApproval,
-              terminalPrompt: terminalPrompt,
+              nativeApproval: _nativeApprovalFromPrompt(
+                effectiveApproval,
+                terminalPrompt,
+              ),
               done: shouldFinishUpdate,
             ),
           );
@@ -297,8 +300,8 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
       needsAttention: effectiveApproval != null ||
           terminalPrompt != null ||
           snapshot.needsAttention,
-      approval: effectiveApproval,
-      terminalPrompt: terminalPrompt,
+      nativeApproval:
+          _nativeApprovalFromPrompt(effectiveApproval, terminalPrompt),
     );
   }
 
@@ -340,6 +343,38 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
       reason: prompt.question,
       command: prompt.command.trim().isEmpty ? 'plan_approval' : prompt.command,
       risk: 'medium',
+    );
+  }
+
+  NativeTerminalApproval? _nativeApprovalFromPrompt(
+    ApprovalRequest? approval,
+    TerminalPrompt? prompt,
+  ) {
+    final question = prompt?.question.trim().isNotEmpty == true
+        ? prompt!.question.trim()
+        : approval?.reason.trim() ?? '';
+    if (question.isEmpty) {
+      return null;
+    }
+    final options = prompt?.options
+            .map(
+              (option) => NativeApprovalOption(
+                key: option.key,
+                label: option.label,
+              ),
+            )
+            .toList(growable: false) ??
+        const [
+          NativeApprovalOption(key: 'approve', label: 'Approve'),
+          NativeApprovalOption(key: 'reject', label: 'Reject'),
+        ];
+    return NativeTerminalApproval(
+      id: 'approval-${question.hashCode}',
+      taskId: '',
+      question: question,
+      options: options,
+      state: ApprovalState.pending,
+      createdAt: DateTime.now(),
     );
   }
 

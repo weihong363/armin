@@ -1,3 +1,4 @@
+import 'package:armin/features/runtime/models/approval_state.dart';
 import 'package:armin/features/runtime/models/runtime_task_snapshot.dart';
 import 'package:armin/features/runtime/models/work_state.dart';
 import 'package:armin/features/runtime/services/bridge_runtime.dart';
@@ -109,6 +110,37 @@ void main() {
         runtime.sessionManager.sessions.single.taskIds, ['task-1', 'task-2']);
   });
 
+  test('bridge runtime stores native approval in work state', () async {
+    final runtime = BridgeRuntime(
+      taskStore: InMemoryRuntimeTaskStore(),
+      eventBus: RuntimeEventBus(),
+    );
+    final now = DateTime(2026, 6, 7, 10);
+    final approval = NativeTerminalApproval(
+      id: 'approval-1',
+      taskId: 'task-1',
+      question: 'Apply this change?',
+      options: const [
+        NativeApprovalOption(key: '1', label: 'Allow once'),
+        NativeApprovalOption(key: '4', label: 'No'),
+      ],
+      state: ApprovalState.pending,
+      createdAt: now,
+    );
+
+    runtime.notifyApprovalRequested(
+      'task-1',
+      approval: approval,
+      now: now,
+    );
+
+    final workState = runtime.workState('task-1');
+    expect(workState?.phase, WorkPhase.needsApproval);
+    expect(workState?.headline, 'Apply this change?');
+    expect(workState?.approval?.question, 'Apply this change?');
+    expect(workState?.approval?.options.first.label, 'Allow once');
+  });
+
   test('watcher stores incremental log offset and emits progress only',
       () async {
     final eventBus = RuntimeEventBus();
@@ -147,7 +179,41 @@ void main() {
         'Planning\nprogress: 20%\nRefactoring Task Detail UI 60%\n'.length);
     expect(
       events.map((event) => event.type),
-      contains(RuntimeEventType.taskProgress),
+      contains(RuntimeEventType.outputUpdated),
+    );
+    expect(
+      events.map((event) => event.type),
+      isNot(contains(RuntimeEventType.taskProgress)),
+    );
+
+    await subscription.cancel();
+    await eventBus.dispose();
+  });
+
+  test('notifyOutputUpdated emits output event without watcher state changes',
+      () async {
+    final eventBus = RuntimeEventBus();
+    final runtime = BridgeRuntime(
+      taskStore: InMemoryRuntimeTaskStore(),
+      eventBus: eventBus,
+    );
+    final events = <RuntimeEvent>[];
+    final subscription = eventBus.events.listen(events.add);
+    final now = DateTime(2026, 6, 7, 10);
+
+    runtime.notifyOutputUpdated('task-1', now: now);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(events, hasLength(1));
+    expect(events.single.type, RuntimeEventType.outputUpdated);
+    expect(events.single.snapshot, isNull);
+    expect(
+      events.map((event) => event.type),
+      isNot(contains(RuntimeEventType.taskProgress)),
+    );
+    expect(
+      events.map((event) => event.type),
+      isNot(contains(RuntimeEventType.taskWaitingUser)),
     );
 
     await subscription.cancel();
@@ -188,8 +254,7 @@ Thinking
     expect(updated?.summary, 'README.md 已写入，包含完整使用示例。');
   });
 
-  test('watcher promotes attention and terminal states to runtime events',
-      () async {
+  test('observeOutput does not promote text hints to runtime state', () async {
     final eventBus = RuntimeEventBus();
     final runtime = BridgeRuntime(
       taskStore: InMemoryRuntimeTaskStore(),
@@ -220,11 +285,15 @@ Thinking
     );
     await Future<void>.delayed(Duration.zero);
 
-    expect(waiting?.status, RuntimeTaskStatus.waitingUser);
-    expect(completed?.status, RuntimeTaskStatus.completed);
+    expect(waiting?.status, RuntimeTaskStatus.pending);
+    expect(completed?.status, RuntimeTaskStatus.pending);
     expect(
-      events.map((event) => event.type.wireName),
-      containsAll(['TASK_WAITING_USER', 'TASK_COMPLETED']),
+      events.map((event) => event.type),
+      isNot(contains(RuntimeEventType.taskWaitingUser)),
+    );
+    expect(
+      events.map((event) => event.type),
+      isNot(contains(RuntimeEventType.taskCompleted)),
     );
 
     await subscription.cancel();
@@ -305,7 +374,7 @@ Thinking
     expect(decisions.single.reason, RuntimeReconcileReason.needsAttention);
   });
 
-  test('bridge runtime returns refreshAsIdle after stable output', () async {
+  test('bridge runtime does not mark stable output idle', () async {
     final runtime = BridgeRuntime(
       taskStore: InMemoryRuntimeTaskStore(),
       eventBus: RuntimeEventBus(),
@@ -333,8 +402,7 @@ Thinking
     );
 
     expect(first, isEmpty);
-    expect(second.single.action, RuntimeReconcileAction.refreshAsIdle);
-    expect(second.single.markIdleIfNoAttention, isTrue);
+    expect(second, isEmpty);
   });
 
   test('bridge runtime limits reconcile probes per run', () async {

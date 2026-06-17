@@ -107,16 +107,15 @@ Qoder has written up a plan and is ready to execute. Would you like to proceed?
     final prompt = const TerminalPromptParser().parse(output);
 
     expect(prompt, isNotNull);
-    expect(prompt!.question,
+    expect(
+        prompt!.question,
         'Qoder has written up a plan and is ready to execute. '
         'Would you like to proceed?');
     expect(prompt.command, isEmpty);
     expect(prompt.options, hasLength(6));
     expect(prompt.options.first.key, '1');
-    expect(
-        prompt.options.first.label, 'Yes, execute with Auto mode');
-    expect(
-        prompt.options.last.label, 'Reject plan');
+    expect(prompt.options.first.label, 'Yes, execute with Auto mode');
+    expect(prompt.options.last.label, 'Reject plan');
   });
 
   test('ignores code line numbers that look like options', () {
@@ -155,5 +154,32 @@ Proceed?
     final prompt = const TerminalPromptParser().parse(output);
 
     expect(prompt, isNull);
+  });
+
+  test('strips terminal prompt block with code preview', () {
+    const output = '''
+Permission Required
+
+Tool: Write
+File: test.py
+
+    1 print("hello")
+
+Apply this change?
+
+  ❯ 1. Allow once
+    2. Allow for this session
+    3. Reject and type something
+    4. No
+
+任务完成，已创建文件。
+''';
+
+    final stripped = const TerminalPromptParser().stripPromptBlocks(output);
+
+    expect(stripped, contains('任务完成'));
+    expect(stripped, isNot(contains('Permission Required')));
+    expect(stripped, isNot(contains('Apply this change')));
+    expect(stripped, isNot(contains('print("hello")')));
   });
 }

@@ -1,8 +1,6 @@
-import '../models/runtime_task_snapshot.dart';
 import '../../agent/services/agent_output_cleaner.dart';
 
-/// Observes incremental terminal output and extracts progress, action,
-/// and status hints via pattern matching.
+/// Observes incremental terminal output and extracts progress/action hints.
 ///
 /// **Role**: Secondary compatibility layer.
 ///
@@ -14,8 +12,8 @@ import '../../agent/services/agent_output_cleaner.dart';
 /// - Legacy output parsing compatibility
 /// - Audit-friendly output observation
 ///
-/// String matching via [contains] is a **last resort fallback** —
-/// the primary state authority is [RuntimeEventBus] events.
+/// This watcher must not infer lifecycle status. RuntimeEventBus events are the
+/// primary source of runtime state.
 class TaskWatcher {
   final Map<String, int> _lastOffsets = {};
 
@@ -35,7 +33,6 @@ class TaskWatcher {
       lastOffset: nextOffset,
       action: _extractAction(incrementalOutput),
       progress: _extractProgress(incrementalOutput),
-      status: _extractStatus(incrementalOutput),
       checkpoint: _extractCheckpoint(incrementalOutput),
     );
   }
@@ -68,27 +65,6 @@ class TaskWatcher {
       return null;
     }
     return value.clamp(0, 100);
-  }
-
-  RuntimeTaskStatus? _extractStatus(String output) {
-    final lower = output.toLowerCase();
-    if (lower.contains('waiting for user') ||
-        lower.contains('needs approval') ||
-        lower.contains('need approval') ||
-        lower.contains('waiting for your')) {
-      return RuntimeTaskStatus.waitingUser;
-    }
-    if (lower.contains('task completed') ||
-        lower.contains('completed successfully')) {
-      return RuntimeTaskStatus.completed;
-    }
-    if (lower.contains('task failed') || lower.contains('fatal error')) {
-      return RuntimeTaskStatus.failed;
-    }
-    if (output.trim().isEmpty) {
-      return null;
-    }
-    return RuntimeTaskStatus.running;
   }
 
   String _extractCheckpoint(String output) {
@@ -195,7 +171,6 @@ class TaskWatcherUpdate {
     required this.lastOffset,
     this.action = '',
     this.progress,
-    this.status,
     this.checkpoint = '',
   });
 
@@ -204,14 +179,12 @@ class TaskWatcherUpdate {
   final int lastOffset;
   final String action;
   final int? progress;
-  final RuntimeTaskStatus? status;
   final String checkpoint;
 
   bool get hasUsefulUpdate {
     return incrementalOutput.trim().isNotEmpty ||
         action.trim().isNotEmpty ||
         progress != null ||
-        status != null ||
         checkpoint.trim().isNotEmpty;
   }
 }

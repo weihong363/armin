@@ -20,11 +20,107 @@ class TerminalPromptParser {
     );
   }
 
+  /// Removes interactive terminal prompt blocks from display/output text.
+  ///
+  /// This keeps prompt recognition in the same parser that extracts
+  /// selectable terminal actions, instead of duplicating CLI-specific prompt
+  /// rules in downstream summary code.
+  String stripPromptBlocks(String output) {
+    final lines = _plainLines(output);
+    final kept = <String>[];
+    var index = 0;
+
+    while (index < lines.length) {
+      final block = _findFirstPromptBlock(lines, index);
+      if (block == null) {
+        kept.addAll(lines.skip(index));
+        break;
+      }
+
+      kept.addAll(lines.getRange(index, block.startIndex));
+      index = block.endIndex;
+    }
+
+    return kept.join('\n');
+  }
+
   List<String> _plainLines(String output) {
     return output
         .replaceAll(RegExp(r'\x1B\[[0-?]*[ -/]*[@-~]'), '')
         .replaceAll('\r', '\n')
         .split('\n');
+  }
+
+  _PromptRange? _findFirstPromptBlock(List<String> lines, int start) {
+    for (var index = start; index < lines.length; index++) {
+      final block = _findPromptBlock(lines.take(index + 1).toList());
+      if (block == null || block.optionIndex < start) {
+        continue;
+      }
+      final startIndex = _promptStartIndex(lines, block.questionIndex);
+      final endIndex = _promptEndIndex(lines, block.optionIndex);
+      return _PromptRange(startIndex: startIndex, endIndex: endIndex);
+    }
+    return null;
+  }
+
+  int _promptStartIndex(List<String> lines, int questionIndex) {
+    var start = questionIndex;
+    for (var index = questionIndex - 1; index >= 0; index--) {
+      final trimmed = lines[index].trim();
+      if (trimmed.isEmpty ||
+          _isSeparator(trimmed) ||
+          _optionMatch(trimmed) != null ||
+          _looksLikePromptPreface(lines[index])) {
+        start = index;
+        continue;
+      }
+      break;
+    }
+    return start;
+  }
+
+  int _promptEndIndex(List<String> lines, int optionIndex) {
+    var index = optionIndex;
+    var sawOption = false;
+    while (index < lines.length) {
+      final line = lines[index];
+      final trimmed = line.trim();
+      if (trimmed.isEmpty || _isSeparator(trimmed)) {
+        index++;
+        continue;
+      }
+      if (_optionMatch(line) != null) {
+        sawOption = true;
+        index++;
+        continue;
+      }
+      if (_isPromptFooter(trimmed)) {
+        index++;
+        continue;
+      }
+      if (!sawOption || line.startsWith(RegExp(r'\s'))) {
+        index++;
+        continue;
+      }
+      break;
+    }
+    return index;
+  }
+
+  bool _looksLikePromptPreface(String line) {
+    return line.startsWith('▪') ||
+        line.startsWith('•') ||
+        line.startsWith(RegExp(r'\s')) ||
+        line.toLowerCase().startsWith('tool:') ||
+        line.toLowerCase().startsWith('file:') ||
+        line.endsWith('?') ||
+        line.endsWith('？') ||
+        line.toLowerCase() == 'permission required' ||
+        line.toLowerCase() == 'asking user' ||
+        line.contains('你是指以下哪种') ||
+        line.contains('请选择') ||
+        line.contains('请具体说明');
   }
 
   _PromptBlock? _findPromptBlock(List<String> lines) {
@@ -255,4 +351,14 @@ class _PromptBlock {
 
   final int questionIndex;
   final int optionIndex;
+}
+
+class _PromptRange {
+  const _PromptRange({
+    required this.startIndex,
+    required this.endIndex,
+  });
+
+  final int startIndex;
+  final int endIndex;
 }

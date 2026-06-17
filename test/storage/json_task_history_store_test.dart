@@ -1,20 +1,19 @@
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:flutter_test/flutter_test.dart';
-
 import 'package:armin/core/models/task_status.dart';
 import 'package:armin/core/storage/json_task_history_store.dart';
 import 'package:armin/core/storage/secure_password_store.dart';
 import 'package:armin/features/agent/models/agent_approval_config.dart';
 import 'package:armin/features/hosts/models/host_config.dart';
-import 'package:armin/features/agent/parsers/terminal_prompt.dart';
 import 'package:armin/features/projects/models/project_path_config.dart';
+import 'package:armin/features/runtime/models/approval_state.dart';
 import 'package:armin/features/tasks/models/execution_log.dart';
 import 'package:armin/features/tasks/models/metric_event.dart';
 import 'package:armin/features/tasks/models/native_output_turn.dart';
 import 'package:armin/features/tasks/models/prompt_record.dart';
 import 'package:armin/features/tasks/models/task_session.dart';
+import 'package:flutter_test/flutter_test.dart';
 
 import 'mock_secure_storage.dart';
 
@@ -200,18 +199,61 @@ void main() {
     expect(tasks.single.turns.single.userInput, '输出 hello');
   });
 
-  test('JsonTaskHistoryStore persists pending terminal prompts', () async {
+  test('JsonTaskHistoryStore does not persist legacy terminal prompt fields',
+      () async {
     final tempDir = await Directory.systemTemp.createTemp('armin-store-test');
     addTearDown(() => tempDir.delete(recursive: true));
     final store = JsonTaskHistoryStore(
       file: File('${tempDir.path}/history.json'),
       passwordStore: SecurePasswordStore(storage: MockSecureStorage()),
     );
+    final approval = NativeTerminalApproval(
+      id: 'approval-1',
+      taskId: 'task-1',
+      question: 'Allow execution of [ls]?',
+      options: const [NativeApprovalOption(key: '1', label: 'Allow once')],
+      state: ApprovalState.pending,
+      createdAt: DateTime(2026, 5, 26),
+    );
     final task = _task(DateTime(2026, 5, 26)).copyWith(
-      terminalPrompt: const TerminalPrompt(
-        question: 'Allow execution of [ls]?',
-        options: [TerminalPromptOption(key: '1', label: 'Allow once')],
-      ),
+      nativeApproval: approval,
+      nativeApprovalRequests: [approval],
+    );
+
+    await store.saveTask(task);
+    final persisted =
+        jsonDecode(await File('${tempDir.path}/history.json').readAsString())
+            as Map<String, Object?>;
+    final persistedTask =
+        (persisted['tasks'] as List).single as Map<String, Object?>;
+
+    expect(persistedTask.containsKey('approval'), isFalse);
+    expect(persistedTask.containsKey('terminalPrompt'), isFalse);
+    expect(persistedTask.containsKey('approvalRequests'), isFalse);
+  });
+
+  test('JsonTaskHistoryStore persists native approvals', () async {
+    final tempDir = await Directory.systemTemp.createTemp('armin-store-test');
+    addTearDown(() => tempDir.delete(recursive: true));
+    final store = JsonTaskHistoryStore(
+      file: File('${tempDir.path}/history.json'),
+      passwordStore: SecurePasswordStore(storage: MockSecureStorage()),
+    );
+    final now = DateTime(2026, 5, 27);
+    final approval = NativeTerminalApproval(
+      id: 'approval-1',
+      taskId: 'task-1',
+      question: 'Apply this change?',
+      options: const [
+        NativeApprovalOption(key: '1', label: 'Allow once'),
+        NativeApprovalOption(key: '4', label: 'Reject and type something'),
+      ],
+      state: ApprovalState.pending,
+      createdAt: now,
+    );
+    final task = _task(now).copyWith(
+      nativeApproval: approval,
+      nativeApprovalRequests: [approval],
     );
 
     await store.saveTask(task);
@@ -221,8 +263,10 @@ void main() {
     );
 
     final savedTask = (await reloaded.loadTasks()).single;
-    expect(savedTask.terminalPrompt?.question, 'Allow execution of [ls]?');
-    expect(savedTask.terminalPrompt?.options.single.key, '1');
+    expect(savedTask.nativeApproval?.question, 'Apply this change?');
+    expect(savedTask.nativeApproval?.options.first.key, '1');
+    expect(
+        savedTask.nativeApprovalRequests.single.state, ApprovalState.pending);
   });
 
   test('TaskSession JSON never persists runtime password', () {

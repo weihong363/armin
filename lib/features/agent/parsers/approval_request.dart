@@ -1,3 +1,5 @@
+import '../../runtime/models/approval_state.dart';
+
 class ApprovalRequest {
   const ApprovalRequest({
     this.id = '',
@@ -18,6 +20,31 @@ class ApprovalRequest {
   final String status;
   final DateTime? createdAt;
   final DateTime? resolvedAt;
+
+  ApprovalState get approvalState {
+    return ApprovalState.values.firstWhere(
+      (state) => state.name == status.trim().toLowerCase(),
+      orElse: () => ApprovalState.pending,
+    );
+  }
+
+  NativeTerminalApproval toNativeApproval({
+    String fallbackTaskId = '',
+  }) {
+    final question = reason.trim();
+    return NativeTerminalApproval(
+      id: id.trim().isEmpty ? 'approval-${question.hashCode}' : id,
+      taskId: taskId.trim().isEmpty ? fallbackTaskId : taskId,
+      question: question,
+      options: const [
+        NativeApprovalOption(key: 'approve', label: 'Approve'),
+        NativeApprovalOption(key: 'reject', label: 'Reject'),
+      ],
+      state: approvalState,
+      createdAt: createdAt ?? DateTime.now(),
+      stateChangedAt: resolvedAt,
+    );
+  }
 
   ApprovalRequest copyWith({
     String? id,

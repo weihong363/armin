@@ -811,6 +811,52 @@ pin-up 风格，含 9 个动画状态（idle/running/waving/jumping/failed/waiti
     expect(summary.displaySummary, isNot(contains('│')));
   });
 
+  test('rule provider summarizes package tree without dumping the tree',
+      () async {
+    const packageOutput = OutputSummaryRequest(
+      cleanedOutput: '''
+Package complete. Here's what was created:
+    countdown_widgets/
+    ├── lib/
+    │   ├── countdown_widgets.dart          # barrel export
+    │   └── src/
+    │       ├── circular_countdown.dart      # CircularCountdown (CustomPainter arc)
+    │       ├── linear_countdown.dart        # LinearCountdown (progress bar)
+    │       └── flip_countdown.dart          # FlipCountdown (animated digit cards)
+    ├── test/
+    │   └── countdown_widgets_test.dart      # 16 widget tests
+    ├── example/
+    │   ├── pubspec.yaml
+    │   └── lib/main.dart                    # demo app
+    ├── pubspec.yaml
+    ├── analysis_options.yaml
+    └── README.md
+   Each widget supports: duration, color/backgroundColor, size params, and onFinished
+   callback.
+
+   Cannot run tests - flutter and dart are not installed in this environment. To run tests
+    locally:
+    flutter pub get
+    flutter test
+   To run the example app:
+    cd example && flutter pub get && flutter run
+''',
+      status: TaskStatus.turnIdle,
+      taskTitle: '创建倒计时 widget package',
+    );
+
+    final summary =
+        await const RuleBasedOutputSummaryProvider().summarize(packageOutput);
+
+    expect(summary.displaySummary, contains('已创建 countdown_widgets 包结构'));
+    expect(summary.displaySummary, contains('组件支持：duration'));
+    expect(summary.displaySummary, contains('测试未运行'));
+    expect(summary.displaySummary, contains('flutter test'));
+    expect(summary.displaySummary, isNot(contains('├──')));
+    expect(summary.displaySummary, isNot(contains('│')));
+    expect(summary.displaySummary, isNot(contains('pub...')));
+  });
+
   test('local model provider falls back when unavailable', () async {
     final summary = await const LocalSmallModelSummaryProvider().summarize(
       request,

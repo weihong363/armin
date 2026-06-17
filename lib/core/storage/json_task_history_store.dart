@@ -9,6 +9,8 @@ import '../../features/tasks/models/task_session.dart';
 import 'secure_password_store.dart';
 import 'task_history_store.dart';
 
+const _currentSchemaVersion = 2;
+
 class JsonTaskHistoryStore implements TaskHistoryStore {
   JsonTaskHistoryStore({File? file, SecurePasswordStore? passwordStore})
       : _fileOverride = file,
@@ -134,15 +136,21 @@ class JsonTaskHistoryStore implements TaskHistoryStore {
       throw const FormatException('Invalid Armin history JSON root.');
     }
 
+    final schemaVersion =
+        json['schemaVersion'] is int ? json['schemaVersion'] as int : 1;
     _hosts = _decodeList(json['hosts'], HostConfig.fromJson);
     _tasks = _decodeList(json['tasks'], TaskSession.fromJson);
     _projectPaths =
         _decodeList(json['projectPaths'], ProjectPathConfig.fromJson);
+    var shouldPersist = schemaVersion < _currentSchemaVersion;
     // Dedup tasks by id (keep first occurrence = newest, since persisted in order).
     if (_tasks!.length > 1) {
       final seen = <String>{};
       _tasks!.removeWhere((t) => !seen.add(t.id));
       // Persist the deduped list immediately so the JSON file is cleaned.
+      shouldPersist = true;
+    }
+    if (shouldPersist) {
       await _persist();
     }
   }
@@ -151,7 +159,7 @@ class JsonTaskHistoryStore implements TaskHistoryStore {
     final file = await _file();
     await file.parent.create(recursive: true);
     final content = const JsonEncoder.withIndent('  ').convert({
-      'schemaVersion': 1,
+      'schemaVersion': _currentSchemaVersion,
       'hosts': _hosts!.map((host) => host.toJson()).toList(),
       'tasks': _tasks!.map((task) => task.toJson()).toList(),
       'projectPaths': _projectPaths!.map((item) => item.toJson()).toList(),

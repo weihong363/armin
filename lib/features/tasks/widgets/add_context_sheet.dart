@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../../app_state_scope.dart';
 import '../../../core/models/task_status.dart';
-import '../../agent/parsers/approval_request.dart';
+import '../../runtime/models/approval_state.dart';
 import '../models/task_session.dart';
 import '../services/voice_task_command_processor.dart';
 
@@ -20,7 +20,7 @@ class AddContextSheet extends StatelessWidget {
   final TaskSession task;
   final String title;
   final String hintText;
-  final ApprovalRequest? approval;
+  final NativeTerminalApproval? approval;
   final VoiceTaskCommandResult? Function(String text, TaskStatus status)?
       interpretVoiceCommand;
   final Future<void> Function(
@@ -34,7 +34,7 @@ class AddContextSheet extends StatelessWidget {
     required TaskSession task,
     String title = '继续任务',
     String hintText = '接下来需要做什么？',
-    ApprovalRequest? approval,
+    NativeTerminalApproval? approval,
     VoiceTaskCommandResult? Function(String text, TaskStatus status)?
         interpretVoiceCommand,
     required Future<void> Function(
@@ -89,7 +89,7 @@ class _AddContextSheetBody extends StatefulWidget {
   final String title;
   final String hintText;
   final TextEditingController controller;
-  final ApprovalRequest? approval;
+  final NativeTerminalApproval? approval;
   final VoiceTaskCommandResult? Function(String text, TaskStatus status)?
       interpretVoiceCommand;
   final Future<void> Function(
@@ -491,7 +491,7 @@ class _TargetTaskLabel extends StatelessWidget {
 class _ApprovalSheetDetails extends StatelessWidget {
   const _ApprovalSheetDetails({required this.approval});
 
-  final ApprovalRequest approval;
+  final NativeTerminalApproval approval;
 
   @override
   Widget build(BuildContext context) {
@@ -506,14 +506,24 @@ class _ApprovalSheetDetails extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('原因：${approval.reason}'),
+            Text('原因：${approval.question}'),
             const SizedBox(height: 4),
-            Text('风险：${approval.risk}'),
+            Text('状态：${_approvalStateLabel(approval.state)}'),
           ],
         ),
       ),
     );
   }
+}
+
+String _approvalStateLabel(ApprovalState state) {
+  return switch (state) {
+    ApprovalState.none => '无',
+    ApprovalState.pending => '等待处理',
+    ApprovalState.resolving => '处理中',
+    ApprovalState.resolved => '已处理',
+    ApprovalState.failed => '处理失败',
+  };
 }
 
 class _VoiceContextButton extends StatelessWidget {

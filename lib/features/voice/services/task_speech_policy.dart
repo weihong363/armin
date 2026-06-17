@@ -1,4 +1,5 @@
 import '../../../core/models/task_status.dart';
+import '../../runtime/models/approval_state.dart';
 import '../../tasks/models/task_session.dart';
 import '../../tasks/services/output_summary_provider.dart';
 import '../../tasks/services/turn_output_slicer.dart';
@@ -136,7 +137,7 @@ class TaskSpeechPolicy {
     }
 
     if (task.status == TaskStatus.needAttention) {
-      final promptText = task.terminalPrompt?.question.trim() ?? '';
+      final promptText = task.nativeApproval?.question.trim() ?? '';
       if (promptText.isNotEmpty) {
         return _decorate(task.status, promptText).trim();
       }
@@ -233,7 +234,9 @@ class TaskSpeechPolicy {
     if (shortSummary.isNotEmpty) {
       return shortSummary;
     }
-    return task.approval?.reason.trim() ?? '';
+    return task.nativeApproval?.question.trim().isNotEmpty == true
+        ? task.nativeApproval!.question.trim()
+        : '';
   }
 
   bool _isStaleSummaryFallback(
@@ -259,15 +262,15 @@ class TaskSpeechPolicy {
   }
 
   String _approvalSpeechSource(TaskSession task) {
-    final currentApproval = task.approval;
-    if (currentApproval != null && currentApproval.reason.trim().isNotEmpty) {
-      return currentApproval.reason.trim();
+    final currentNativeApproval = task.nativeApproval;
+    if (currentNativeApproval != null &&
+        currentNativeApproval.question.trim().isNotEmpty) {
+      return currentNativeApproval.question.trim();
     }
-    for (final approval in task.approvalRequests.reversed) {
-      final status = approval.status.trim().toLowerCase();
-      if ((status.isEmpty || status == 'pending') &&
-          approval.reason.trim().isNotEmpty) {
-        return approval.reason.trim();
+    for (final approval in task.nativeApprovalRequests.reversed) {
+      if (approval.state == ApprovalState.pending &&
+          approval.question.trim().isNotEmpty) {
+        return approval.question.trim();
       }
     }
     return '';

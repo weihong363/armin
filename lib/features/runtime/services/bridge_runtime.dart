@@ -199,10 +199,7 @@ class BridgeRuntime {
     _reconcileStableCounts[target.taskId] = stableCount;
     if (stableCount >= 2) {
       _reconcileStableCounts.remove(target.taskId);
-      return RuntimeReconcileDecision.refreshAsIdle(
-        taskId: target.taskId,
-        reason: RuntimeReconcileReason.stableOutput,
-      );
+      return RuntimeReconcileDecision.none(target.taskId);
     }
     return RuntimeReconcileDecision.none(target.taskId);
   }
@@ -360,9 +357,8 @@ class BridgeRuntime {
       return null;
     }
     final observedAt = now ?? DateTime.now();
-    final nextStatus = update.status ?? current.status;
     final updated = current.copyWith(
-      status: nextStatus,
+      status: current.status,
       updatedAt: observedAt,
       action: update.action.isEmpty ? current.action : update.action,
       currentStep: update.action.isEmpty ? current.currentStep : update.action,
@@ -373,7 +369,13 @@ class BridgeRuntime {
       summary: update.action.isEmpty ? current.summary : update.action,
     );
     await taskStore.saveTask(updated);
-    _publish(_eventTypeForStatus(nextStatus), updated);
+    _publishDirect(RuntimeEventType.outputUpdated, taskId, observedAt, null);
+    _diagnosticsUpdate(
+        taskId,
+        (d) => d.copyWith(
+              lastObservedOutputTime: observedAt,
+              updatedAt: observedAt,
+            ));
     return updated;
   }
 
@@ -434,7 +436,11 @@ class BridgeRuntime {
   }
 
   /// Publish an approval requested event.
-  void notifyApprovalRequested(String taskId, {DateTime? now}) {
+  void notifyApprovalRequested(
+    String taskId, {
+    NativeTerminalApproval? approval,
+    DateTime? now,
+  }) {
     final observedAt = now ?? DateTime.now();
     _publishDirect(
         RuntimeEventType.approvalRequested, taskId, observedAt, null);
@@ -445,7 +451,12 @@ class BridgeRuntime {
               updatedAt: observedAt,
             ));
     _updateWorkState(
-        taskId, WorkPhase.needsApproval, 'Agent needs your approval.', '');
+      taskId,
+      WorkPhase.needsApproval,
+      approval?.question ?? 'Agent needs your approval.',
+      '',
+      approval: approval,
+    );
   }
 
   /// Publish an approval resolving event (user action sent to terminal).
@@ -651,13 +662,15 @@ class BridgeRuntime {
     String taskId,
     WorkPhase phase,
     String headline,
-    String detail,
-  ) {
+    String detail, {
+    NativeTerminalApproval? approval,
+  }) {
     final state = WorkState(
       taskId: taskId,
       phase: phase,
       headline: headline,
       detail: detail,
+      approval: approval,
       updatedAt: DateTime.now(),
     );
     _workStates[taskId] = state;
@@ -668,17 +681,6 @@ class BridgeRuntime {
               workPhase: phase,
               updatedAt: DateTime.now(),
             ));
-  }
-
-  RuntimeEventType _eventTypeForStatus(RuntimeTaskStatus status) {
-    return switch (status) {
-      RuntimeTaskStatus.pending => RuntimeEventType.taskCreated,
-      RuntimeTaskStatus.running => RuntimeEventType.taskProgress,
-      RuntimeTaskStatus.waitingUser => RuntimeEventType.taskWaitingUser,
-      RuntimeTaskStatus.completed => RuntimeEventType.taskCompleted,
-      RuntimeTaskStatus.failed => RuntimeEventType.taskFailed,
-      RuntimeTaskStatus.cancelled => RuntimeEventType.taskCancelled,
-    };
   }
 
   void _validateTaskId(String taskId) {
@@ -705,7 +707,6 @@ class BridgeRuntime {
 enum RuntimeReconcileAction {
   none,
   refresh,
-  refreshAsIdle,
 }
 
 enum RuntimeReconcileReason {
@@ -764,19 +765,7 @@ class RuntimeReconcileDecision {
           reason: reason,
         );
 
-  const RuntimeReconcileDecision.refreshAsIdle({
-    required String taskId,
-    required RuntimeReconcileReason reason,
-  }) : this(
-          taskId: taskId,
-          action: RuntimeReconcileAction.refreshAsIdle,
-          reason: reason,
-        );
-
   final String taskId;
   final RuntimeReconcileAction action;
   final RuntimeReconcileReason reason;
-
-  bool get markIdleIfNoAttention =>
-      action == RuntimeReconcileAction.refreshAsIdle;
 }

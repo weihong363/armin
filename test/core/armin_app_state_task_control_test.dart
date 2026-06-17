@@ -4,12 +4,11 @@ import 'package:armin/core/models/task_status.dart';
 import 'package:armin/core/services/armin_app_state.dart';
 import 'package:armin/core/storage/task_history_store.dart';
 import 'package:armin/features/agent/models/agent_approval_config.dart';
-import 'package:armin/features/agent/parsers/approval_request.dart';
 import 'package:armin/features/agent/parsers/task_result.dart';
-import 'package:armin/features/agent/parsers/terminal_prompt.dart';
 import 'package:armin/features/agent/services/agent_session_service.dart';
 import 'package:armin/features/hosts/models/host_config.dart';
 import 'package:armin/features/projects/models/project_path_config.dart';
+import 'package:armin/features/runtime/models/approval_state.dart';
 import 'package:armin/features/runtime/models/runtime_task_snapshot.dart';
 import 'package:armin/features/runtime/services/bridge_runtime.dart';
 import 'package:armin/features/runtime/services/runtime_event_bus.dart';
@@ -419,19 +418,13 @@ void main() {
   });
 
   test('resolveApproval sends raw decision and marks task running', () async {
+    final approval = _nativeApproval(
+      question: 'Need command approval',
+      options: const [],
+    );
     final task = _task(status: TaskStatus.needApproval).copyWith(
-      approval: const ApprovalRequest(
-        reason: 'Need command approval',
-        command: 'rm tmp.txt',
-        risk: 'medium',
-      ),
-      approvalRequests: const [
-        ApprovalRequest(
-          reason: 'Need command approval',
-          command: 'rm tmp.txt',
-          risk: 'medium',
-        ),
-      ],
+      nativeApproval: approval,
+      nativeApprovalRequests: [approval],
     );
     final store = _TaskStore(task);
     final agent = _ControlAgent();
@@ -447,8 +440,9 @@ void main() {
 
     expect(agent.lastFollowUp, startsWith('APPROVAL_DECISION:'));
     expect(store.task!.status, TaskStatus.running);
-    expect(store.task!.approval, isNull);
-    expect(store.task!.approvalRequests.single.status, 'approved');
+    expect(store.task!.nativeApproval, isNull);
+    expect(store.task!.nativeApprovalRequests.single.state,
+        ApprovalState.resolved);
     expect(store.task!.rawLog, contains('Approval approved by user.'));
     expect(agent.lastExecuteRequest?.attachOnly, isTrue);
     expect(agent.lastExecuteRequest?.prompt, isEmpty);
@@ -456,27 +450,17 @@ void main() {
 
   test('resolveApproval routes native terminal approvals through option key',
       () async {
-    const option = TerminalPromptOption(key: '1', label: 'Allow once');
-    final task = _task(status: TaskStatus.needApproval).copyWith(
-      approval: const ApprovalRequest(
-        reason: 'Apply this change?',
-        command: 'plan_approval',
-        risk: 'medium',
-      ),
-      terminalPrompt: const TerminalPrompt(
-        question: 'Apply this change?',
-        options: [
-          option,
-          TerminalPromptOption(key: '4', label: 'Reject and type something'),
-        ],
-      ),
-      approvalRequests: const [
-        ApprovalRequest(
-          reason: 'Apply this change?',
-          command: 'plan_approval',
-          risk: 'medium',
-        ),
+    const option = NativeApprovalOption(key: '1', label: 'Allow once');
+    final approval = _nativeApproval(
+      question: 'Apply this change?',
+      options: const [
+        option,
+        NativeApprovalOption(key: '4', label: 'Reject and type something'),
       ],
+    );
+    final task = _task(status: TaskStatus.needApproval).copyWith(
+      nativeApproval: approval,
+      nativeApprovalRequests: [approval],
     );
     final store = _TaskStore(task);
     final agent = _ControlAgent();
@@ -493,9 +477,13 @@ void main() {
     expect(agent.events, isNot(contains('sendFollowUp')));
     expect(agent.selectedTerminalOption, '1');
     expect(store.task!.status, TaskStatus.running);
-    expect(store.task!.approval, isNull);
-    expect(store.task!.terminalPrompt, isNull);
-    expect(store.task!.approvalRequests.single.status, 'approved');
+    expect(store.task!.nativeApproval, isNull);
+    expect(store.task!.nativeApprovalRequests.single.state,
+        ApprovalState.resolved);
+    expect(
+      store.task!.nativeApprovalRequests.single.selectedOptionKey,
+      '1',
+    );
     expect(agent.lastExecuteRequest?.attachOnly, isTrue);
   });
 
@@ -515,11 +503,10 @@ void main() {
     );
     await Future<void>.delayed(Duration.zero);
 
-    expect(store.task!.status, TaskStatus.needAttention);
-    expect(store.task!.terminalPrompt?.options, hasLength(2));
-    expect(store.task!.terminalPrompt?.options.first.label, 'Allow once');
-    expect(
-        store.task!.metricEvents.last.eventType, 'terminal_prompt_requested');
+    expect(store.task!.status, TaskStatus.needApproval);
+    expect(store.task!.nativeApproval?.options, hasLength(2));
+    expect(store.task!.nativeApproval?.options.first.label, 'Allow once');
+    expect(store.task!.metricEvents.last.eventType, 'approval_requested');
   });
 
   test('needsAttention update changes running task to needAttention', () async {
@@ -545,12 +532,17 @@ void main() {
 
   test('selectTerminalOption writes selected key and resumes observation',
       () async {
-    const option = TerminalPromptOption(key: '1', label: 'Allow once');
+    const option = NativeApprovalOption(key: '1', label: 'Allow once');
+    final approval = _nativeApproval(
+      question: 'Allow execution of [ls]?',
+      options: const [
+        option,
+        NativeApprovalOption(key: '4', label: 'No'),
+      ],
+    );
     final task = _task(status: TaskStatus.needAttention).copyWith(
-      terminalPrompt: const TerminalPrompt(
-        question: 'Allow execution of [ls]?',
-        options: [option, TerminalPromptOption(key: '4', label: 'No')],
-      ),
+      nativeApproval: approval,
+      nativeApprovalRequests: [approval],
     );
     final store = _TaskStore(task);
     final agent = _ControlAgent();
@@ -566,22 +558,27 @@ void main() {
 
     expect(agent.selectedTerminalOption, '1');
     expect(store.task!.status, TaskStatus.running);
-    expect(store.task!.terminalPrompt, isNull);
+    expect(store.task!.nativeApproval, isNull);
     expect(store.task!.metricEvents.last.eventType, 'terminal_prompt_resolved');
     expect(agent.lastExecuteRequest?.attachOnly, isTrue);
   });
 
   test('selectTerminalOption sends custom response for manual prompts',
       () async {
-    const option = TerminalPromptOption(
+    const option = NativeApprovalOption(
       key: '3',
       label: 'Reject and type something',
     );
+    final approval = _nativeApproval(
+      question: 'Allow this command to run?',
+      options: const [
+        option,
+        NativeApprovalOption(key: '4', label: 'No'),
+      ],
+    );
     final task = _task(status: TaskStatus.needAttention).copyWith(
-      terminalPrompt: const TerminalPrompt(
-        question: 'Allow this command to run?',
-        options: [option, TerminalPromptOption(key: '4', label: 'No')],
-      ),
+      nativeApproval: approval,
+      nativeApprovalRequests: [approval],
     );
     final store = _TaskStore(task);
     final agent = _ControlAgent();
@@ -603,7 +600,7 @@ void main() {
     expect(agent.lastFollowUp, '请不要运行测试');
     expect(agent.events,
         containsAllInOrder(['selectTerminalOption', 'sendFollowUp']));
-    expect(store.task!.terminalPrompt, isNull);
+    expect(store.task!.nativeApproval, isNull);
   });
 
   test('disconnectTask detaches observer without cleanup or failing task',
@@ -689,16 +686,14 @@ world
 
   test('refreshTaskFromRemote recovers approval prompt while task is running',
       () async {
+    final approvedApproval = _nativeApproval(
+      question: 'Apply this change?',
+      state: ApprovalState.resolved,
+      selectedOptionKey: '1',
+      stateChangedAt: DateTime(2026, 5, 18, 0, 1),
+    );
     final task = _task(status: TaskStatus.running).copyWith(
-      approvalRequests: [
-        ApprovalRequest(
-          reason: 'Apply this change?',
-          command: 'plan_approval',
-          risk: 'medium',
-          status: 'approved',
-          resolvedAt: DateTime(2026, 5, 18, 0, 1),
-        ),
-      ],
+      nativeApprovalRequests: [approvedApproval],
       turns: [
         NativeOutputTurn(
           id: 'turn-task-1-1',
@@ -738,11 +733,13 @@ Apply this change?
     await Future<void>.delayed(Duration.zero);
 
     expect(store.task!.status, TaskStatus.needApproval);
-    expect(store.task!.approval?.reason, 'Apply this change?');
-    expect(store.task!.approvalRequests.single.reason, 'Apply this change?');
-    expect(store.task!.approvalRequests.single.status, 'pending');
-    expect(store.task!.approvalRequests.single.resolvedAt, isNull);
-    expect(store.task!.terminalPrompt?.options.first.label, 'Allow once');
+    expect(store.task!.nativeApproval?.question, 'Apply this change?');
+    expect(store.task!.nativeApprovalRequests.single.question,
+        'Apply this change?');
+    expect(
+        store.task!.nativeApprovalRequests.single.state, ApprovalState.pending);
+    expect(store.task!.nativeApprovalRequests.single.stateChangedAt, isNull);
+    expect(store.task!.nativeApproval?.options.first.label, 'Allow once');
     expect(agent.lastExecuteRequest, isNull);
     expect(agent.events, contains('captureLog'));
   });
@@ -789,8 +786,7 @@ Thinking
     await Future<void>.delayed(Duration.zero);
 
     expect(store.task!.status, TaskStatus.running);
-    expect(store.task!.approval, isNull);
-    expect(store.task!.terminalPrompt, isNull);
+    expect(store.task!.nativeApproval, isNull);
     expect(agent.lastExecuteRequest, isNull);
     expect(agent.events, contains('captureLog'));
   });
@@ -842,7 +838,7 @@ Thinking
     expect(agent.events, contains('captureLog'));
   });
 
-  test('remote reconcile reuses refresh for stable running output', () async {
+  test('remote reconcile keeps stable running output as running', () async {
     final task = _task(status: TaskStatus.running).copyWith(
       turns: [
         NativeOutputTurn(
@@ -850,6 +846,17 @@ Thinking
           taskId: 'task-1',
           turnIndex: 1,
           userInput: '输出 hello',
+          rawOutput: 'hello',
+          cleanedOutput: 'hello',
+          startedAt: DateTime(2026, 5, 18),
+          lastOutputAt: DateTime(2026, 5, 18),
+          status: NativeOutputTurnStatus.turnIdle,
+        ),
+        NativeOutputTurn(
+          id: 'turn-task-1-2',
+          taskId: 'task-1',
+          turnIndex: 2,
+          userInput: '继续检查',
           rawOutput: '',
           cleanedOutput: '',
           startedAt: DateTime(2026, 5, 18),
@@ -874,12 +881,14 @@ Thinking
     );
     await state.load();
 
-    await _waitUntil(() => store.task!.status == TaskStatus.turnIdle);
+    await _waitUntil(() => agent.probeCount >= 2);
     state.dispose();
 
-    expect(store.task!.status, TaskStatus.turnIdle);
-    expect(store.task!.result?.summary, contains('HELLO WORLD'));
-    expect(agent.events, contains('captureLog'));
+    expect(store.task!.status, TaskStatus.running);
+    expect(store.task!.turns.last.turnIndex, 2);
+    expect(store.task!.turns.last.status, NativeOutputTurnStatus.running);
+    expect(store.task!.result, isNull);
+    expect(agent.events, isNot(contains('captureLog')));
     expect(agent.probeCount, greaterThanOrEqualTo(2));
   });
 
@@ -1645,6 +1654,28 @@ TaskSession _task({required TaskStatus status}) {
   );
 }
 
+NativeTerminalApproval _nativeApproval({
+  required String question,
+  List<NativeApprovalOption> options = const [
+    NativeApprovalOption(key: '1', label: 'Allow once'),
+    NativeApprovalOption(key: '4', label: 'Reject and type something'),
+  ],
+  ApprovalState state = ApprovalState.pending,
+  String? selectedOptionKey,
+  DateTime? stateChangedAt,
+}) {
+  return NativeTerminalApproval(
+    id: 'approval-1',
+    taskId: 'task-1',
+    question: question,
+    options: options,
+    state: state,
+    selectedOptionKey: selectedOptionKey,
+    createdAt: DateTime(2026, 5, 18),
+    stateChangedAt: stateChangedAt,
+  );
+}
+
 ProjectPathConfig _projectPath({
   required String id,
   required String path,
@@ -2064,12 +2095,18 @@ class _RepeatedLogUpdateAgent extends _ControlAgent {
 class _ApprovalAgent extends _ControlAgent {
   @override
   Stream<AgentExecutionUpdate> execute(AgentExecutionRequest request) async* {
-    yield const AgentExecutionUpdate(
+    yield AgentExecutionUpdate(
       rawOutput: 'approval',
-      approval: ApprovalRequest(
-        reason: '删除临时构建产物，风险中等。',
-        command: 'rm -rf build',
-        risk: 'medium',
+      nativeApproval: NativeTerminalApproval(
+        id: 'approval-1',
+        taskId: 'task-1',
+        question: '删除临时构建产物，风险中等。',
+        options: const [
+          NativeApprovalOption(key: 'approve', label: 'Approve'),
+          NativeApprovalOption(key: 'reject', label: 'Reject'),
+        ],
+        state: ApprovalState.pending,
+        createdAt: DateTime(2026, 6, 1),
       ),
     );
   }
@@ -2078,15 +2115,19 @@ class _ApprovalAgent extends _ControlAgent {
 class _TerminalPromptAgent extends _ControlAgent {
   @override
   Stream<AgentExecutionUpdate> execute(AgentExecutionRequest request) async* {
-    yield const AgentExecutionUpdate(
+    yield AgentExecutionUpdate(
       rawOutput: 'Allow execution of [ls]?',
       needsAttention: true,
-      terminalPrompt: TerminalPrompt(
+      nativeApproval: NativeTerminalApproval(
+        id: 'approval-2',
+        taskId: 'task-1',
         question: 'Allow execution of [ls]?',
-        options: [
-          TerminalPromptOption(key: '1', label: 'Allow once'),
-          TerminalPromptOption(key: '4', label: 'No'),
+        options: const [
+          NativeApprovalOption(key: '1', label: 'Allow once'),
+          NativeApprovalOption(key: '4', label: 'No'),
         ],
+        state: ApprovalState.pending,
+        createdAt: DateTime(2026, 6, 1),
       ),
     );
   }

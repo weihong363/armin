@@ -1,9 +1,8 @@
 import '../../../core/models/task_status.dart';
 import '../../agent/models/agent_approval_config.dart';
-import '../../agent/parsers/approval_request.dart';
 import '../../agent/parsers/task_result.dart';
-import '../../agent/parsers/terminal_prompt.dart';
 import '../../hosts/models/host_config.dart';
+import '../../runtime/models/approval_state.dart';
 import 'execution_log.dart';
 import 'metric_event.dart';
 import 'native_output_turn.dart';
@@ -38,13 +37,12 @@ class TaskSession {
     this.shortSummary = '',
     this.summary,
     this.result,
-    this.approval,
-    this.terminalPrompt,
+    this.nativeApproval,
     this.voiceInputs = const [],
     this.draftRecord,
     this.promptRecord,
     this.executionLogs = const [],
-    this.approvalRequests = const [],
+    this.nativeApprovalRequests = const [],
     this.metricEvents = const [],
     this.subtasks = const [],
     this.turns = const [],
@@ -72,13 +70,12 @@ class TaskSession {
   final String shortSummary;
   final String? summary;
   final TaskResult? result;
-  final ApprovalRequest? approval;
-  final TerminalPrompt? terminalPrompt;
+  final NativeTerminalApproval? nativeApproval;
   final List<VoiceInput> voiceInputs;
   final TaskDraft? draftRecord;
   final PromptRecord? promptRecord;
   final List<ExecutionLog> executionLogs;
-  final List<ApprovalRequest> approvalRequests;
+  final List<NativeTerminalApproval> nativeApprovalRequests;
   final List<MetricEvent> metricEvents;
   final List<Subtask> subtasks;
   final List<NativeOutputTurn> turns;
@@ -120,15 +117,18 @@ class TaskSession {
       shortSummary: json['shortSummary'] as String? ?? '',
       summary: json['summary'] as String?,
       result: _objectOf(json['result'], TaskResult.fromJson),
-      approval: _objectOf(json['approval'], ApprovalRequest.fromJson),
-      terminalPrompt:
-          _objectOf(json['terminalPrompt'], TerminalPrompt.fromJson),
+      nativeApproval: _objectOf(
+        json['nativeApproval'],
+        NativeTerminalApproval.fromJson,
+      ),
       voiceInputs: _listOf(json['voiceInputs'], VoiceInput.fromJson),
       draftRecord: _objectOf(json['draftRecord'], TaskDraft.fromJson),
       promptRecord: _objectOf(json['promptRecord'], PromptRecord.fromJson),
       executionLogs: _listOf(json['executionLogs'], ExecutionLog.fromJson),
-      approvalRequests:
-          _listOf(json['approvalRequests'], ApprovalRequest.fromJson),
+      nativeApprovalRequests: _listOf(
+        json['nativeApprovalRequests'],
+        NativeTerminalApproval.fromJson,
+      ),
       metricEvents: _listOf(json['metricEvents'], MetricEvent.fromJson),
       subtasks: _listOf(json['subtasks'], Subtask.fromJson),
       turns: _listOf(json['turns'], NativeOutputTurn.fromJson),
@@ -158,18 +158,16 @@ class TaskSession {
     String? shortSummary,
     String? summary,
     TaskResult? result,
-    ApprovalRequest? approval,
-    TerminalPrompt? terminalPrompt,
+    NativeTerminalApproval? nativeApproval,
     List<VoiceInput>? voiceInputs,
     TaskDraft? draftRecord,
     PromptRecord? promptRecord,
     List<ExecutionLog>? executionLogs,
-    List<ApprovalRequest>? approvalRequests,
+    List<NativeTerminalApproval>? nativeApprovalRequests,
     List<MetricEvent>? metricEvents,
     List<Subtask>? subtasks,
     List<NativeOutputTurn>? turns,
-    bool clearApproval = false,
-    bool clearTerminalPrompt = false,
+    bool clearNativeApproval = false,
   }) {
     return TaskSession(
       id: id ?? this.id,
@@ -194,14 +192,14 @@ class TaskSession {
       shortSummary: shortSummary ?? this.shortSummary,
       summary: summary ?? this.summary,
       result: result ?? this.result,
-      approval: clearApproval ? null : approval ?? this.approval,
-      terminalPrompt:
-          clearTerminalPrompt ? null : terminalPrompt ?? this.terminalPrompt,
+      nativeApproval:
+          clearNativeApproval ? null : nativeApproval ?? this.nativeApproval,
       voiceInputs: voiceInputs ?? this.voiceInputs,
       draftRecord: draftRecord ?? this.draftRecord,
       promptRecord: promptRecord ?? this.promptRecord,
       executionLogs: executionLogs ?? this.executionLogs,
-      approvalRequests: approvalRequests ?? this.approvalRequests,
+      nativeApprovalRequests:
+          nativeApprovalRequests ?? this.nativeApprovalRequests,
       metricEvents: metricEvents ?? this.metricEvents,
       subtasks: subtasks ?? this.subtasks,
       turns: turns ?? this.turns,
@@ -261,15 +259,14 @@ class TaskSession {
       'shortSummary': safeText(shortSummary),
       'summary': summary == null ? null : safeText(summary!),
       'result': result?.toJson(),
-      'approval': approval?.toJson(),
-      'terminalPrompt': terminalPrompt?.toJson(),
+      'nativeApproval': nativeApproval?.toJson(),
       'voiceInputs': voiceInputs.map((input) => input.toJson()).toList(),
       'draftRecord': draftRecord?.toJson(),
       'promptRecord':
           promptRecord == null ? null : safePromptRecord(promptRecord!),
       'executionLogs': executionLogs.map(safeExecutionLog).toList(),
-      'approvalRequests':
-          approvalRequests.map((approval) => approval.toJson()).toList(),
+      'nativeApprovalRequests':
+          nativeApprovalRequests.map((approval) => approval.toJson()).toList(),
       'metricEvents': metricEvents.map(safeMetricEvent).toList(),
       'subtasks': subtasks.map((subtask) => subtask.toJson()).toList(),
       'turns': turns.map(safeTurn).toList(),

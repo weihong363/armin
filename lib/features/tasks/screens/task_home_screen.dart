@@ -9,6 +9,7 @@ import '../../../shared/scroll/armin_scroll_behavior.dart';
 import '../../../shared/theme/armin_theme.dart';
 import '../../history/screens/task_detail_screen.dart';
 import '../../history/screens/task_history_screen.dart';
+import '../../runtime/models/work_state.dart';
 import '../../settings/screens/settings_screen.dart';
 import '../models/task_session.dart';
 import '../widgets/add_context_sheet.dart';
@@ -54,11 +55,15 @@ class _TaskHomeScreenState extends State<TaskHomeScreen> {
   }
 
   Widget _buildHomeBody(BuildContext context, HomeTaskSnapshot snapshot) {
-    final groups = _groupTasks(snapshot.tasks);
-    final attentionEvents = _attentionEventsFor(snapshot.tasks);
-    final activityItems = _activityItemsFor(snapshot.tasks);
-    final completedCount = snapshot.tasks.length;
     final state = AppStateScope.read(context);
+    WorkState? workStateFor(TaskSession task) {
+      return _effectiveWorkStateFor(task, state.workState(task.id));
+    }
+
+    final groups = _groupTasks(snapshot.tasks, workStateFor);
+    final attentionEvents = _attentionEventsFor(snapshot.tasks, workStateFor);
+    final activityItems = _activityItemsFor(snapshot.tasks, workStateFor);
+    final completedCount = snapshot.tasks.length;
     final activeCount = _activeTaskCount(snapshot.tasks);
     final maxActive = state.maxActiveTasks;
     final atLimit = activeCount >= maxActive;
@@ -155,8 +160,7 @@ class _TaskHomeScreenState extends State<TaskHomeScreen> {
                           ),
                           const SizedBox(height: 18),
                           if (snapshot.tasks.isEmpty)
-                            _EmptyInbox(
-                                onCreate: () => _openNewTask(context))
+                            _EmptyInbox(onCreate: () => _openNewTask(context))
                           else ...[
                             _WaitingForYouSection(
                               events: attentionEvents,
@@ -254,7 +258,12 @@ class _TaskHomeScreenState extends State<TaskHomeScreen> {
   }
 
   Future<void> _addContextFromHome(BuildContext context) async {
-    final activeTasks = _activeContextTasks(AppStateScope.read(context).tasks);
+    final state = AppStateScope.read(context);
+    WorkState? workStateFor(TaskSession task) {
+      return _effectiveWorkStateFor(task, state.workState(task.id));
+    }
+
+    final activeTasks = _activeContextTasks(state.tasks, workStateFor);
     if (activeTasks.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('请先创建任务再添加上下文。')),
@@ -274,6 +283,7 @@ class _TaskHomeScreenState extends State<TaskHomeScreen> {
     BuildContext context,
     List<TaskSession> tasks,
   ) {
+    final state = AppStateScope.read(context);
     return showModalBottomSheet<TaskSession>(
       context: context,
       builder: (sheetContext) {
@@ -301,7 +311,12 @@ class _TaskHomeScreenState extends State<TaskHomeScreen> {
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   ),
-                  subtitle: Text(_humanStatusLabel(task.status)),
+                  subtitle: Text(
+                    _humanStatusLabel(
+                      task.status,
+                      _effectiveWorkStateFor(task, state.workState(task.id)),
+                    ),
+                  ),
                   trailing: const Icon(Icons.chevron_right),
                   onTap: () => Navigator.of(sheetContext).pop(task),
                 ),
@@ -327,20 +342,25 @@ class _TaskHomeScreenState extends State<TaskHomeScreen> {
     );
   }
 
-  List<TaskSession> _activeContextTasks(List<TaskSession> tasks) {
+  List<TaskSession> _activeContextTasks(
+    List<TaskSession> tasks,
+    WorkState? Function(TaskSession task) workStateFor,
+  ) {
     return [
       for (final task in tasks)
-        if (_isContextReady(task.status)) task,
+        if (_isContextReady(task.status, workStateFor(task))) task,
     ];
   }
 
-  bool _isContextReady(TaskStatus status) {
-    return switch (status) {
-      TaskStatus.running ||
-      TaskStatus.paused ||
-      TaskStatus.needApproval ||
-      TaskStatus.turnIdle ||
-      TaskStatus.needAttention =>
+  bool _isContextReady(TaskStatus status, [WorkState? workState]) {
+    return switch (_workPhaseFor(workState, status)) {
+      WorkPhase.working ||
+      WorkPhase.quieting ||
+      WorkPhase.needsApproval ||
+      WorkPhase.needsDecision ||
+      WorkPhase.needsInstruction ||
+      WorkPhase.needsReview ||
+      WorkPhase.turnIdle =>
         true,
       _ => false,
     };
@@ -480,13 +500,16 @@ class _TaskHomeScreenState extends State<TaskHomeScreen> {
   }
 }
 
-_TaskInboxGroups _groupTasks(List<TaskSession> tasks) {
+_TaskInboxGroups _groupTasks(
+  List<TaskSession> tasks,
+  WorkState? Function(TaskSession task) workStateFor,
+) {
   final needsAttention = <TaskSession>[];
   final inProgress = <TaskSession>[];
   final recentlyCompleted = <TaskSession>[];
 
   for (final task in tasks) {
-    switch (_inboxGroupFor(task.status)) {
+    switch (_inboxGroupFor(task.status, workStateFor(task))) {
       case _TaskInboxGroup.needsAttention:
         needsAttention.add(task);
       case _TaskInboxGroup.inProgress:
@@ -503,25 +526,24 @@ _TaskInboxGroups _groupTasks(List<TaskSession> tasks) {
   );
 }
 
-// UI-only mapping: collapse existing runtime statuses into inbox sections.
-_TaskInboxGroup _inboxGroupFor(TaskStatus status) {
-  return switch (status) {
-    TaskStatus.needApproval ||
-    TaskStatus.needAttention ||
-    TaskStatus.turnIdle ||
-    TaskStatus.paused ||
-    TaskStatus.observerDetached =>
+// UI-only mapping: collapse runtime work phases into inbox sections.
+_TaskInboxGroup _inboxGroupFor(TaskStatus status, [WorkState? workState]) {
+  return switch (_workPhaseFor(workState, status)) {
+    WorkPhase.needsApproval ||
+    WorkPhase.needsDecision ||
+    WorkPhase.needsInstruction ||
+    WorkPhase.needsReview ||
+    WorkPhase.turnIdle =>
       _TaskInboxGroup.needsAttention,
-    TaskStatus.draft ||
-    TaskStatus.pending ||
-    TaskStatus.running =>
-      _TaskInboxGroup.inProgress,
-    TaskStatus.completed ||
-    TaskStatus.userCompleted ||
-    TaskStatus.failed ||
-    TaskStatus.userFailed ||
-    TaskStatus.stopped ||
-    TaskStatus.runtimeLost =>
+    WorkPhase.idle ||
+    WorkPhase.working ||
+    WorkPhase.quieting =>
+      status == TaskStatus.paused || status == TaskStatus.observerDetached
+          ? _TaskInboxGroup.needsAttention
+          : _TaskInboxGroup.inProgress,
+    WorkPhase.completed ||
+    WorkPhase.failed ||
+    WorkPhase.stopped =>
       _TaskInboxGroup.recentlyCompleted,
   };
 }
@@ -582,6 +604,7 @@ class _ActivityItem {
     required this.description,
     required this.icon,
     required this.color,
+    required this.needsAttention,
   });
 
   final TaskSession task;
@@ -589,12 +612,17 @@ class _ActivityItem {
   final String description;
   final IconData icon;
   final Color color;
+  final bool needsAttention;
 }
 
-List<_AttentionEvent> _attentionEventsFor(List<TaskSession> tasks) {
+List<_AttentionEvent> _attentionEventsFor(
+  List<TaskSession> tasks,
+  WorkState? Function(TaskSession task) workStateFor,
+) {
   final events = [
     for (final task in tasks)
-      if (_attentionEventFor(task) != null) _attentionEventFor(task)!,
+      if (_attentionEventFor(task, workStateFor(task)) != null)
+        _attentionEventFor(task, workStateFor(task))!,
   ];
   events.sort((a, b) {
     final priority = a.priority.compareTo(b.priority);
@@ -606,33 +634,39 @@ List<_AttentionEvent> _attentionEventsFor(List<TaskSession> tasks) {
   return events;
 }
 
-_AttentionEvent? _attentionEventFor(TaskSession task) {
-  return switch (task.status) {
-    TaskStatus.needApproval => _AttentionEvent(
+_AttentionEvent? _attentionEventFor(TaskSession task, [WorkState? workState]) {
+  return switch (_workPhaseFor(workState, task.status)) {
+    WorkPhase.needsApproval => _AttentionEvent(
         task: task,
-        reason: '这个任务需要你做决定',
+        reason: _workStateReason(workState, '这个任务需要你做决定'),
         primaryAction: '查看',
         priority: 0,
       ),
-    TaskStatus.turnIdle => _AttentionEvent(
+    WorkPhase.needsDecision => _AttentionEvent(
         task: task,
-        reason: '等待你的指示',
+        reason: _workStateReason(workState, '这个任务需要你做决定'),
+        primaryAction: '查看',
+        priority: 1,
+      ),
+    WorkPhase.turnIdle || WorkPhase.needsInstruction => _AttentionEvent(
+        task: task,
+        reason: _workStateReason(workState, '等待你的指示'),
         primaryAction: '继续',
         priority: 2,
       ),
-    TaskStatus.needAttention => _AttentionEvent(
+    WorkPhase.needsReview => _AttentionEvent(
         task: task,
-        reason: _needAttentionReason(task),
-        primaryAction: 'Review',
+        reason: _workStateReason(workState, _needAttentionReason(task)),
+        primaryAction: '查看',
         priority: 1,
       ),
-    TaskStatus.failed || TaskStatus.userFailed => _AttentionEvent(
+    WorkPhase.failed => _AttentionEvent(
         task: task,
         reason: '继续之前请先检查问题',
         primaryAction: '检查问题',
         priority: 3,
       ),
-    TaskStatus.paused => _AttentionEvent(
+    WorkPhase.quieting when task.status == TaskStatus.paused => _AttentionEvent(
         task: task,
         reason: '已暂停，等待你处理',
         primaryAction: '恢复',
@@ -643,22 +677,26 @@ _AttentionEvent? _attentionEventFor(TaskSession task) {
 }
 
 String _needAttentionReason(TaskSession task) {
-  if (task.terminalPrompt != null) {
+  if (task.nativeApproval != null) {
     return '等待你的选择';
   }
   return '这个任务需要你关注';
 }
 
-List<_ActivityItem> _activityItemsFor(List<TaskSession> tasks) {
+List<_ActivityItem> _activityItemsFor(
+  List<TaskSession> tasks,
+  WorkState? Function(TaskSession task) workStateFor,
+) {
   final items = [
     for (final task in tasks)
-      if (_activityItemFor(task) != null) _activityItemFor(task)!,
+      if (_activityItemFor(task, workStateFor(task)) != null)
+        _activityItemFor(task, workStateFor(task))!,
   ]..sort((a, b) => b.task.updatedAt.compareTo(a.task.updatedAt));
   return items;
 }
 
-_ActivityItem? _activityItemFor(TaskSession task) {
-  final attention = _attentionEventFor(task);
+_ActivityItem? _activityItemFor(TaskSession task, [WorkState? workState]) {
+  final attention = _attentionEventFor(task, workState);
   if (attention != null) {
     return _ActivityItem(
       task: task,
@@ -666,43 +704,51 @@ _ActivityItem? _activityItemFor(TaskSession task) {
       description: attention.reason,
       icon: Icons.priority_high_rounded,
       color: Colors.orange.shade800,
+      needsAttention: true,
     );
   }
-  return switch (task.status) {
-    TaskStatus.completed || TaskStatus.userCompleted => _ActivityItem(
+  return switch (_workPhaseFor(workState, task.status)) {
+    WorkPhase.completed => _ActivityItem(
         task: task,
         title: '任务已完成',
         description: '可以查看了',
         icon: Icons.task_alt_outlined,
         color: Colors.green.shade700,
+        needsAttention: false,
       ),
-    TaskStatus.running => _ActivityItem(
+    WorkPhase.working => _ActivityItem(
         task: task,
         title: task.turns.length > 1 ? '任务继续' : '任务已恢复',
         description: '工作正在推进',
         icon: Icons.play_circle_outline,
         color: ArminTheme.primary,
+        needsAttention: false,
       ),
-    TaskStatus.observerDetached => _ActivityItem(
+    WorkPhase.quieting when task.status == TaskStatus.observerDetached =>
+      _ActivityItem(
         task: task,
         title: '更新已暂停',
         description: '重新连接以继续追踪进度',
         icon: Icons.wifi_off_outlined,
         color: Colors.blueGrey.shade700,
+        needsAttention: false,
       ),
-    TaskStatus.runtimeLost => _ActivityItem(
+    WorkPhase.quieting when task.status == TaskStatus.runtimeLost =>
+      _ActivityItem(
         task: task,
         title: '连接已暂停',
         description: '远端会话已不可用',
         icon: Icons.link_off_outlined,
         color: Colors.blueGrey.shade700,
+        needsAttention: false,
       ),
-    TaskStatus.stopped => _ActivityItem(
+    WorkPhase.stopped => _ActivityItem(
         task: task,
         title: '任务已停止',
         description: '需要时可查看详情',
         icon: Icons.stop_circle_outlined,
         color: Colors.grey.shade700,
+        needsAttention: false,
       ),
     _ => null,
   };
@@ -1128,6 +1174,7 @@ class _TaskListScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final state = AppStateScope.read(context);
     return Scaffold(
       appBar: AppBar(title: Text(title)),
       body: SafeArea(
@@ -1137,6 +1184,10 @@ class _TaskListScreen extends StatelessWidget {
           separatorBuilder: (_, __) => const SizedBox(height: 10),
           itemBuilder: (context, index) {
             final task = tasks[index];
+            final workState = _effectiveWorkStateFor(
+              task,
+              state.workState(task.id),
+            );
             return Card(
               margin: EdgeInsets.zero,
               child: ListTile(
@@ -1145,7 +1196,7 @@ class _TaskListScreen extends StatelessWidget {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                 ),
-                subtitle: Text(_humanStatusLabel(task.status)),
+                subtitle: Text(_humanStatusLabel(task.status, workState)),
                 trailing: const Icon(Icons.chevron_right),
                 onTap: () => onOpenTask(context, task.id),
               ),
@@ -1168,8 +1219,7 @@ class _WorkActivityFeedScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final attentionCount =
-        items.where((item) => _attentionEventFor(item.task) != null).length;
+    final attentionCount = items.where((item) => item.needsAttention).length;
     return Scaffold(
       appBar: AppBar(
         title: Text('工作动态 ($attentionCount)'),
@@ -1273,19 +1323,85 @@ class _ActivityFeedItem extends StatelessWidget {
   }
 }
 
-String _humanStatusLabel(TaskStatus status) {
+WorkPhase _workPhaseFor(WorkState? workState, TaskStatus fallbackStatus) {
+  if (workState != null) {
+    return workState.phase;
+  }
+  return switch (fallbackStatus) {
+    TaskStatus.draft || TaskStatus.pending => WorkPhase.idle,
+    TaskStatus.running => WorkPhase.working,
+    TaskStatus.paused => WorkPhase.quieting,
+    TaskStatus.needApproval => WorkPhase.needsApproval,
+    TaskStatus.turnIdle => WorkPhase.turnIdle,
+    TaskStatus.needAttention => WorkPhase.needsInstruction,
+    TaskStatus.observerDetached || TaskStatus.runtimeLost => WorkPhase.quieting,
+    TaskStatus.userCompleted || TaskStatus.completed => WorkPhase.completed,
+    TaskStatus.userFailed || TaskStatus.failed => WorkPhase.failed,
+    TaskStatus.stopped => WorkPhase.stopped,
+  };
+}
+
+WorkState? _effectiveWorkStateFor(TaskSession task, WorkState? workState) {
+  if (workState == null) {
+    return null;
+  }
+  final phase = workState.phase;
+  if (phase == WorkPhase.idle &&
+      task.status != TaskStatus.draft &&
+      task.status != TaskStatus.pending) {
+    return null;
+  }
+  if (phase == WorkPhase.working &&
+      task.status != TaskStatus.running &&
+      task.status != TaskStatus.pending) {
+    return null;
+  }
+  if ((phase == WorkPhase.completed ||
+          phase == WorkPhase.failed ||
+          phase == WorkPhase.stopped) &&
+      !_isTaskTerminal(task.status)) {
+    return null;
+  }
+  return workState;
+}
+
+bool _isTaskTerminal(TaskStatus status) {
   return switch (status) {
-    TaskStatus.needApproval => '需要你做决定',
-    TaskStatus.needAttention => '需要你关注',
-    TaskStatus.turnIdle => '等待你的指示',
-    TaskStatus.paused => '已暂停',
-    TaskStatus.observerDetached => '更新已暂停',
-    TaskStatus.runtimeLost => '连接已暂停',
-    TaskStatus.running => '工作中',
-    TaskStatus.pending || TaskStatus.draft => '排队中',
-    TaskStatus.completed || TaskStatus.userCompleted => '可查看',
-    TaskStatus.failed || TaskStatus.userFailed => '需要查看',
-    TaskStatus.stopped => '已停止',
+    TaskStatus.completed ||
+    TaskStatus.userCompleted ||
+    TaskStatus.failed ||
+    TaskStatus.userFailed ||
+    TaskStatus.stopped ||
+    TaskStatus.runtimeLost =>
+      true,
+    _ => false,
+  };
+}
+
+String _workStateReason(WorkState? workState, String fallback) {
+  final text = workState?.statusText.trim() ?? '';
+  if (text.isEmpty) {
+    return fallback;
+  }
+  return text.replaceAll('\n', ' · ');
+}
+
+String _humanStatusLabel(TaskStatus status, [WorkState? workState]) {
+  final headline = workState?.headline.trim();
+  if (headline != null && headline.isNotEmpty) {
+    return headline;
+  }
+  return switch (_workPhaseFor(workState, status)) {
+    WorkPhase.idle => '排队中',
+    WorkPhase.working => '工作中',
+    WorkPhase.quieting => status == TaskStatus.runtimeLost ? '连接已暂停' : '更新已暂停',
+    WorkPhase.turnIdle => '等待你的指示',
+    WorkPhase.needsApproval || WorkPhase.needsDecision => '需要你做决定',
+    WorkPhase.needsReview => '需要查看',
+    WorkPhase.needsInstruction => '需要你的指令',
+    WorkPhase.completed => '可查看',
+    WorkPhase.failed => '需要查看',
+    WorkPhase.stopped => '已停止',
   };
 }
 

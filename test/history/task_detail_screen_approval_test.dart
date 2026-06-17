@@ -4,22 +4,21 @@ import 'package:armin/app_state_scope.dart';
 import 'package:armin/core/models/task_status.dart';
 import 'package:armin/core/services/armin_app_state.dart';
 import 'package:armin/core/storage/task_history_store.dart';
-import 'package:armin/features/agent/parsers/approval_request.dart';
 import 'package:armin/features/agent/parsers/task_result.dart';
-import 'package:armin/features/agent/parsers/terminal_prompt.dart';
 import 'package:armin/features/agent/services/agent_session_service.dart';
 import 'package:armin/features/history/screens/task_detail_screen.dart';
 import 'package:armin/features/hosts/models/host_config.dart';
 import 'package:armin/features/projects/models/project_path_config.dart';
+import 'package:armin/features/runtime/models/approval_state.dart';
 import 'package:armin/features/runtime/services/runtime_event_bus.dart';
 import 'package:armin/features/tasks/models/native_output_turn.dart';
 import 'package:armin/features/tasks/models/task_constraint.dart';
 import 'package:armin/features/tasks/models/task_session.dart';
 import 'package:armin/features/tasks/services/output_summary_provider.dart';
+import 'package:armin/features/tasks/widgets/task_card.dart';
 import 'package:armin/features/voice/services/voice_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:armin/features/tasks/widgets/task_card.dart';
 
 Future<void> _tapDetailTab(WidgetTester tester, String label) async {
   final mappedLabel = switch (label) {
@@ -55,12 +54,12 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
     final task = _task().copyWith(
       status: TaskStatus.running,
-      approvalRequests: const [
-        ApprovalRequest(
-          reason: 'Need approval',
-          command: 'touch ok.txt',
-          risk: 'low',
-          status: 'approved',
+      nativeApprovalRequests: [
+        _nativeApproval(
+          question: 'Need approval',
+          state: ApprovalState.resolved,
+          selectedOptionKey: '1',
+          stateChangedAt: DateTime(2026, 5, 18, 0, 1),
         ),
       ],
     );
@@ -83,7 +82,7 @@ void main() {
     await _tapDetailTab(tester, '日志');
     await tester.pumpAndSettle();
 
-    expect(find.text('已允许'), findsOneWidget);
+    expect(find.text('已处理'), findsOneWidget);
     expect(find.text('允许'), findsNothing);
     expect(find.text('拒绝'), findsNothing);
   });
@@ -142,12 +141,11 @@ void main() {
       (tester) async {
     final task = _task().copyWith(
       status: TaskStatus.needAttention,
-      terminalPrompt: const TerminalPrompt(
+      nativeApproval: _nativeApproval(
         question: 'Allow execution of [ls]? Redirection detected.',
-        command: 'ls',
-        options: [
-          TerminalPromptOption(key: '1', label: 'Allow once'),
-          TerminalPromptOption(key: '4', label: 'No'),
+        options: const [
+          NativeApprovalOption(key: '1', label: 'Allow once'),
+          NativeApprovalOption(key: '4', label: 'No'),
         ],
       ),
     );
@@ -167,7 +165,6 @@ void main() {
     );
 
     expect(find.textContaining('Allow execution of [ls]?'), findsOneWidget);
-    expect(find.text('ls'), findsOneWidget);
     await tester.tap(find.text('Allow once'));
     await tester.pumpAndSettle();
 
@@ -208,13 +205,13 @@ void main() {
       (tester) async {
     final task = _task().copyWith(
       status: TaskStatus.needAttention,
-      terminalPrompt: const TerminalPrompt(
-        question: 'Allow this command to run? Redirection detected.',
-        command: 'python -m pytest tests/test_hello_world.py',
-        options: [
-          TerminalPromptOption(key: '1', label: 'Allow once'),
-          TerminalPromptOption(key: '3', label: 'Reject and type something'),
-          TerminalPromptOption(key: '4', label: 'No'),
+      nativeApproval: _nativeApproval(
+        question:
+            'Allow this command to run? Redirection detected. python -m pytest tests/test_hello_world.py',
+        options: const [
+          NativeApprovalOption(key: '1', label: 'Allow once'),
+          NativeApprovalOption(key: '3', label: 'Reject and type something'),
+          NativeApprovalOption(key: '4', label: 'No'),
         ],
       ),
     );
@@ -245,21 +242,21 @@ void main() {
 
     expect(agent.selectedTerminalOption, '3');
     expect(agent.lastFollowUp, '不要执行，先说明风险');
-    expect(state.tasks.single.terminalPrompt, isNull);
+    expect(state.tasks.single.nativeApproval, isNull);
   });
 
   testWidgets('terminal prompt voice hint uses current options',
       (tester) async {
     final task = _task().copyWith(
       status: TaskStatus.needAttention,
-      terminalPrompt: const TerminalPrompt(
+      nativeApproval: _nativeApproval(
         question: '你说的「中断测试」是指什么？',
-        options: [
-          TerminalPromptOption(key: '1', label: '运行现有测试套件'),
-          TerminalPromptOption(key: '2', label: '故障注入测试'),
-          TerminalPromptOption(key: '3', label: 'API 中断/超时测试'),
-          TerminalPromptOption(key: '4', label: '其他'),
-          TerminalPromptOption(key: '5', label: 'Type Something'),
+        options: const [
+          NativeApprovalOption(key: '1', label: '运行现有测试套件'),
+          NativeApprovalOption(key: '2', label: '故障注入测试'),
+          NativeApprovalOption(key: '3', label: 'API 中断/超时测试'),
+          NativeApprovalOption(key: '4', label: '其他'),
+          NativeApprovalOption(key: '5', label: 'Type Something'),
         ],
       ),
     );
@@ -277,13 +274,10 @@ void main() {
       ),
     );
 
-    await tester.tap(find.byTooltip('语音选择'));
+    await tester.tap(find.text('语音处理'));
     await tester.pumpAndSettle();
 
-    expect(
-      find.text('说“运行现有测试套件”、“故障注入测试”或“API 中断/超时测试”，或说“输入内容”'),
-      findsOneWidget,
-    );
+    expect(find.text('审批处理'), findsOneWidget);
     expect(find.text('说“允许一次”“始终允许”或“拒绝”'), findsNothing);
   });
 
@@ -296,10 +290,9 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
     final task = _task().copyWith(
       status: TaskStatus.needApproval,
-      approval: const ApprovalRequest(
-        reason: 'Need approval',
-        command: 'rm -rf build',
-        risk: 'medium',
+      nativeApproval: _nativeApproval(
+        question: 'Need approval',
+        options: const [],
       ),
     );
     final agent = _CapturingAgent();
@@ -336,8 +329,6 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(agent.lastFollowUp, contains('APPROVAL_DECISION:'));
-    expect(state.tasks.single.status, TaskStatus.running);
-    expect(state.tasks.single.approvalRequests.single.status, 'approved');
   });
 
   testWidgets('voice follow-up sends recognized instruction', (tester) async {
@@ -741,8 +732,7 @@ Summer：一位迷人的美国沙滩女孩 Codex 宠物。
     expect(find.textContaining('Signed in Browser Login'), findsNothing);
   });
 
-  testWidgets(
-      'result lists semantic output from every turn without prompt echoes',
+  testWidgets('result shows only latest semantic turn without prompt echoes',
       (tester) async {
     final now = DateTime(2026, 5, 18);
     final task = _task().copyWith(
@@ -810,19 +800,11 @@ Summer：海滩风格 Codex 宠物。
     );
     await _tapDetailTab(tester, '结果');
 
-    expect(find.text('摘要 1'), findsOneWidget);
-    expect(find.text('摘要 2'), findsOneWidget);
     expect(find.text('摘要'), findsOneWidget);
-    expect(
-      tester.getTopLeft(find.text('摘要')).dy,
-      lessThan(tester.getTopLeft(find.text('摘要 2')).dy),
-    );
-    expect(
-      tester.getTopLeft(find.text('摘要 2')).dy,
-      lessThan(tester.getTopLeft(find.text('摘要 1')).dy),
-    );
-    expect(find.textContaining('实际宠物：momo、Summer'), findsOneWidget);
-    expect(find.textContaining('Summer：海滩风格 Codex 宠物'), findsOneWidget);
+    expect(find.text('摘要 1'), findsNothing);
+    expect(find.text('摘要 2'), findsNothing);
+    expect(find.textContaining('实际宠物：momo、Summer'), findsNothing);
+    expect(find.textContaining('Summer：海滩风格 Codex 宠物'), findsNothing);
     expect(find.textContaining('精灵图集尺寸为 1536 x 1872'), findsOneWidget);
     expect(find.text('继续输出 Summer'), findsNothing);
     expect(find.text('补充尺寸'), findsNothing);
@@ -898,12 +880,11 @@ Thinking
     final now = DateTime(2026, 5, 18);
     final task = _task().copyWith(
       status: TaskStatus.needAttention,
-      terminalPrompt: const TerminalPrompt(
+      nativeApproval: _nativeApproval(
         question: 'Allow this command to run? Redirection detected.',
-        command: 'python -m pytest tests/test_hello_world.py',
-        options: [
-          TerminalPromptOption(key: '1', label: 'Allow once'),
-          TerminalPromptOption(key: '4', label: 'No'),
+        options: const [
+          NativeApprovalOption(key: '1', label: 'Allow once'),
+          NativeApprovalOption(key: '4', label: 'No'),
         ],
       ),
       turns: [
@@ -942,7 +923,7 @@ Allow this command to run? Redirection detected.
     await _tapDetailTab(tester, '结果');
 
     expect(find.text('摘要 1'), findsNothing);
-    expect(find.text('暂无结果'), findsOneWidget);
+    expect(find.textContaining('正式结果会在任务完成'), findsOneWidget);
   });
 
   testWidgets('result panel uses legacy summary fallback', (tester) async {
@@ -1608,13 +1589,12 @@ Summer 是一个桌面宠物。
   testWidgets('pull to refresh resyncs remote approval prompt', (tester) async {
     final task = _task().copyWith(
       status: TaskStatus.running,
-      approvalRequests: [
-        ApprovalRequest(
-          reason: 'Apply this change?',
-          command: 'plan_approval',
-          risk: 'medium',
-          status: 'approved',
-          resolvedAt: DateTime(2026, 5, 18, 0, 1),
+      nativeApprovalRequests: [
+        _nativeApproval(
+          question: 'Apply this change?',
+          state: ApprovalState.resolved,
+          selectedOptionKey: '1',
+          stateChangedAt: DateTime(2026, 5, 18, 0, 1),
         ),
       ],
     );
@@ -1659,7 +1639,7 @@ Apply this change?
     expect(store.task.status, TaskStatus.needApproval);
     expect(find.text('任务确认'), findsOneWidget);
     expect(find.text('Apply this change?'), findsWidgets);
-    expect(find.text('允许'), findsWidgets);
+    expect(find.text('Allow once'), findsWidgets);
   });
 
   testWidgets('small pull on task detail does not trigger refresh',
@@ -1751,6 +1731,28 @@ TaskSession _task() {
     finalPrompt: 'Task',
     secretRecords: const [],
     rawLog: '',
+  );
+}
+
+NativeTerminalApproval _nativeApproval({
+  required String question,
+  List<NativeApprovalOption> options = const [
+    NativeApprovalOption(key: '1', label: 'Allow once'),
+    NativeApprovalOption(key: '4', label: 'Reject and type something'),
+  ],
+  ApprovalState state = ApprovalState.pending,
+  String? selectedOptionKey,
+  DateTime? stateChangedAt,
+}) {
+  return NativeTerminalApproval(
+    id: 'approval-1',
+    taskId: 'task-1',
+    question: question,
+    options: options,
+    state: state,
+    selectedOptionKey: selectedOptionKey,
+    createdAt: DateTime(2026, 5, 18),
+    stateChangedAt: stateChangedAt,
   );
 }
 

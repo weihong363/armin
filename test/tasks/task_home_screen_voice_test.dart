@@ -165,7 +165,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.enterText(find.byType(TextField), 'Keep changes minimal.');
     await tester.tap(find.text('发送'));
-    await tester.pumpAndSettle();
+    await tester.pump(const Duration(milliseconds: 300));
 
     final updatedTask = state.tasks.firstWhere((task) => task.id == 'task-1');
     expect(updatedTask.turns.last.userInput, 'Keep changes minimal.');

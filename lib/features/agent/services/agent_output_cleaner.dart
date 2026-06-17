@@ -272,6 +272,11 @@ class AgentOutputCleaner {
         lower.startsWith('press enter to continue') ||
         lower.startsWith('run npm install') ||
         lower.startsWith('see full release notes') ||
+        lower.contains('credits exhausted') ||
+        lower.contains('use /usage for details') ||
+        lower.contains('use /upgrade for more') ||
+        lower.contains('usage limit') ||
+        lower.contains('quota exhausted') ||
         lower == 'thinking' ||
         lower == 'thinking...' ||
         lower == 'thinking…' ||

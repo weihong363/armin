@@ -204,6 +204,34 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
             return;
           }
           if (_isRuntimeLimitReached(streamOutput)) {
+            final finalRawOutput =
+                output.rawOutputForLatestUpdate(fallback: '');
+            final promptState = output.promptState(
+              terminalPromptParser: _terminalPromptParser,
+              candidateOutput: finalRawOutput,
+            );
+            final terminalPrompt = promptState.terminalPrompt;
+            final snapshot = observer.observeSettled(observedOutput);
+            final hasSettledState = snapshot.turnIdle ||
+                snapshot.needsAttention ||
+                terminalPrompt != null;
+            if (hasSettledState) {
+              controller.add(
+                AgentExecutionUpdate(
+                  rawOutput: '',
+                  cleanedOutput: snapshot.cleanedOutput,
+                  observerState: snapshot.state,
+                  turnIdle: snapshot.turnIdle,
+                  runtimeLost: snapshot.runtimeLost,
+                  needsAttention:
+                      terminalPrompt != null || snapshot.needsAttention,
+                  nativeApproval: _nativeApprovalFromPrompt(terminalPrompt),
+                  done: true,
+                ),
+              );
+              await controller.close();
+              return;
+            }
             controller.add(
               AgentExecutionUpdate(
                 rawOutput: '',

@@ -888,43 +888,133 @@ class _RunningSummarySection extends StatelessWidget {
     if (tasks.isEmpty) {
       return const SizedBox.shrink();
     }
-    final noun = tasks.length == 1 ? '项任务正在运行' : '项任务正在运行';
+    final visibleTasks =
+        tasks.length == 1 ? tasks : tasks.take(2).toList(growable: false);
+    final useGrid = tasks.length > 1;
     return _HomeSection(
       title: '运行中',
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: ArminTheme.border),
-        ),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('${tasks.length} $noun'),
-              const SizedBox(height: 8),
-              for (final task in tasks.take(2))
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 4),
-                  child: InkWell(
-                    onTap: () => onOpenTask(context, task.id),
-                    child: Text(
-                      '- ${_taskTitle(task)}',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context).textTheme.bodySmall,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (useGrid)
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                for (final task in visibleTasks) ...[
+                  Expanded(
+                    child: _RunningTaskCard(
+                      task: task,
+                      compact: true,
+                      onOpen: () => onOpenTask(context, task.id),
                     ),
                   ),
-                ),
-              TextButton(
-                onPressed: onViewRunning,
-                child: const Text('查看运行中'),
+                  if (task != visibleTasks.last) const SizedBox(width: 10),
+                ],
+              ],
+            )
+          else
+            _RunningTaskCard(
+              task: visibleTasks.first,
+              compact: false,
+              onOpen: () => onOpenTask(context, visibleTasks.first.id),
+            ),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton(
+              onPressed: onViewRunning,
+              child: Text(
+                tasks.length > visibleTasks.length
+                    ? '查看全部 ${tasks.length} 项运行中'
+                    : '查看运行中',
               ),
-            ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _RunningTaskCard extends StatelessWidget {
+  const _RunningTaskCard({
+    required this.task,
+    required this.compact,
+    required this.onOpen,
+  });
+
+  final TaskSession task;
+  final bool compact;
+  final VoidCallback onOpen;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      color: Colors.white,
+      margin: const EdgeInsets.only(bottom: 8),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: const BorderSide(color: ArminTheme.border),
+      ),
+      child: InkWell(
+        onTap: onOpen,
+        borderRadius: BorderRadius.circular(12),
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            minHeight: compact ? 104 : 76,
+          ),
+          child: Padding(
+            padding: EdgeInsets.fromLTRB(
+              compact ? 12 : 14,
+              12,
+              compact ? 12 : 14,
+              12,
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  _taskTitle(task),
+                  maxLines: compact ? 2 : 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                ),
+                const SizedBox(height: 10),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const _RunningDot(),
+                    const SizedBox(width: 6),
+                    Text(
+                      '正在执行',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: ArminTheme.ink.withValues(alpha: 0.66),
+                          ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
           ),
         ),
       ),
+    );
+  }
+}
+
+class _RunningDot extends StatelessWidget {
+  const _RunningDot();
+
+  @override
+  Widget build(BuildContext context) {
+    return const DecoratedBox(
+      decoration: BoxDecoration(
+        color: ArminTheme.primary,
+        shape: BoxShape.circle,
+      ),
+      child: SizedBox(width: 8, height: 8),
     );
   }
 }

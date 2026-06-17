@@ -1786,10 +1786,10 @@ Apply this decision to the pending approval request.
 
     if (update.turnIdle || update.done) {
       final idleAt = DateTime.now();
-      final cleanedOutput = update.cleanedOutput?.trim();
-      final summary = cleanedOutput != null && cleanedOutput.isNotEmpty
-          ? cleanedOutput
-          : const AgentOutputCleaner().clean(update.rawOutput).trim();
+      final outputForSummary = update.cleanedOutput?.trim().isNotEmpty == true
+          ? update.cleanedOutput!
+          : update.rawOutput;
+      final summary = const AgentOutputCleaner().clean(outputForSummary).trim();
       final shouldWriteResult = !update.needsAttention && summary.isNotEmpty;
       return taskWithTurn.copyWith(
         status: update.needsAttention

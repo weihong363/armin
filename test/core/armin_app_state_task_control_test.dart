@@ -835,7 +835,7 @@ Thinking
     expect(store.task!.status, TaskStatus.turnIdle);
     expect(store.task!.turns.last.status, NativeOutputTurnStatus.turnIdle);
     expect(store.task!.summary, contains('FlipCountdown 已完全移除'));
-    expect(store.task!.summary, contains('Credits exhausted'));
+    expect(store.task!.summary, isNot(contains('Credits exhausted')));
     expect(agent.lastExecuteRequest, isNull);
     expect(agent.events, contains('captureLog'));
   });
@@ -1193,7 +1193,7 @@ Thinking
     expect(store.task!.status, TaskStatus.turnIdle);
     expect(store.task!.turns.single.status, NativeOutputTurnStatus.turnIdle);
     expect(store.task!.summary, contains('12 个测试全部通过'));
-    expect(store.task!.summary, contains('Credits exhausted'));
+    expect(store.task!.summary, isNot(contains('Credits exhausted')));
   });
 
   test('turn idle output is spoken once for repeated same summary', () async {

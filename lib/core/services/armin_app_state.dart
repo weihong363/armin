@@ -4,9 +4,6 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/scheduler.dart';
 
 import '../../features/agent/models/agent_approval_config.dart';
-import '../../features/agent/parsers/approval_parser.dart';
-import '../../features/agent/parsers/approval_request.dart';
-import '../../features/agent/parsers/task_result.dart';
 import '../../features/agent/parsers/terminal_prompt.dart';
 import '../../features/agent/parsers/terminal_prompt_parser.dart';
 import '../../features/agent/services/agent_output_cleaner.dart';
@@ -823,13 +820,11 @@ class ArminAppState extends ChangeNotifier {
     TaskSession task,
     String snapshot,
   ) async {
-    final approval = const ApprovalParser().parse(snapshot);
     final terminalPrompt = const TerminalPromptParser().parse(snapshot);
-    final hasAttention = (approval != null || terminalPrompt != null) &&
-        !_hasNewerWorkOutputAfterAttention(snapshot, approval, terminalPrompt);
+    final hasAttention = terminalPrompt != null &&
+        !_hasNewerWorkOutputAfterAttention(snapshot, terminalPrompt);
     final nativeApproval = hasAttention
-        ? _nativeApprovalFromLegacyUpdate(
-            approval,
+        ? _nativeApprovalFromTerminalPrompt(
             terminalPrompt,
             task.id,
             DateTime.now(),
@@ -851,12 +846,9 @@ class ArminAppState extends ChangeNotifier {
 
   bool _hasNewerWorkOutputAfterAttention(
     String snapshot,
-    ApprovalRequest? approval,
     TerminalPrompt? terminalPrompt,
   ) {
-    final anchor = terminalPrompt?.question.trim().isNotEmpty == true
-        ? terminalPrompt!.question.trim()
-        : approval?.reason.trim() ?? '';
+    final anchor = terminalPrompt?.question.trim() ?? '';
     if (anchor.isEmpty) {
       return false;
     }
@@ -1589,7 +1581,6 @@ Apply this decision to the pending approval request.
   /// Returns true if processing [update] would change the task's status.
   bool _updateWouldChangeStatus(TaskSession task, AgentExecutionUpdate update) {
     if (update.nativeApproval != null) return true;
-    if (update.result != null) return true;
     if (update.needsAttention) return true;
     if (update.turnIdle || update.done) return true;
     if (update.runtimeLost) return true;
@@ -1757,29 +1748,6 @@ Apply this decision to the pending approval request.
       );
     }
 
-    if (update.result != null) {
-      final observedAt = DateTime.now();
-      final resultStatus = update.result!.status;
-      final needsAttention = resultStatus != 'success';
-      return taskWithTurn.copyWith(
-        status: needsAttention ? TaskStatus.needAttention : TaskStatus.turnIdle,
-        rawLog: rawLog,
-        result: update.result,
-        updatedAt: observedAt,
-        shortSummary: update.result!.summary,
-        summary: update.result!.summary,
-        executionLogs: executionLogs,
-        metricEvents: _metricEventsWithCreated(
-          taskWithTurn.metricEvents,
-          taskId: task.id,
-          eventType: needsAttention ? 'need_attention' : 'turn_idle',
-          payloadJson: '{"source":"legacy_result","status":"$resultStatus"}',
-          now: observedAt,
-        ),
-        clearNativeApproval: true,
-      );
-    }
-
     if (update.runtimeLost) {
       final failedAt = DateTime.now();
       final runtimeLostSummary = _runtimeLostSummary(update.cleanedOutput);
@@ -1804,23 +1772,16 @@ Apply this decision to the pending approval request.
 
     if (update.turnIdle || update.done) {
       final idleAt = DateTime.now();
-      final summary = update.cleanedOutput?.trim() ?? '';
+      final cleanedOutput = update.cleanedOutput?.trim();
+      final summary = cleanedOutput != null && cleanedOutput.isNotEmpty
+          ? cleanedOutput
+          : const AgentOutputCleaner().clean(update.rawOutput).trim();
       final shouldWriteResult = !update.needsAttention && summary.isNotEmpty;
       return taskWithTurn.copyWith(
         status: update.needsAttention
             ? TaskStatus.needAttention
             : TaskStatus.turnIdle,
         rawLog: rawLog,
-        result: shouldWriteResult
-            ? TaskResult(
-                status: 'turn_idle',
-                summary: summary,
-                changedFiles: const [],
-                validation: const [],
-                risks: const [],
-                nextActions: const [],
-              )
-            : task.result,
         updatedAt: idleAt,
         shortSummary: update.needsAttention
             ? 'Agent 可能需要用户处理'
@@ -2091,7 +2052,7 @@ Apply this decision to the pending approval request.
     if (update.nativeApproval != null || update.needsAttention) {
       return NativeOutputTurnStatus.needAttention;
     }
-    if (update.turnIdle || update.done || update.result != null) {
+    if (update.turnIdle || update.done) {
       return NativeOutputTurnStatus.turnIdle;
     }
     return null;
@@ -2101,41 +2062,29 @@ Apply this decision to the pending approval request.
     return task.nativeApproval;
   }
 
-  NativeTerminalApproval? _nativeApprovalFromLegacyUpdate(
-    ApprovalRequest? approval,
+  NativeTerminalApproval? _nativeApprovalFromTerminalPrompt(
     TerminalPrompt? terminalPrompt,
     String taskId,
     DateTime now,
   ) {
-    final question = terminalPrompt?.question.trim().isNotEmpty == true
-        ? terminalPrompt!.question.trim()
-        : approval?.reason.trim() ?? '';
+    final question = terminalPrompt?.question.trim() ?? '';
     if (question.isEmpty) {
       return null;
     }
     return NativeTerminalApproval(
-      id: approval?.id.trim().isNotEmpty == true
-          ? approval!.id
-          : 'approval-${question.hashCode}',
-      taskId: approval?.taskId.trim().isNotEmpty == true
-          ? approval!.taskId
-          : taskId,
+      id: 'approval-${question.hashCode}',
+      taskId: taskId,
       question: question,
-      options: terminalPrompt?.options
-              .map(
-                (option) => NativeApprovalOption(
-                  key: option.key,
-                  label: option.label,
-                ),
-              )
-              .toList(growable: false) ??
-          const [
-            NativeApprovalOption(key: 'approve', label: 'Approve'),
-            NativeApprovalOption(key: 'reject', label: 'Reject'),
-          ],
-      state: approval?.approvalState ?? ApprovalState.pending,
-      createdAt: approval?.createdAt ?? now,
-      stateChangedAt: approval?.resolvedAt,
+      options: terminalPrompt!.options
+          .map(
+            (option) => NativeApprovalOption(
+              key: option.key,
+              label: option.label,
+            ),
+          )
+          .toList(growable: false),
+      state: ApprovalState.pending,
+      createdAt: now,
     );
   }
 

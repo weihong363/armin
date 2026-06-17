@@ -4,7 +4,6 @@ import 'package:armin/core/models/task_status.dart';
 import 'package:armin/core/services/armin_app_state.dart';
 import 'package:armin/core/storage/task_history_store.dart';
 import 'package:armin/features/agent/models/agent_approval_config.dart';
-import 'package:armin/features/agent/parsers/task_result.dart';
 import 'package:armin/features/agent/services/agent_session_service.dart';
 import 'package:armin/features/hosts/models/host_config.dart';
 import 'package:armin/features/projects/models/project_path_config.dart';
@@ -680,7 +679,6 @@ world
     expect(
         agent.lastExecuteRequest?.tmuxSessionName, task.host.tmuxSessionName);
     expect(store.task!.turns.last.cleanedOutput, contains('world'));
-    expect(store.task!.result, isNull);
     expect(agent.events, contains('captureLog'));
   });
 
@@ -887,7 +885,6 @@ Thinking
     expect(store.task!.status, TaskStatus.running);
     expect(store.task!.turns.last.turnIndex, 2);
     expect(store.task!.turns.last.status, NativeOutputTurnStatus.running);
-    expect(store.task!.result, isNull);
     expect(agent.events, isNot(contains('captureLog')));
     expect(agent.probeCount, greaterThanOrEqualTo(2));
   });
@@ -1030,7 +1027,7 @@ Thinking
     expect(store.task!.metricEvents.last.eventType, 'user_mark_completed');
   });
 
-  test('legacy successful result becomes turn idle without cleanup', () async {
+  test('successful done update becomes turn idle without cleanup', () async {
     final task = _task(status: TaskStatus.running);
     final store = _TaskStore(task);
     final agent = _CompletingAgent();
@@ -1050,10 +1047,10 @@ Thinking
     expect(store.task!.status, TaskStatus.turnIdle);
     expect(store.task!.completedAt, isNull);
     expect(agent.cleanedUp, isFalse);
-    expect(store.task!.result?.summary, 'done');
+    expect(store.task!.summary, 'done');
   });
 
-  test('legacy successful result speaks idle summary until user confirms',
+  test('successful done update speaks idle summary until user confirms',
       () async {
     final task = _task(status: TaskStatus.running);
     final store = _TaskStore(task);
@@ -1121,7 +1118,6 @@ Thinking
     await Future<void>.delayed(Duration.zero);
 
     expect(store.task!.status, TaskStatus.needAttention);
-    expect(store.task!.result, isNull);
     expect(store.task!.summary, task.summary);
   });
 
@@ -1145,8 +1141,8 @@ Thinking
 
     expect(store.task!.status, TaskStatus.turnIdle);
     expect(store.task!.turns.single.status, NativeOutputTurnStatus.turnIdle);
-    expect(store.task!.result?.summary, contains('12 个测试全部通过'));
-    expect(store.task!.result?.summary, contains('Credits exhausted'));
+    expect(store.task!.summary, contains('12 个测试全部通过'));
+    expect(store.task!.summary, contains('Credits exhausted'));
   });
 
   test('turn idle output is spoken once for repeated same summary', () async {
@@ -1193,7 +1189,7 @@ Thinking
     await Future<void>.delayed(Duration.zero);
 
     expect(store.task!.status, TaskStatus.turnIdle);
-    expect(store.task!.result?.summary, 'HELLO WORLD');
+    expect(store.task!.summary, 'HELLO WORLD');
     // executionLogs may be empty for pure-progress chunks;
     // the full execution snapshot is captured on state transitions only.
     expect(
@@ -1937,14 +1933,7 @@ class _CompletingAgent extends _ControlAgent {
   Stream<AgentExecutionUpdate> execute(AgentExecutionRequest request) async* {
     yield const AgentExecutionUpdate(
       rawOutput: 'done',
-      result: TaskResult(
-        status: 'success',
-        summary: 'done',
-        changedFiles: [],
-        validation: [],
-        risks: [],
-        nextActions: [],
-      ),
+      cleanedOutput: 'done',
       done: true,
     );
   }

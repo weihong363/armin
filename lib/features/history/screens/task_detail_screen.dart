@@ -7,9 +7,9 @@ import 'package:flutter/material.dart';
 import '../../../app_state_scope.dart';
 import '../../../core/models/task_status.dart';
 import '../../../core/services/armin_app_state.dart';
+import '../../../shared/line_noise_filter.dart';
 import '../../../shared/scroll/armin_scroll_behavior.dart';
 import '../../../shared/theme/armin_theme.dart';
-import '../../agent/parsers/task_result.dart';
 import '../../agent/services/agent_output_cleaner.dart';
 import '../../hosts/models/host_config.dart';
 import '../../projects/models/project_path_config.dart';
@@ -1761,7 +1761,6 @@ class _ResultPanelState extends State<_ResultPanel> {
         oldWidget.task.id != widget.task.id ||
         oldWidget.task.summary != widget.task.summary ||
         oldWidget.task.shortSummary != widget.task.shortSummary ||
-        oldWidget.task.result?.summary != widget.task.result?.summary ||
         _turnsSignature(oldWidget.task) != _turnsSignature(widget.task)) {
       _syncResultWork(force: deepChanged);
     }
@@ -1772,7 +1771,6 @@ class _ResultPanelState extends State<_ResultPanel> {
 
   @override
   Widget build(BuildContext context) {
-    final result = widget.task.result;
     return ListView(
       key: const PageStorageKey<String>('task-detail-result-list'),
       physics: _taskDetailTabScrollPhysics,
@@ -1791,36 +1789,8 @@ class _ResultPanelState extends State<_ResultPanel> {
               ? _buildResultSummary()
               : _buildRecentOutputPreview(),
         ),
-        if (_hasAnyDetails(result))
-          _InfoCard(
-            title: '产出详情',
-            child: _ResultDetailsSection(
-              changedFiles: result?.changedFiles ?? const [],
-              validation: result?.validation ?? const [],
-              risks: result?.risks ?? const [],
-              nextActions: result?.nextActions ?? const [],
-            ),
-          ),
       ],
     );
-  }
-
-  bool _hasAnyDetails(TaskResult? result) {
-    if (result == null) return false;
-    return _sectionHasContent(result.changedFiles) ||
-        _sectionHasContent(result.validation) ||
-        _sectionHasContent(result.risks) ||
-        _sectionHasContent(result.nextActions);
-  }
-
-  bool _sectionHasContent(List<String> values) {
-    return values.any((v) {
-      final trimmed = v.trim();
-      return trimmed.isNotEmpty &&
-          trimmed != '-' &&
-          trimmed != '\u65e0' &&
-          trimmed != 'None';
-    });
   }
 
   Future<List<_TurnOutputSummary>> _outputSummaries(
@@ -1875,13 +1845,13 @@ class _ResultPanelState extends State<_ResultPanel> {
     if (summaries.isNotEmpty) {
       return summaries;
     }
-    final legacySource = _legacyOutputSource(task);
-    if (legacySource.isEmpty) {
+    final summarySource = _summaryOutputSource(task);
+    if (summarySource.isEmpty) {
       return const [];
     }
-    final legacy = await provider.summarize(
+    final fallback = await provider.summarize(
       OutputSummaryRequest(
-        cleanedOutput: legacySource,
+        cleanedOutput: summarySource,
         status: task.status,
         taskTitle: task.title,
         promptInputs: [
@@ -1891,15 +1861,15 @@ class _ResultPanelState extends State<_ResultPanel> {
         agentCommand: task.host.agentCommand,
       ),
     );
-    final text = legacy.displaySummary.trim();
+    final text = fallback.displaySummary.trim();
     return text.isEmpty
         ? const []
         : [
             _TurnOutputSummary(
               title: '结果',
               text: text,
-              speechText: legacy.speechSummary.trim().isNotEmpty
-                  ? legacy.speechSummary.trim()
+              speechText: fallback.speechSummary.trim().isNotEmpty
+                  ? fallback.speechSummary.trim()
                   : DeviceVoiceService.cleanSpeechText(text),
               fullOutputForSpeech: text,
             ),
@@ -2142,7 +2112,6 @@ class _ResultPanelState extends State<_ResultPanel> {
     return [
       task.id,
       task.status.name,
-      task.result?.summary.hashCode ?? 0,
       task.summary?.hashCode ?? 0,
       task.shortSummary.hashCode,
       if (resultTurn != null) ...[
@@ -2195,7 +2164,6 @@ class _ResultPanelState extends State<_ResultPanel> {
       'userText': task.userText,
       'summary': task.summary ?? '',
       'shortSummary': task.shortSummary,
-      'resultSummary': task.result?.summary ?? '',
       'agentCommand': task.host.agentCommand,
       'maxOutputChars': _summaryOutputWindowChars,
       'turns': task.turns.map((turn) => turn.toJson()).toList(growable: false),
@@ -2242,85 +2210,6 @@ String _deliverableTitle(int turnIndex, bool isLatest) {
     return '摘要';
   }
   return '摘要 $turnIndex';
-}
-
-class _ResultDetailsSection extends StatefulWidget {
-  const _ResultDetailsSection({
-    required this.changedFiles,
-    required this.validation,
-    required this.risks,
-    required this.nextActions,
-  });
-
-  final List<String> changedFiles;
-  final List<String> validation;
-  final List<String> risks;
-  final List<String> nextActions;
-
-  @override
-  State<_ResultDetailsSection> createState() => _ResultDetailsSectionState();
-}
-
-class _ResultDetailsSectionState extends State<_ResultDetailsSection> {
-  bool _expanded = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final allEmpty = _sectionIsEmpty(widget.changedFiles) &&
-        _sectionIsEmpty(widget.validation) &&
-        _sectionIsEmpty(widget.risks) &&
-        _sectionIsEmpty(widget.nextActions);
-    if (allEmpty) {
-      return const SizedBox.shrink();
-    }
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        TextButton.icon(
-          onPressed: () => setState(() => _expanded = !_expanded),
-          icon: Icon(_expanded ? Icons.expand_less : Icons.expand_more),
-          label: Text(_expanded ? '收起非输出内容' : '展开非输出内容'),
-        ),
-        AnimatedCrossFade(
-          duration: const Duration(milliseconds: 180),
-          firstChild: const SizedBox.shrink(),
-          secondChild: Column(
-            children: [
-              _DetailList(
-                title: '变更文件',
-                values: widget.changedFiles,
-              ),
-              _DetailList(
-                title: '验证结果',
-                values: widget.validation,
-              ),
-              _DetailList(
-                title: '潜在风险',
-                values: widget.risks,
-              ),
-              _DetailList(
-                title: '下一步',
-                values: widget.nextActions,
-              ),
-            ],
-          ),
-          crossFadeState:
-              _expanded ? CrossFadeState.showSecond : CrossFadeState.showFirst,
-        ),
-      ],
-    );
-  }
-
-  bool _sectionIsEmpty(List<String> values) {
-    return values.isEmpty ||
-        values.every((v) {
-          final trimmed = v.trim();
-          return trimmed.isEmpty ||
-              trimmed == '-' ||
-              trimmed == '无' ||
-              trimmed == 'None';
-        });
-  }
 }
 
 class _TurnOutputSummary {
@@ -2406,13 +2295,13 @@ Future<List<Map<String, Object?>>> _buildOutputSummariesInBackground(
     return summaries.map((summary) => summary.toPayload()).toList();
   }
 
-  final legacySource = _legacyOutputSourceFrom(job, status);
-  if (legacySource.isEmpty) {
+  final summarySource = _summaryOutputSourceFrom(job, status);
+  if (summarySource.isEmpty) {
     return const [];
   }
-  final legacy = await provider.summarize(
+  final fallback = await provider.summarize(
     OutputSummaryRequest(
-      cleanedOutput: legacySource,
+      cleanedOutput: summarySource,
       status: status,
       taskTitle: taskTitle,
       promptInputs: [
@@ -2422,12 +2311,12 @@ Future<List<Map<String, Object?>>> _buildOutputSummariesInBackground(
       agentCommand: agentCommand,
     ),
   );
-  final text = legacy.displaySummary.trim();
+  final text = fallback.displaySummary.trim();
   if (text.isEmpty) {
     return const [];
   }
-  final speechText = legacy.speechSummary.trim().isNotEmpty
-      ? legacy.speechSummary.trim()
+  final speechText = fallback.speechSummary.trim().isNotEmpty
+      ? fallback.speechSummary.trim()
       : DeviceVoiceService.cleanSpeechText(text);
   return [
     _TurnOutputSummary(
@@ -2492,12 +2381,11 @@ String _readableTurnOutputFrom(
   );
 }
 
-String _legacyOutputSourceFrom(Map<String, Object?> job, TaskStatus status) {
+String _summaryOutputSourceFrom(Map<String, Object?> job, TaskStatus status) {
   if (_usesRecentOutputPreview(status)) {
     return '';
   }
   final candidates = [
-    job['resultSummary'] as String? ?? '',
     job['summary'] as String? ?? '',
     job['shortSummary'] as String? ?? '',
   ];
@@ -2651,44 +2539,6 @@ class _OutputSegmentCardState extends State<_OutputSegmentCard> {
         ? widget.fullOutputForSpeech
         : (widget.speechText.isNotEmpty ? widget.speechText : widget.text);
     widget.onVoicePlay(widget.cardId, speechSource);
-  }
-}
-
-class _DetailList extends StatelessWidget {
-  const _DetailList({required this.title, required this.values});
-
-  final String title;
-  final List<String> values;
-
-  static bool _isEmpty(String value) {
-    final trimmed = value.trim();
-    return trimmed.isEmpty ||
-        trimmed == '-' ||
-        trimmed == '无' ||
-        trimmed == 'None';
-  }
-
-  bool get _allEmpty => values.every(_isEmpty);
-
-  @override
-  Widget build(BuildContext context) {
-    if (_allEmpty) {
-      return const SizedBox.shrink();
-    }
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
-      child: Align(
-        alignment: Alignment.centerLeft,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(title, style: Theme.of(context).textTheme.titleSmall),
-            const SizedBox(height: 6),
-            _BulletList(values: values),
-          ],
-        ),
-      ),
-    );
   }
 }
 
@@ -3032,13 +2882,13 @@ class _TaskNeedsPanelState extends State<_TaskNeedsPanel> {
       }
     }
 
-    final legacySource = _legacyOutputSource(task);
-    if (legacySource.isEmpty) {
+    final summarySource = _summaryOutputSource(task);
+    if (summarySource.isEmpty) {
       return '';
     }
-    final legacy = await provider.summarize(
+    final fallback = await provider.summarize(
       OutputSummaryRequest(
-        cleanedOutput: legacySource,
+        cleanedOutput: summarySource,
         status: task.status,
         taskTitle: task.title,
         promptInputs: [
@@ -3048,14 +2898,14 @@ class _TaskNeedsPanelState extends State<_TaskNeedsPanel> {
         agentCommand: task.host.agentCommand,
       ),
     );
-    final legacyText = legacy.displaySummary.trim();
-    if (legacyText.isEmpty) {
+    final fallbackText = fallback.displaySummary.trim();
+    if (fallbackText.isEmpty) {
       return '';
     }
-    final speechText = legacy.speechSummary.trim();
+    final speechText = fallback.speechSummary.trim();
     return speechText.isNotEmpty
         ? speechText
-        : DeviceVoiceService.cleanSpeechText(legacyText);
+        : DeviceVoiceService.cleanSpeechText(fallbackText);
   }
 
   _IndexedTurn? _latestResultTurn(TaskSession task) {
@@ -3173,12 +3023,11 @@ class _RecentOutputPreviewState extends State<_RecentOutputPreview> {
   }
 }
 
-String _legacyOutputSource(TaskSession task) {
+String _summaryOutputSource(TaskSession task) {
   if (_usesRecentOutputPreview(task.status)) {
     return '';
   }
   final candidates = [
-    task.result?.summary ?? '',
     task.summary ?? '',
     task.shortSummary,
   ];
@@ -3912,29 +3761,6 @@ class _TabBarHeaderDelegate extends SliverPersistentHeaderDelegate {
   }
 }
 
-class _BulletList extends StatelessWidget {
-  const _BulletList({required this.values});
-
-  final List<String> values;
-
-  @override
-  Widget build(BuildContext context) {
-    if (values.isEmpty) {
-      return const Text('无');
-    }
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        for (final value in values)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 6),
-            child: Text('- $value'),
-          ),
-      ],
-    );
-  }
-}
-
 class _MiniBadge extends StatefulWidget {
   const _MiniBadge({
     required this.label,
@@ -4305,13 +4131,6 @@ bool _hasMeaningfulOutput(TaskSession task) {
       const AgentOutputCleaner().clean(task.shortSummary).trim().isNotEmpty) {
     return true;
   }
-  if (task.result?.summary != null &&
-      const AgentOutputCleaner()
-          .clean(task.result!.summary)
-          .trim()
-          .isNotEmpty) {
-    return true;
-  }
   if (task.turns.isNotEmpty) {
     return true;
   }
@@ -4329,6 +4148,7 @@ String _progressSituationText(TaskSession task, RuntimeTaskSnapshot snapshot) {
 }
 
 String _progressActionText(String value) {
+  const lineNoiseFilter = LineNoiseFilter();
   final cleaned = const AgentOutputCleaner()
       .clean(value)
       .replaceAll(RegExp(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]'), '')
@@ -4337,7 +4157,7 @@ String _progressActionText(String value) {
             RegExp(r'^[>❯▸›▪▫•*-]\s*'),
             '',
           ))
-      .where((line) => line.isNotEmpty && !_isUnreadableProgressLine(line))
+      .where((line) => line.isNotEmpty && !lineNoiseFilter.isUnreadable(line))
       .join(' ');
   if (cleaned.isEmpty) {
     return '';
@@ -4349,21 +4169,6 @@ String _progressActionText(String value) {
         maxChars: 80,
       )
       .visibleText;
-}
-
-bool _isUnreadableProgressLine(String line) {
-  final trimmed = line.trimLeft();
-  if ('│'.allMatches(trimmed).length >= 2) {
-    return true;
-  }
-  if (RegExp(r'[┌┐└┘┬┼┴├┤─━]').hasMatch(trimmed)) {
-    return true;
-  }
-  final compact = trimmed.replaceAll(RegExp(r'\s+'), '');
-  return compact.length >= 2 &&
-      RegExp(
-        r'^[█▓▒░▀▄▌▐▖▗▘▝▚▞▟▙▛▜▔▁▂▃▄▅▆▇╭╮╰╯─│┌┐└┘┬┴├┤┼━┃╋]+$',
-      ).hasMatch(compact);
 }
 
 _NextAction _nextActionForTask(TaskStatus status, [WorkState? workState]) {

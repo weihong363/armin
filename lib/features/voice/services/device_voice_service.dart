@@ -6,6 +6,7 @@ import 'package:speech_to_text/speech_recognition_error.dart';
 import 'package:speech_to_text/speech_recognition_result.dart';
 import 'package:speech_to_text/speech_to_text.dart';
 
+import '../../../shared/governance_rules.dart';
 import 'voice_service.dart';
 
 class DeviceVoiceService implements VoiceService {
@@ -98,8 +99,7 @@ class DeviceVoiceService implements VoiceService {
     }
     _autoRestartScheduled = true;
     _restartCount++;
-    unawaited(Future<void>.delayed(const Duration(milliseconds: 300))
-        .then((_) {
+    unawaited(Future<void>.delayed(const Duration(milliseconds: 300)).then((_) {
       _autoRestartScheduled = false;
       if (_isListening) {
         _startListeningSession(_activeOnPartial);
@@ -474,7 +474,7 @@ class DeviceVoiceService implements VoiceService {
         lower.startsWith('directory:') ||
         lower.startsWith('gpt-') ||
         normalized.startsWith('armin context governance:') ||
-        _isSpeechGovernanceRule(normalized) ||
+        GovernanceRules.isGovernanceRuleEndsWith(normalized) ||
         lower.startsWith('import ') ||
         lower.startsWith('class ') ||
         lower.startsWith('final ') ||
@@ -527,16 +527,6 @@ class DeviceVoiceService implements VoiceService {
         lower.contains('stack trace') ||
         lower.contains('exception') ||
         _looksLikeCode(line);
-  }
-
-  static bool _isSpeechGovernanceRule(String lower) {
-    return lower == 'only inspect files directly related to the task.' ||
-        lower == 'never scan the entire repository.' ||
-        lower == 'avoid reading docs/ and readme unless necessary.' ||
-        lower == 'keep edits minimal and focused.' ||
-        lower == 'do not analyze unrelated architecture.' ||
-        lower == 'run only targeted tests.' ||
-        lower == 'keep command output short.';
   }
 
   static bool _looksLikeCode(String line) {

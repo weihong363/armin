@@ -4,15 +4,15 @@ import 'package:armin/app_state_scope.dart';
 import 'package:armin/core/models/task_status.dart';
 import 'package:armin/core/services/armin_app_state.dart';
 import 'package:armin/core/storage/task_history_store.dart';
-import 'package:armin/features/agent/parsers/task_result.dart';
 import 'package:armin/features/agent/services/agent_session_service.dart';
 import 'package:armin/features/hosts/models/host_config.dart';
 import 'package:armin/features/projects/models/project_path_config.dart';
 import 'package:armin/features/tasks/models/task_session.dart';
 import 'package:armin/features/tasks/screens/task_draft_screen.dart';
-import '../features/voice/services/mock_voice_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import '../features/voice/services/mock_voice_service.dart';
 
 void main() {
   testWidgets('real agent draft screen hides mock scenario selector',
@@ -532,14 +532,7 @@ class _CaptureAgentSessionService implements AgentSessionService {
     }
     yield const AgentExecutionUpdate(
       rawOutput: 'done',
-      result: TaskResult(
-        status: 'success',
-        summary: 'done',
-        changedFiles: [],
-        validation: [],
-        risks: [],
-        nextActions: [],
-      ),
+      cleanedOutput: 'done',
       done: true,
     );
   }

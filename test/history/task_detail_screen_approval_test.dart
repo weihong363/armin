@@ -4,7 +4,6 @@ import 'package:armin/app_state_scope.dart';
 import 'package:armin/core/models/task_status.dart';
 import 'package:armin/core/services/armin_app_state.dart';
 import 'package:armin/core/storage/task_history_store.dart';
-import 'package:armin/features/agent/parsers/task_result.dart';
 import 'package:armin/features/agent/services/agent_session_service.dart';
 import 'package:armin/features/history/screens/task_detail_screen.dart';
 import 'package:armin/features/hosts/models/host_config.dart';
@@ -691,14 +690,7 @@ Summer：一位迷人的美国沙滩女孩 Codex 宠物。
     final now = DateTime(2026, 5, 18);
     final task = _task().copyWith(
       status: TaskStatus.running,
-      result: const TaskResult(
-        status: 'turn_idle',
-        summary: 'Signed in Browser Login',
-        changedFiles: [],
-        validation: [],
-        risks: [],
-        nextActions: [],
-      ),
+      summary: 'Signed in Browser Login',
       turns: [
         NativeOutputTurn(
           id: 'turn-task-1-2',
@@ -926,11 +918,11 @@ Allow this command to run? Redirection detected.
     expect(find.textContaining('正式结果会在任务完成'), findsOneWidget);
   });
 
-  testWidgets('result panel uses legacy summary fallback', (tester) async {
+  testWidgets('result panel uses task summary fallback', (tester) async {
     final task = _task().copyWith(
       status: TaskStatus.turnIdle,
-      summary: '旧结果摘要已生成。',
-      shortSummary: 'LEGACY_SHORT_SUMMARY_SHOULD_NOT_RENDER',
+      summary: '任务摘要已生成。',
+      shortSummary: 'SHORT_SUMMARY_SHOULD_NOT_RENDER',
     );
     final state = ArminAppState(
       store: _TaskStore(task),
@@ -947,54 +939,23 @@ Allow this command to run? Redirection detected.
     );
     await _tapDetailTab(tester, '结果');
 
-    expect(find.textContaining('旧结果摘要已生成'), findsWidgets);
-    expect(find.textContaining('LEGACY_SHORT_SUMMARY_SHOULD_NOT_RENDER'),
-        findsNothing);
-  });
-
-  testWidgets('result panel uses explicit TaskResult summary', (tester) async {
-    final task = _task().copyWith(
-      status: TaskStatus.completed,
-      result: const TaskResult(
-        status: 'success',
-        summary: '显式任务结果已生成。',
-        changedFiles: [],
-        validation: [],
-        risks: [],
-        nextActions: [],
-      ),
-      summary: 'LEGACY_SUMMARY_SHOULD_NOT_RENDER',
-      shortSummary: 'LEGACY_SHORT_SUMMARY_SHOULD_NOT_RENDER',
-    );
-    final state = ArminAppState(
-      store: _TaskStore(task),
-      agentSessionService: const _NoopAgent(),
-      voiceService: const _SilentVoiceService(),
-    );
-    await state.load();
-
-    await tester.pumpWidget(
-      AppStateScope(
-        state: state,
-        child: const MaterialApp(home: TaskDetailScreen(taskId: 'task-1')),
-      ),
-    );
-    await _tapDetailTab(tester, '结果');
-
-    expect(find.textContaining('显式任务结果已生成'), findsWidgets);
+    expect(find.textContaining('任务摘要已生成'), findsWidgets);
     expect(
-        find.textContaining('LEGACY_SUMMARY_SHOULD_NOT_RENDER'), findsNothing);
-    expect(find.textContaining('LEGACY_SHORT_SUMMARY_SHOULD_NOT_RENDER'),
-        findsNothing);
+        find.textContaining('SHORT_SUMMARY_SHOULD_NOT_RENDER'), findsNothing);
   });
 
-  testWidgets('result panel filters approval decision fallback to deliverable',
+  testWidgets(
+      'result panel filters approval decision turn output to deliverable',
       (tester) async {
     final task = _task().copyWith(
       status: TaskStatus.turnIdle,
-      result: const TaskResult(
-        status: 'turn_idle',
-        summary: '''
+      turns: [
+        NativeOutputTurn(
+          id: 'turn-task-1-1',
+          taskId: 'task-1',
+          turnIndex: 1,
+          userInput: '写 readme',
+          rawOutput: '''
 > APPROVAL_DECISION:
 decision: rejected
 Apply this decision to the pending approval request.
@@ -1008,11 +969,12 @@ Thinking
 Done. README.md created with all usage examples.
 README.md 已写入，包含三种模式的完整使用示例、公共参数表和安全机制说明。
 ''',
-        changedFiles: [],
-        validation: [],
-        risks: [],
-        nextActions: [],
-      ),
+          cleanedOutput: '',
+          startedAt: DateTime(2026, 5, 18),
+          lastOutputAt: DateTime(2026, 5, 18),
+          status: NativeOutputTurnStatus.turnIdle,
+        ),
+      ],
     );
     final state = ArminAppState(
       store: _TaskStore(task),

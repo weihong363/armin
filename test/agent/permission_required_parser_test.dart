@@ -1,4 +1,3 @@
-import 'package:armin/features/agent/parsers/approval_parser.dart';
 import 'package:armin/features/agent/parsers/terminal_prompt_parser.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -32,12 +31,6 @@ void main() {
         '    4. Reject and type something\n'
         '    5. No\n';
 
-    final approval = const ApprovalParser().parse(output);
-    expect(approval, isNotNull);
-    expect(approval!.reason, 'Apply this change?');
-    expect(approval.command, 'plan_approval');
-    expect(approval.risk, 'medium');
-
     final prompt = const TerminalPromptParser().parse(output);
     expect(prompt, isNotNull);
     expect(prompt!.question, 'Apply this change?');
@@ -61,11 +54,6 @@ void main() {
         '    3. Modify with external editor\n'
         '    4. Reject and type something\n'
         '    5. No\n';
-
-    final approval = const ApprovalParser().parse(output);
-    expect(approval, isNotNull);
-    expect(approval!.reason, 'Apply this change?');
-    expect(approval.command, 'plan_approval');
 
     final prompt = const TerminalPromptParser().parse(output);
     expect(prompt, isNotNull);

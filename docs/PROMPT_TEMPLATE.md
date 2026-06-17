@@ -49,4 +49,4 @@ Armin context governance:
 
 ## 输出观察
 
-Armin 保存原始 terminal output，并清洗 TUI 噪音生成可展示和可播报的摘要。当输出在阈值内不再变化时，任务进入 `turnIdle`，等待用户继续或确认结束；`turnIdle` 不等于任务成功。旧的 `TASK_RESULT` / `NEED_APPROVAL` parser 仅用于 legacy 兼容测试。
+Armin 保存原始 terminal output，并清洗 TUI 噪音生成可展示和可播报的摘要。当输出在阈值内不再变化时，任务进入 `turnIdle`，等待用户继续或确认结束；`turnIdle` 不等于任务成功。旧的 `TASK_RESULT` / `NEED_APPROVAL` parser 外壳已移除，结果摘要来自当前 turn/output，审批来自原生终端提示。

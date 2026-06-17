@@ -19,7 +19,7 @@ Both flow through the same `resolveApproval()` path, with status immediately set
 
 ```
                   ┌─────────────────┐
-                  │  PendingApproval │  ← ApprovalRequest detected in output
+                  │  PendingApproval │  ← NativeTerminalApproval detected from terminal prompt
                   └────────┬────────┘
                            │
                     User presses Approve/Reject

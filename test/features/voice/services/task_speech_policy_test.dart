@@ -1,5 +1,4 @@
 import 'package:armin/core/models/task_status.dart';
-import 'package:armin/features/agent/parsers/task_result.dart';
 import 'package:armin/features/hosts/models/host_config.dart';
 import 'package:armin/features/runtime/models/approval_state.dart';
 import 'package:armin/features/tasks/models/native_output_turn.dart';
@@ -16,9 +15,7 @@ void main() {
     final previous = _task(status: TaskStatus.running);
     final current = previous.copyWith(
       status: TaskStatus.completed,
-      result: const TaskResult(
-        status: 'success',
-        summary: '''
+      summary: '''
 已修复登录失败。
 
 ```dart
@@ -29,11 +26,6 @@ flutter test
 /Users/ironion/workspace/armin/lib/login.dart
 可以验证。
 ''',
-        changedFiles: [],
-        validation: [],
-        risks: [],
-        nextActions: [],
-      ),
     );
 
     final decision = await policy.decide(

@@ -2,7 +2,6 @@ import '../../hosts/models/host_config.dart';
 import '../../runtime/models/approval_state.dart';
 import '../../tasks/services/agent_instruction_discovery.dart';
 import '../models/agent_approval_config.dart';
-import '../parsers/task_result.dart';
 import 'native_output_observer.dart';
 
 export '../../tasks/services/agent_instruction_discovery.dart'
@@ -54,7 +53,6 @@ class AgentExecutionUpdate {
     this.turnIdle = false,
     this.runtimeLost = false,
     this.needsAttention = false,
-    this.result,
     this.nativeApproval,
     this.done = false,
   });
@@ -65,7 +63,6 @@ class AgentExecutionUpdate {
   final bool turnIdle;
   final bool runtimeLost;
   final bool needsAttention;
-  final TaskResult? result;
   final NativeTerminalApproval? nativeApproval;
   final bool done;
 }

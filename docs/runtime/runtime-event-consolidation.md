@@ -22,7 +22,7 @@ Long-term runtime durability and remote-daemon direction are tracked in
 - `taskPaused` / `taskResumed` — No dedicated events; pause/resume handled via `_saveControlledTask` without bridge notification
 - `ObserverAttached` / `ObserverDetached` — Observer lifecycle not reflected in event bus
 - `ConnectionLost` / `ConnectionRestored` — SSH disconnection handled at stream level only
-- `ApprovalRequested` / `ApprovalResolved` / `ApprovalRejected` — Approval flows bypass the event bus entirely
+- `ApprovalRequested` / `ApprovalResolved` / `ApprovalRejected` — Approval events now flow through `RuntimeEventBus`
 - `OutputUpdated` — Only `taskProgress` is emitted for output changes
 - `DeliverableUpdated` — No deliverable-level events exist
 
@@ -81,7 +81,7 @@ authoritative durability boundary.
 
 ## 4. Current Approval Flow
 
-**Location**: Spread across `ArminAppState`, `ApprovalParser`, `TerminalPromptParser`
+**Location**: Spread across `ArminAppState`, `TerminalPromptParser`
 
 **Current Flow**:
 ```
@@ -91,11 +91,9 @@ _buildStreamingUpdate()
     ↓
 TerminalPromptParser.parse() → TerminalPrompt?
     ↓
-ApprovalParser.parse() → ApprovalRequest? (wraps TerminalPrompt)
+AgentExecutionUpdate.nativeApproval
     ↓
-AgentExecutionUpdate.approval / .terminalPrompt
-    ↓
-_taskWithExecutionUpdate() → TaskStatus.needApproval / .needAttention
+_taskWithExecutionUpdate() → NativeTerminalApproval / WorkState approval
     ↓
 resolveApproval() → sendFollowUp("APPROVAL_DECISION:...") or selectTerminalOption()
     ↓
@@ -103,10 +101,10 @@ _saveApprovalDecision() → clearApproval / clearTerminalPrompt
 ```
 
 **Key Observations**:
-- **Approval conflated with TerminalPrompt**: `ApprovalParser` wraps `TerminalPromptParser` output — native terminal prompts and workflow approvals are mixed
-- **No explicit approval lifecycle**: approval status is a simple `'pending'` / `'approved'` / `'rejected'` string
-- **No ResolvingApproval state**: After button press, status immediately goes to `running` — no verification that the action was accepted
-- **Desync risk**: If terminal action fails, UI already assumes approval resolved
+- **Approval no longer wraps TerminalPrompt**: native terminal prompts now map directly to `NativeTerminalApproval`; workflow-level approval events remain modeled separately
+- **Explicit approval lifecycle**: approval state is expressed by `ApprovalState`, including `pending`, `resolving`, `approved`, `rejected`, and `failed`
+- **ResolvingApproval state exists**: after button press, UI can represent that terminal action was sent and confirmation is pending
+- **Desync risk is handled by reconcile**: if terminal action fails or the remote prompt remains, refresh/reconcile can restore the pending approval state
 
 ---
 
@@ -165,12 +163,10 @@ turnIdle / needAttention → running (continue/followUp)
 
 **Parsers** (`lib/features/agent/parsers/`):
 - `TerminalPromptParser` — Detects interactive CLI prompts (numbered options with cursor)
-- `ApprovalParser` — Wraps TerminalPromptParser to produce ApprovalRequest
-- `TaskResultParser` — Parses task completion results
 - `AgentOutputCleaner` — Cleans thinking blocks, ANSI codes, noise
 
 **Current Dependencies**:
-- SSH stream → `_buildStreamingUpdate()` → `ApprovalParser`, `TerminalPromptParser`, `NativeOutputObserver`
+- SSH stream → `_buildStreamingUpdate()` → `TerminalPromptParser`, `NativeOutputObserver`
 - TaskWatcher → `_extractStatus()`, `_extractProgress()`, `_extractAction()`, `_extractCheckpoint()` — all regex/contains based
 - OutputSummaryProvider → `_removeTerminalPromptBlocks()`, `_semanticLines()`, various pattern matching
 - ArminAppState → `_taskWithExecutionUpdate()` consumes parsed results

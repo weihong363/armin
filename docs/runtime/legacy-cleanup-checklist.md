@@ -22,8 +22,8 @@
 | ② | `TaskWatcher._extractAction() / _extractCheckpoint()` — 正则匹配摘要提取 | 辅助功能，保留不驱动状态 |
 | ③ | `BridgeRuntime.observeOutput()` — TaskWatcher 间接推断状态 | Step 8（已去状态化 ✅） |
 | ④ | `_bridgeSyncTerminalStatus()` — 手动桥接同步 | Step 5（已移除 ✅） |
-| ⑤ | `ApprovalRequest` — 旧审批模型（字符串 status） | Step 6（已降级为兼容投影 ✅） |
-| ⑥ | `TerminalPrompt → ApprovalRequest` 包装 | Step 6（主路径已迁移 ✅） |
+| ⑤ | `ApprovalRequest` — 旧审批模型（字符串 status） | Phase 5 后已物理移除 ✅ |
+| ⑥ | `TerminalPrompt → ApprovalRequest` 包装 | 已替换为 `TerminalPrompt → NativeTerminalApproval` ✅ |
 | ⑦ | UI 直接消费 `TaskStatus` | Step 9（一等 UI 已迁移，二级 fallback 保留 ✅） |
 | ⑧ | `_bridgeSyncTerminalStatus()` 暂停/运行/observer 无操作 | Step 5（已合并移除 ✅） |
 | ⑨ | `_bridgeNotifyExecutionUpdate()` — 重型 observeOutput 调用 | Step 4（已轻量化 ✅） |
@@ -88,7 +88,7 @@ Step 2: ⑭ 运行时限制分类门禁（quota / usage limit）
 Step 3: ⑩ P3  OutputSummaryProvider 重复检测
 Step 4: ⑨ P2  _bridgeNotifyExecutionUpdate 轻量化
 Step 5: ④+⑧ P2  _bridgeSyncTerminalStatus 适配层清理
-Step 6: ⑥+⑤ P1  TerminalPrompt → ApprovalRequest 包装 → ApprovalRequest 模型
+Step 6: ⑥+⑤ P1  TerminalPrompt → NativeTerminalApproval 包装 → ApprovalRequest 移除
 Step 7: ⑪ P1  AgentExecutionUpdate 字段迁移
 Step 8: ③+① P0  observeOutput 去状态化 → _extractStatus 移除
 Step 9: ⑦ P2  UI 消费 TaskStatus → WorkState
@@ -162,7 +162,7 @@ Step 9: ⑦ P2  UI 消费 TaskStatus → WorkState
 ### 改动范围
 
 - `NativeOutputObserver`：将 quota 判断拆成“有 deliverable”和“无 deliverable”两类
-- `ArminAppState._taskWithExecutionUpdate()`：`turnIdle + done + deliverable` 允许写入 `TaskResult`
+- `ArminAppState._taskWithExecutionUpdate()`：`turnIdle + done + deliverable` 写入 task summary / turn output，不再写入 `TaskResult`
 - `OutputSummaryProvider`：继续过滤 quota 文案中的升级/用量提示，不把它当作结果主体
 
 ### 风险与应对
@@ -264,32 +264,32 @@ Step 9: ⑦ P2  UI 消费 TaskStatus → WorkState
 
 ### 目标
 
-将 TerminalPrompt → ApprovalRequest 的包装链路推进为 `NativeTerminalApproval` 主路径。Phase A 中旧 `ApprovalRequest` / `TerminalPrompt` 仅作为历史 JSON 和旧测试 fake 的兼容投影保留，不再作为审批状态权威。
+将 TerminalPrompt → ApprovalRequest 的包装链路替换为 `TerminalPrompt → NativeTerminalApproval`。历史任务已迁移后，`ApprovalRequest` / `ApprovalParser` 不再保留为兼容投影，审批状态只通过 `NativeTerminalApproval.state` / `ApprovalState` 表达。
 
 ### 改动范围
 
 - `AgentExecutionUpdate`：新增 `nativeApproval`
 - `SSHAgentSessionService`：streaming / settled update 同时产出 `nativeApproval`
 - `BridgeRuntime.notifyApprovalRequested()`：接收 `NativeTerminalApproval` 并写入 `WorkState.approval`
-- `TaskSession`：持久化 `nativeApproval` / `nativeApprovalRequests`，并能从旧 `approval` / `terminalPrompt` JSON 投影恢复
-- `ArminAppState._taskWithExecutionUpdate()`：优先消费 `nativeApproval`，旧 `ApprovalRequest` / `TerminalPrompt` 只作为兼容输入
+- `TaskSession`：持久化 `nativeApproval` / `nativeApprovalRequests`
+- `ArminAppState._taskWithExecutionUpdate()`：消费 `nativeApproval`
 - `_ApprovalPromptCard`：原生消费 `NativeTerminalApproval`
 - `TaskSpeechPolicy`：审批播报优先读取 `nativeApproval`
-- `ApprovalRequest`：新增 `approvalState` enum getter 与 `toNativeApproval()` 兼容桥
+- `ApprovalRequest` / `ApprovalParser`：历史兼容外壳已移除
 
 ### 风险与应对
 
 | 风险 | 可能性 | 应对 |
 |------|:---:|------|
-| 历史任务 JSON 只有旧审批字段，App 重启后无法恢复 native 状态 | 中 | `TaskSession.fromJson()` 从旧 `approval` / `terminalPrompt` 投影生成 `nativeApproval` |
-| UI `_ApprovalPromptCard` 同时消费新旧两个字段导致显示不一致 | 低 | 详情页统一先取 `nativeApprovalRequests` / `nativeApproval`，旧字段只做 fallback |
+| 旧审批 JSON 已不再兼容 | 低 | 历史任务已完成 schema migration；后续不再写入旧字段 |
+| UI `_ApprovalPromptCard` 与 runtime 状态显示不一致 | 低 | 详情页统一读取 `nativeApprovalRequests` / `nativeApproval` |
 
 ### 验证标准
 
 - [x] 审批 prompt 在 safe / balanced / aggressive 三种模式下正确识别（现有 parser / app state 回归）
-- [x] `approvalState` 状态机：pending → resolving → resolved/failed 完整流转（BridgeRuntime diagnostics + WorkState）
-- [x] 审批历史 `nativeApprovalRequests` 正确记录，旧 `approvalRequests` 同步作为兼容投影
-- [x] JSON 持久化往返无数据丢失（native 字段 + 旧字段投影兼容，`flutter test` 全量回归）
+- [x] `ApprovalState` 状态机：pending → resolving → resolved/failed 完整流转（BridgeRuntime diagnostics + WorkState）
+- [x] 审批历史 `nativeApprovalRequests` 正确记录
+- [x] JSON 持久化往返无数据丢失（native 字段，`flutter test` 全量回归）
 - [x] `TaskSession.nativeApproval` JSON 字段与 `_ApprovalPromptCard` 原生消费完成
 
 ---
@@ -298,7 +298,7 @@ Step 9: ⑦ P2  UI 消费 TaskStatus → WorkState
 
 ### 目标
 
-`AgentExecutionUpdate` 中新增 `nativeApproval` 字段。生产路径优先产出 `nativeApproval`；旧 `approval` / `terminalPrompt` 暂不标记 `@Deprecated`，仅作为历史兼容输入和少量 legacy fixture 保留，避免破坏既有任务 JSON 与测试覆盖。
+`AgentExecutionUpdate` 中新增 `nativeApproval` 字段。生产路径产出 `nativeApproval`；旧 `approval` / `terminalPrompt` 字段已随历史 schema 清理移除。
 
 ### 改动范围
 
@@ -311,13 +311,13 @@ Step 9: ⑦ P2  UI 消费 TaskStatus → WorkState
 
 | 风险 | 可能性 | 应对 |
 |------|:---:|------|
-| 测试文件构造 `AgentExecutionUpdate` 时仍用旧字段，编译通过但逻辑未迁移 | 中 | 核心 fake agent 已改为 native-only；保留少量旧字段测试覆盖兼容输入 |
+| 测试文件构造 `AgentExecutionUpdate` 时仍用旧字段 | 低 | 旧字段已删除，编译期阻止回归 |
 
 ### 验证标准
 
 - [x] `flutter analyze` 0 error, 0 warning
 - [x] SSH 生产路径 `AgentExecutionUpdate` 构造携带 `nativeApproval`
-- [x] AppState 可消费 native-only approval 并投影到当前任务模型
+- [x] AppState 消费 native-only approval 并投影到当前任务模型
 - [x] 核心测试中 native-only `AgentExecutionUpdate` 路径已覆盖
 - [x] 旧 `approval` / `terminalPrompt` 字段不再是生产主路径；物理移除延后到历史 JSON schema 清理
 
@@ -336,7 +336,7 @@ Step 9: ⑦ P2  UI 消费 TaskStatus → WorkState
 - [x] Step 2 运行时限制分类门禁已落地
 - [x] Step 4 `_bridgeNotifyExecutionUpdate` 已切换到轻量路径
 - [x] Step 5 reconcile 路径不再依赖 `observeOutput` 的状态变更
-- [x] Step 6 审批路径已具备新模型主路径（旧字段仍作兼容投影）
+- [x] Step 6 审批路径已具备新模型主路径（旧字段/兼容投影已移除）
 
 ### 改动范围
 
@@ -446,7 +446,7 @@ stopped         →          stopped
 | A0 | 状态触发保护网 | SSH grep / full capture 直接触发状态 | 增量证据、marker count、fingerprint 去重 | 旧 prompt / 旧 exit marker 不能触发 `needAttention` / `turnIdle` |
 | A1 | 输出与播报同源 | 结果卡片、TTS、summary fallback 各自取源 | latest turn deliverable source | 后续 turn 结果、TTS、手动朗读一致 |
 | A2 | Runtime issue 分类 | `Credits exhausted` → `needAttention` | deliverable 优先，runtime issue 次之 | 有结果时显示结果，无结果时提示运行时问题 |
-| A3 | 审批/终端交互 | `TerminalPrompt` → `ApprovalRequest` String 状态 | `NativeTerminalApproval` + `ApprovalState`，旧字段作兼容投影 | Runtime/WorkState、审批卡、历史、JSON 已纵切 |
+| A3 | 审批/终端交互 | `TerminalPrompt` → `ApprovalRequest` String 状态 | `TerminalPrompt` → `NativeTerminalApproval` + `ApprovalState` | Runtime/WorkState、审批卡、历史、JSON 已纵切，旧模型已移除 |
 | A4 | Streaming 事件 | `_bridgeNotifyExecutionUpdate` → `observeOutput` | `notifyOutputUpdated` 轻量事件 | progress 不触发状态归约，不引发全局重建 |
 | A5 | 状态 reducer | `_bridgeSyncTerminalStatus` + `TaskStatus` 写入 | RuntimeEventBus → reducer → WorkState | AppState 只发 command，不猜状态 |
 | A6 | Reconcile/Refresh | full capture 重新推断状态 | `RuntimeReconcileDecision` + 增量补齐 | refresh 只校准新证据，不复活旧 pane 残留 |
@@ -456,7 +456,7 @@ stopped         →          stopped
 
 1. **先冻结行为契约**：保留 Step 0–2 的测试，不允许迁移中改回旧行为。
 2. **先迁移输出类功能，再迁移状态类功能**：结果/TTS 的错源问题最容易影响用户感知，且能作为后续 reducer 的验收样本。
-3. **审批模型已经纵切到 native 主路径**：不要把旧 `ApprovalRequest.status` 重新提升为状态权威；它只允许作为历史 JSON / legacy fixture 的兼容投影。
+3. **审批模型已经纵切到 native 主路径**：不要重新引入 `ApprovalRequest` / `ApprovalParser`；审批状态只通过 `NativeTerminalApproval.state` / `ApprovalState` 表达。
 4. **observeOutput 去状态化前先切 streaming**：确保高频路径不再依赖 `TaskWatcher._extractStatus()`，再处理 reconcile 路径。
 5. **UI 最后迁移**：等 WorkState 覆盖所有语义后再替换 UI，否则会把状态缺口转移到页面 helper。
 
@@ -510,9 +510,9 @@ Phase 2.5 目前处于新旧逻辑的**过渡共存**：
 ══════════                      ══════════
 RuntimeEventBus (25 events)     TaskWatcher._extractStatus()
 bridgeRuntime.notifyXxx()       _bridgeSyncTerminalStatus()（已移除）
-ApprovalState enum              ApprovalRequest.status (String，兼容投影)
+ApprovalState enum              ApprovalRequest.status（已移除）
 WorkState                       TaskStatus（二级控制/调试 fallback）
-NativeTerminalApproval          TerminalPrompt → ApprovalRequest（历史 JSON / legacy fixture 兼容投影）
+NativeTerminalApproval          TerminalPrompt → NativeTerminalApproval
 ```
 
-两个系统仍有兼容投影，但主路径已经迁移到 RuntimeEventBus / WorkState / NativeTerminalApproval。兼容层不能重新引入 prompt 污染、提前 `turnIdle`、旧结果播报等问题；后续只有在历史 JSON schema 清理时才物理移除旧字段。测试数量不固定，以当前分支 `flutter test` 结果为准。
+主路径已经迁移到 RuntimeEventBus / WorkState / NativeTerminalApproval。审批兼容外壳已随历史 JSON schema 清理物理移除；后续不能重新引入 prompt 污染、提前 `turnIdle`、旧结果播报等问题。测试数量不固定，以当前分支 `flutter test` 结果为准。

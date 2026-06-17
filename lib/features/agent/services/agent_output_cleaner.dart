@@ -1,3 +1,6 @@
+import '../../../shared/governance_rules.dart';
+import '../../../shared/line_noise_filter.dart';
+
 class AgentOutputCleaner {
   const AgentOutputCleaner();
 
@@ -133,8 +136,7 @@ class AgentOutputCleaner {
     if (_looksLikeTableContent(content)) {
       return true;
     }
-    return !_looksLikeToolTrace(content) &&
-        !_looksLikeCodeTrace(content);
+    return !_looksLikeToolTrace(content) && !_looksLikeCodeTrace(content);
   }
 
   bool _looksLikeToolTrace(String line) {
@@ -241,7 +243,7 @@ class AgentOutputCleaner {
   bool _isNoiseLine(String line) {
     final lower = line.toLowerCase();
     return line == '|' ||
-        _isTerminalGraphicLine(line) ||
+        const LineNoiseFilter().isTerminalGraphic(line) ||
         line.startsWith('┌') ||
         line.startsWith('└') ||
         line.startsWith('┐') ||
@@ -264,7 +266,7 @@ class AgentOutputCleaner {
         lower.startsWith('turn ') ||
         lower.startsWith('结果为：turn ') ||
         lower.startsWith('result: turn ') ||
-        _isGovernanceRule(lower) ||
+        GovernanceRules.isGovernanceRuleEndsWith(lower) ||
         lower.startsWith('update available!') ||
         lower.startsWith('release notes:') ||
         lower.startsWith('press enter to continue') ||
@@ -291,47 +293,6 @@ class AgentOutputCleaner {
         lower == 'find and fix a bug in @filename' ||
         lower == 'implement {feature}' ||
         lower == 'explain this codebase';
-  }
-
-  bool _isTerminalGraphicLine(String line) {
-    final compact = line.replaceAll(RegExp(r'\s+'), '');
-    return compact.length >= 2 &&
-        RegExp(
-          r'^[█▓▒░▀▄▌▐▖▗▘▝▚▞▟▙▛▜▔▁▂▃▄▅▆▇╭╮╰╯─│┌┐└┘┬┴├┤┼━┃╋]+$',
-        ).hasMatch(compact);
-  }
-
-  static const _governanceLines = [
-    // Balanced (default) mode
-    'only inspect files directly related to the task.',
-    'never scan the entire repository.',
-    'avoid reading docs/ and readme unless necessary.',
-    'keep edits minimal and focused.',
-    'do not analyze unrelated architecture.',
-    'run only targeted tests.',
-    'keep command output short.',
-    // Aggressive mode
-    'you have full authority to create, modify, and delete files without asking.',
-    'run any commands, tests, or builds needed to complete the task.',
-    'do not interrupt the user — proceed autonomously unless you encounter a hard blocker.',
-    // Safe mode
-    'never modify any file — analysis and reporting only.',
-    'do not run commands that alter state.',
-    'ask before any potentially risky read operation.',
-    // Chinese constraints (cleaned of '- ' prefix by _cleanLine)
-    '只分析不修改',
-    '最小改动',
-    '允许修改',
-    '修改后运行测试',
-    '不要提交 git',
-    '高风险操作先确认',
-  ];
-
-  bool _isGovernanceRule(String lower) {
-    for (final text in _governanceLines) {
-      if (lower.endsWith(text)) return true;
-    }
-    return false;
   }
 
   List<String> _squashEmptyLines(List<String> lines) {

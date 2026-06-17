@@ -222,10 +222,6 @@ class TaskSpeechPolicy {
   }
 
   String _summarySource(TaskSession task) {
-    final resultSummary = task.result?.summary.trim() ?? '';
-    if (resultSummary.isNotEmpty) {
-      return resultSummary;
-    }
     final summary = task.summary?.trim() ?? '';
     if (summary.isNotEmpty) {
       return summary;

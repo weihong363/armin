@@ -1,3 +1,5 @@
+import '../../../shared/governance_rules.dart';
+import '../../../shared/line_noise_filter.dart';
 import '../../agent/services/agent_output_cleaner.dart';
 
 /// Observes incremental terminal output and extracts progress/action hints.
@@ -90,8 +92,7 @@ class TaskWatcher {
         lower.startsWith('glob(') ||
         lower.startsWith('grep(') ||
         lower.startsWith('accepted ') ||
-        _looksLikeTableLine(line) ||
-        _isTerminalGraphicLine(line) ||
+        const LineNoiseFilter().isUnreadable(line) ||
         lower.startsWith('│') ||
         lower.startsWith('>_') ||
         lower.startsWith('armin context governance') ||
@@ -100,7 +101,7 @@ class TaskWatcher {
         lower.startsWith('## context chunk') ||
         lower.startsWith('## secret placeholders') ||
         lower.startsWith('turn ') ||
-        _isWatcherGovernanceRule(lower);
+        GovernanceRules.isGovernanceRuleEndsWith(lower);
   }
 
   String _normalizeActionLine(String line) {
@@ -109,51 +110,6 @@ class TaskWatcher {
         .trim()
         .replaceFirst(RegExp(r'^[>❯▸›▪▫•*-]\s*'), '')
         .trim();
-  }
-
-  bool _looksLikeTableLine(String line) {
-    final trimmed = line.trimLeft();
-    if ('│'.allMatches(trimmed).length >= 2) {
-      return true;
-    }
-    return RegExp(r'[┌┐└┘┬┼┴├┤─━]').hasMatch(trimmed);
-  }
-
-  bool _isTerminalGraphicLine(String line) {
-    final compact = line.replaceAll(RegExp(r'\s+'), '');
-    return compact.length >= 2 &&
-        RegExp(
-          r'^[█▓▒░▀▄▌▐▖▗▘▝▚▞▟▙▛▜▔▁▂▃▄▅▆▇╭╮╰╯─│┌┐└┘┬┴├┤┼━┃╋]+$',
-        ).hasMatch(compact);
-  }
-
-  static const _watcherGovernanceLines = [
-    'only inspect files directly related to the task.',
-    'never scan the entire repository.',
-    'avoid reading docs/ and readme unless necessary.',
-    'keep edits minimal and focused.',
-    'do not analyze unrelated architecture.',
-    'run only targeted tests.',
-    'keep command output short.',
-    'you have full authority to create, modify, and delete files without asking.',
-    'run any commands, tests, or builds needed to complete the task.',
-    'do not interrupt the user',
-    'never modify any file',
-    'do not run commands that alter state.',
-    'ask before any potentially risky read operation.',
-    '只分析不修改',
-    '最小改动',
-    '允许修改',
-    '修改后运行测试',
-    '不要提交 git',
-    '高风险操作先确认',
-  ];
-
-  bool _isWatcherGovernanceRule(String lower) {
-    for (final text in _watcherGovernanceLines) {
-      if (lower.endsWith(text)) return true;
-    }
-    return false;
   }
 
   String _truncate(String value, int maxChars) {

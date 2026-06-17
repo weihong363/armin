@@ -1,6 +1,5 @@
 import '../../../core/models/task_status.dart';
 import '../../agent/models/agent_approval_config.dart';
-import '../../agent/parsers/task_result.dart';
 import '../../hosts/models/host_config.dart';
 import '../../runtime/models/approval_state.dart';
 import 'execution_log.dart';
@@ -36,7 +35,6 @@ class TaskSession {
     this.workerLabel,
     this.shortSummary = '',
     this.summary,
-    this.result,
     this.nativeApproval,
     this.voiceInputs = const [],
     this.draftRecord,
@@ -69,7 +67,6 @@ class TaskSession {
   final AgentApprovalMode approvalMode;
   final String shortSummary;
   final String? summary;
-  final TaskResult? result;
   final NativeTerminalApproval? nativeApproval;
   final List<VoiceInput> voiceInputs;
   final TaskDraft? draftRecord;
@@ -116,7 +113,6 @@ class TaskSession {
       approvalMode: _approvalModeFromJson(json['approvalMode']),
       shortSummary: json['shortSummary'] as String? ?? '',
       summary: json['summary'] as String?,
-      result: _objectOf(json['result'], TaskResult.fromJson),
       nativeApproval: _objectOf(
         json['nativeApproval'],
         NativeTerminalApproval.fromJson,
@@ -157,7 +153,6 @@ class TaskSession {
     AgentApprovalMode? approvalMode,
     String? shortSummary,
     String? summary,
-    TaskResult? result,
     NativeTerminalApproval? nativeApproval,
     List<VoiceInput>? voiceInputs,
     TaskDraft? draftRecord,
@@ -191,7 +186,6 @@ class TaskSession {
       approvalMode: approvalMode ?? this.approvalMode,
       shortSummary: shortSummary ?? this.shortSummary,
       summary: summary ?? this.summary,
-      result: result ?? this.result,
       nativeApproval:
           clearNativeApproval ? null : nativeApproval ?? this.nativeApproval,
       voiceInputs: voiceInputs ?? this.voiceInputs,
@@ -258,7 +252,6 @@ class TaskSession {
       'approvalMode': approvalMode.name,
       'shortSummary': safeText(shortSummary),
       'summary': summary == null ? null : safeText(summary!),
-      'result': result?.toJson(),
       'nativeApproval': nativeApproval?.toJson(),
       'voiceInputs': voiceInputs.map((input) => input.toJson()).toList(),
       'draftRecord': draftRecord?.toJson(),

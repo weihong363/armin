@@ -87,7 +87,7 @@ Adapter 可以解析文本中的审批、等待输入、进度、交付结果和
 - `ConstraintExtractor`
 - `OutputSummaryProvider`
 
-`TaskResultParser` 和 `ApprovalParser` 仍为 legacy 兼容代码。即便 adapter 提供 legacy `TaskResult`，它也只作为本轮可读摘要进入 `turnIdle` 或 `needAttention`，不再决定任务完成或触发 session cleanup。测试覆盖 ANSI/TUI 清洗、turn idle/runtime lost、敏感信息脱敏、上下文治理、语音草稿和规则摘要。
+旧的 `TaskResultParser` / `TASK_RESULT_*` 协议解析外壳已移除。产出摘要来自当前 turn 的原始/清洗输出和 `OutputSummaryProvider`，审批终端提示直接映射为 `NativeTerminalApproval`。测试覆盖 ANSI/TUI 清洗、turn idle/runtime lost、敏感信息脱敏、上下文治理、语音草稿和规则摘要。
 
 ## 指标/事件层
 

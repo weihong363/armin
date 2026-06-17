@@ -136,7 +136,7 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
           .where((line) => line.trim().isNotEmpty)
           .where((line) => !_looksLikePromptEcho(line, promptInputs))
           .where((line) => !_looksLikeLowValueLine(line))
-          .where((line) => !_isPureTableDecorator(line))
+          .where((line) => !_isStructuredTableDecorator(line))
           .toList(growable: false);
       if (useful.any((line) => _scoreLine(line) >= 20)) {
         blocks.add(useful);
@@ -193,7 +193,7 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
         lower.startsWith('dart test ');
   }
 
-  bool _isPureTableDecorator(String line) {
+  bool _isStructuredTableDecorator(String line) {
     final compact = line.replaceAll(RegExp(r'\s+'), '');
     if (compact.isEmpty) return true;
     return RegExp(r'^[┌┬┐├┼┤└┴┘─━│]+\$').hasMatch(compact);
@@ -254,15 +254,15 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
     }
 
     for (final line in lines) {
-      if (_looksLikeTableLine(line) ||
-          (current.isNotEmpty && _looksLikeTableContinuation(line))) {
+      if (_isStructuredTableLine(line) ||
+          (current.isNotEmpty && _structuredTableContinuation(line))) {
         if (current.isEmpty && pendingIntro != null) {
           current.add(pendingIntro);
         }
         current.add(line);
       } else {
         flush();
-        pendingIntro = _looksLikeStructuredIntroLine(line) ? line : null;
+        pendingIntro = _structuredIntroLine(line) ? line : null;
       }
     }
     flush();
@@ -277,33 +277,33 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
     if (lines.length < 3) {
       return false;
     }
-    final dataRows = lines.where(_looksLikeTableDataRow).length;
+    final dataRows = lines.where(_structuredTableDataRow).length;
     return dataRows >= 2;
   }
 
   int _structuredScore(List<String> lines) {
-    final dataRows = lines.where(_looksLikeTableDataRow).length;
-    final fileRows = lines.where(_looksLikeFileReferenceLine).length;
+    final dataRows = lines.where(_structuredTableDataRow).length;
+    final fileRows = lines.where(_structuredFileReferenceLine).length;
     return dataRows * 10 + fileRows * 4 + lines.length;
   }
 
-  bool _looksLikeTableLine(String line) {
-    return _looksLikeTableDataRow(line) || _looksLikeTableSeparator(line);
+  bool _isStructuredTableLine(String line) {
+    return _structuredTableDataRow(line) || _structuredTableSeparator(line);
   }
 
-  bool _looksLikeTableDataRow(String line) {
+  bool _structuredTableDataRow(String line) {
     if (!_hasTableDelimiter(line)) {
       return false;
     }
-    if (_looksLikeTableSeparator(line)) {
+    if (_structuredTableSeparator(line)) {
       return false;
     }
     final cells = _tableCells(line);
     return cells.where((cell) => cell.isNotEmpty).length >= 2 &&
-        cells.any(_looksLikeStructuredCell);
+        cells.any(_structuredCell);
   }
 
-  bool _looksLikeStructuredCell(String cell) {
+  bool _structuredCell(String cell) {
     final lower = cell.toLowerCase();
     return lower.contains('.py') ||
         lower.contains('.dart') ||
@@ -314,19 +314,19 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
         RegExp(r'[\u4e00-\u9fff]').hasMatch(cell);
   }
 
-  bool _looksLikeTableSeparator(String line) {
+  bool _structuredTableSeparator(String line) {
     final trimmed = line.trim();
     return RegExp(r'^\|?\s*[-:─━_\s|]+\|?\s*$').hasMatch(trimmed) ||
         RegExp(r'^[┌┬┐├┼┤└┴┘─━│\s]+$').hasMatch(trimmed);
   }
 
-  bool _looksLikeTableContinuation(String line) {
-    return _looksLikeFileReferenceLine(line) ||
-        _looksLikeTableSeparator(line) ||
+  bool _structuredTableContinuation(String line) {
+    return _structuredFileReferenceLine(line) ||
+        _structuredTableSeparator(line) ||
         _hasTableDelimiter(line);
   }
 
-  bool _looksLikeFileReferenceLine(String line) {
+  bool _structuredFileReferenceLine(String line) {
     return RegExp(r'\b[A-Za-z0-9_\-./]*test[A-Za-z0-9_\-./]*\.(?:py|dart|ts)\b')
         .hasMatch(line);
   }
@@ -359,7 +359,7 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
   }
 
   bool _hasDirectoryTree(List<String> lines) {
-    final treeLines = lines.where(_looksLikeDirectoryTreeLine).length;
+    final treeLines = lines.where(_structuredDirectoryTreeLine).length;
     if (treeLines < 4) {
       return false;
     }
@@ -369,7 +369,7 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
             line.toLowerCase().contains('cannot run tests'));
   }
 
-  bool _looksLikeDirectoryTreeLine(String line) {
+  bool _structuredDirectoryTreeLine(String line) {
     final trimmed = line.trimLeft();
     return trimmed.startsWith('├') ||
         trimmed.startsWith('└') ||
@@ -433,7 +433,7 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
     return line.contains('|') || line.contains('│');
   }
 
-  bool _looksLikeStructuredIntroLine(String line) {
+  bool _structuredIntroLine(String line) {
     return line.contains('汇总') ||
         line.contains('如下') ||
         line.contains('表格') ||
@@ -467,8 +467,7 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
   String _structuredNaturalSummary(List<String> lines) {
     final intro = lines
         .firstWhere(
-          (line) =>
-              !_looksLikeTableLine(line) && _looksLikeStructuredIntroLine(line),
+          (line) => !_isStructuredTableLine(line) && _structuredIntroLine(line),
           orElse: () => '结构化结果如下',
         )
         .replaceFirst(RegExp(r'[：:，,。.\s]+$'), '');
@@ -525,12 +524,12 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
     var seenStructured = false;
     for (final line in lines) {
       if (structuredSet.contains(line) ||
-          _looksLikeTableLine(line) ||
-          _looksLikeTableContinuation(line)) {
+          _isStructuredTableLine(line) ||
+          _structuredTableContinuation(line)) {
         seenStructured = true;
         continue;
       }
-      if (_looksLikeStructuredIntroLine(line)) {
+      if (_structuredIntroLine(line)) {
         seenStructured = true;
         continue;
       }
@@ -563,7 +562,7 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
   List<List<String>> _logicalTableRows(List<String> lines) {
     final rows = <List<String>>[];
     for (final line in lines) {
-      if (!_hasTableDelimiter(line) || _looksLikeTableSeparator(line)) {
+      if (!_hasTableDelimiter(line) || _structuredTableSeparator(line)) {
         continue;
       }
       final cells = _normalizedTableCells(line);

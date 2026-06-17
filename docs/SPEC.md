@@ -165,8 +165,8 @@ MVP 不实现真正的并行运行时。数据模型为父任务、子任务、�
 - `SecretRecord`: id, taskId, name, usage, redactedValue, scope, createdAt
 - `ExecutionLog`: id, taskId, rawOutput, createdAt
 - `NativeOutputTurn`: id, taskId, turnIndex, userInput, rawOutput, cleanedOutput, status, timestamps, userDecision
-- `TaskResult`: legacy-compatible optional result representation; not required for native-output completion
-- `ApprovalRequest`: id, taskId, reason, command, risk, status, createdAt, resolvedAt
+- Result summaries are derived from native turns/output and stored on task summary fields; the legacy `TaskResult` representation has been removed
+- `NativeTerminalApproval`: id, taskId, question, options, state, createdAt, stateChangedAt, selectedOptionKey, failureReason
 - `MetricEvent`: id, taskId, eventType, payloadJson, createdAt
 - `Subtask`: id, parentTaskId, title, status, workerLabel, orderIndex, summary, createdAt, completedAt
 

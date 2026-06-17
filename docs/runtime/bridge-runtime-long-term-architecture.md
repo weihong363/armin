@@ -157,7 +157,7 @@ Required adapter invariants:
 - Reducers must deduplicate events by offset, event id, marker count, or content
   fingerprint before changing `WorkState`, `ApprovalState`, turn state, result
   visibility, or TTS eligibility.
-- UI and TTS consume event-linked payloads such as `ApprovalRequested.reason` or
+- UI and TTS consume event-linked payloads such as `ApprovalRequested.question` or
   `TurnCompleted.deliverable`, not arbitrary task-level historical summaries.
 
 This prevents attach/reconnect from replaying stale terminal residue as a new

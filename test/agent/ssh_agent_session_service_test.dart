@@ -274,11 +274,35 @@ void main() {
     expect(command, contains('stable_count'));
     expect(command, contains('stable_count" -ge 4'));
     expect(command, contains('last_stable_emitted_hash'));
+    expect(command, contains('initial_exit_marker_count'));
+    expect(command, contains('exit_marker_count'));
+    expect(command,
+        contains(r'exit_marker_count" -gt "$initial_exit_marker_count'));
+    expect(command, contains('initial_attention_marker_count'));
+    expect(command, contains('attention_marker_count'));
+    expect(
+        command,
+        contains(
+            r'attention_marker_count" -gt "$initial_attention_marker_count'));
+    expect(command, contains('__ARMIN_STALE_EXIT_MARKER__'));
     expect(command, isNot(contains('initial_markers')));
-    expect(command, isNot(contains('marker_count')));
     expect(command, contains('Armin could not capture tmux pane'));
     expect(command, isNot(contains('send-keys -t')));
     expect(command, isNot(contains('new-session -d')));
+  });
+
+  test('stale exit marker is recognized as a non-result terminal condition',
+      () {
+    final service = SSHAgentSessionService();
+
+    expect(
+      service.staleExitForTest('__ARMIN_STALE_EXIT_MARKER__'),
+      isTrue,
+    );
+    expect(
+      service.staleExitForTest('Armin Codex exited with status 0.'),
+      isFalse,
+    );
   });
 
   test('runtime policy configures quiet threshold runtime and capture windows',
@@ -376,6 +400,47 @@ void main() {
     expect(command, contains('__ARMIN_PROBE_SESSION_MISSING__'));
     expect(command, isNot(contains('send-keys')));
     expect(command, isNot(contains('new-session')));
+  });
+
+  test('probe parser ignores approval prompt followed by newer output', () {
+    final service = SSHAgentSessionService();
+
+    final probe = service.parseRemoteTaskProbeForTest('''
+Apply this change?
+
+  ❯ 1. Allow once
+    2. Reject and type something
+
+> 写 readme，包含所有使用事例
+
+Thinking
+ │ The user wants me to write a README.
+▪ README.md 已写入。
+Armin Codex exited with status 0.
+''');
+
+    expect(probe.sessionExists, isTrue);
+    expect(probe.needsAttention, isFalse);
+    expect(probe.hasExitedMarker, isTrue);
+    expect(probe.exitMarkerCount, 1);
+  });
+
+  test('probe parser keeps current approval prompt without newer output', () {
+    final service = SSHAgentSessionService();
+
+    final probe = service.parseRemoteTaskProbeForTest('''
+Apply this change?
+
+  ❯ 1. Allow once
+    2. Allow for this session
+    3. Modify with external editor
+    4. Reject and type something
+    5. No
+''');
+
+    expect(probe.needsAttention, isTrue);
+    expect(probe.hasApprovalPrompt, isTrue);
+    expect(probe.hasTerminalPrompt, isTrue);
   });
 
   test('missing readable result log keeps captured pane output', () {

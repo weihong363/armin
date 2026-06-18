@@ -1,4 +1,5 @@
 import '../../../core/models/task_status.dart';
+import '../../runtime/models/approval_state.dart';
 import '../../tasks/models/task_session.dart';
 import '../../tasks/services/output_summary_provider.dart';
 import '../../tasks/services/turn_output_slicer.dart';
@@ -105,7 +106,7 @@ class TaskSpeechPolicy {
       shouldSpeak: true,
       text: speechText,
       hash:
-          '${current.status.name}:${_latestTurnIndex(current)}:${_normalize(speechText)}',
+          '${current.status.name}:${current.turns.isEmpty ? 'noturn' : current.turns.last.id}',
       kind: kind,
       turnId: current.turns.isEmpty ? null : current.turns.last.id,
       turnIndex: current.turns.isEmpty ? null : _latestTurnIndex(current),
@@ -128,6 +129,25 @@ class TaskSpeechPolicy {
     if (task.status == TaskStatus.needApproval) {
       final approvalText = _approvalSpeechSource(task);
       return _decorate(task.status, approvalText).trim();
+    }
+
+    if (task.status == TaskStatus.runtimeLost ||
+        task.status == TaskStatus.observerDetached) {
+      return _decorate(task.status, '').trim();
+    }
+
+    if (task.status == TaskStatus.needAttention) {
+      final promptText = task.nativeApproval?.question.trim() ?? '';
+      if (promptText.isNotEmpty) {
+        return _decorate(task.status, promptText).trim();
+      }
+      final latestTurnText = await _latestTurnSpeechText(
+        task,
+        outputSummaryProvider: outputSummaryProvider,
+      );
+      return latestTurnText.isEmpty
+          ? ''
+          : _decorate(task.status, latestTurnText).trim();
     }
 
     final latestTurnText = await _latestTurnSpeechText(
@@ -166,8 +186,7 @@ class TaskSpeechPolicy {
       return '';
     }
     final current = task.turns.last;
-    final source =
-        _turnOutputSlicer.outputForTurn(task.turns, task.turns.length - 1);
+    final source = _latestTurnOutputSource(task);
     if (source.trim().isEmpty) {
       return '';
     }
@@ -183,6 +202,15 @@ class TaskSpeechPolicy {
     return _speechTextFromDisplaySummary(summary);
   }
 
+  String _latestTurnOutputSource(TaskSession task) {
+    final index = task.turns.length - 1;
+    final rawOutput = _turnOutputSlicer.rawOutputForTurn(task.turns, index);
+    if (rawOutput.trim().isNotEmpty) {
+      return rawOutput;
+    }
+    return _turnOutputSlicer.outputForTurn(task.turns, index);
+  }
+
   String _speechTextFromDisplaySummary(OutputSummary summary) {
     final display = summary.displaySummary.trim();
     if (display.isNotEmpty) {
@@ -194,10 +222,6 @@ class TaskSpeechPolicy {
   }
 
   String _summarySource(TaskSession task) {
-    final resultSummary = task.result?.summary.trim() ?? '';
-    if (resultSummary.isNotEmpty) {
-      return resultSummary;
-    }
     final summary = task.summary?.trim() ?? '';
     if (summary.isNotEmpty) {
       return summary;
@@ -206,7 +230,9 @@ class TaskSpeechPolicy {
     if (shortSummary.isNotEmpty) {
       return shortSummary;
     }
-    return task.approval?.reason.trim() ?? '';
+    return task.nativeApproval?.question.trim().isNotEmpty == true
+        ? task.nativeApproval!.question.trim()
+        : '';
   }
 
   bool _isStaleSummaryFallback(
@@ -232,15 +258,15 @@ class TaskSpeechPolicy {
   }
 
   String _approvalSpeechSource(TaskSession task) {
-    final currentApproval = task.approval;
-    if (currentApproval != null && currentApproval.reason.trim().isNotEmpty) {
-      return currentApproval.reason.trim();
+    final currentNativeApproval = task.nativeApproval;
+    if (currentNativeApproval != null &&
+        currentNativeApproval.question.trim().isNotEmpty) {
+      return currentNativeApproval.question.trim();
     }
-    for (final approval in task.approvalRequests.reversed) {
-      final status = approval.status.trim().toLowerCase();
-      if ((status.isEmpty || status == 'pending') &&
-          approval.reason.trim().isNotEmpty) {
-        return approval.reason.trim();
+    for (final approval in task.nativeApprovalRequests.reversed) {
+      if (approval.state == ApprovalState.pending &&
+          approval.question.trim().isNotEmpty) {
+        return approval.question.trim();
       }
     }
     return '';

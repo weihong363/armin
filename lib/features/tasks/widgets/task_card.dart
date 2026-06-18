@@ -4,8 +4,8 @@ import 'package:flutter/material.dart';
 
 import '../../../core/models/task_status.dart';
 import '../../../shared/theme/armin_theme.dart';
-import '../../../shared/widgets/status_badge.dart';
 import '../../agent/services/agent_output_cleaner.dart';
+import '../../runtime/models/work_state.dart';
 import '../models/task_session.dart';
 import '../services/semantic_snippet_builder.dart';
 
@@ -14,17 +14,24 @@ class TaskCard extends StatelessWidget {
     required this.task,
     required this.onTap,
     this.featured = false,
+    this.workState,
     super.key,
   });
 
   final TaskSession task;
   final VoidCallback onTap;
   final bool featured;
+  final WorkState? workState;
 
   @override
   Widget build(BuildContext context) {
+    final effectiveWorkState = _effectiveWorkStateFor(task, workState);
     if (featured) {
-      return _FeaturedTaskCard(task: task, onTap: onTap);
+      return _FeaturedTaskCard(
+        task: task,
+        workState: effectiveWorkState,
+        onTap: onTap,
+      );
     }
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
@@ -52,7 +59,7 @@ class TaskCard extends StatelessWidget {
                 ],
               ),
               const SizedBox(height: 8),
-              StatusBadge(status: task.status),
+              _StatusPill(status: task.status, workState: effectiveWorkState),
               const SizedBox(height: 8),
               Text(
                 _readableSummary(task),
@@ -76,9 +83,14 @@ class TaskCard extends StatelessWidget {
 }
 
 class _FeaturedTaskCard extends StatefulWidget {
-  const _FeaturedTaskCard({required this.task, required this.onTap});
+  const _FeaturedTaskCard({
+    required this.task,
+    required this.workState,
+    required this.onTap,
+  });
 
   final TaskSession task;
+  final WorkState? workState;
   final VoidCallback onTap;
 
   @override
@@ -98,6 +110,7 @@ class _FeaturedTaskCardState extends State<_FeaturedTaskCard> {
   void didUpdateWidget(covariant _FeaturedTaskCard oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.task.status != widget.task.status ||
+        oldWidget.workState?.phase != widget.workState?.phase ||
         oldWidget.task.completedAt != widget.task.completedAt) {
       _syncTimer();
     }
@@ -124,7 +137,8 @@ class _FeaturedTaskCardState extends State<_FeaturedTaskCard> {
   @override
   Widget build(BuildContext context) {
     final task = widget.task;
-    final progressValue = _progressValue(task.status);
+    final workState = widget.workState;
+    final progressValue = _progressValue(task.status, workState);
     return Container(
       margin: const EdgeInsets.only(bottom: 20),
       decoration: BoxDecoration(
@@ -152,10 +166,10 @@ class _FeaturedTaskCardState extends State<_FeaturedTaskCard> {
             children: [
               Row(
                 children: [
-                  _DarkBadge(status: task.status),
+                  _DarkBadge(status: task.status, workState: workState),
                   const Spacer(),
                   Text(
-                    '${_durationPrefix(task)} ${_durationLabel(task)}',
+                    '${_durationPrefix(task, workState)} ${_durationLabel(task)}',
                     style: const TextStyle(color: Colors.white, fontSize: 12),
                   ),
                 ],
@@ -193,7 +207,7 @@ class _FeaturedTaskCardState extends State<_FeaturedTaskCard> {
                   ),
                   const Spacer(),
                   Text(
-                    _progressLabel(task.status),
+                    _progressLabel(task.status, workState),
                     style: const TextStyle(
                       color: Colors.white,
                       fontSize: 12,
@@ -207,7 +221,9 @@ class _FeaturedTaskCardState extends State<_FeaturedTaskCard> {
                 borderRadius: BorderRadius.circular(999),
                 child: LinearProgressIndicator(
                   value:
-                      task.status == TaskStatus.running ? null : progressValue,
+                      _workPhaseFor(workState, task.status) == WorkPhase.working
+                          ? null
+                          : progressValue,
                   minHeight: 8,
                   color: ArminTheme.mint,
                   backgroundColor: Colors.white.withValues(alpha: 0.22),
@@ -252,13 +268,18 @@ class _FeaturedTaskCardState extends State<_FeaturedTaskCard> {
 
   bool _isLiveTask(TaskSession task) {
     return task.completedAt == null &&
-        (task.status == TaskStatus.running ||
-            task.status == TaskStatus.pending ||
-            task.status == TaskStatus.paused ||
-            task.status == TaskStatus.needApproval ||
-            task.status == TaskStatus.turnIdle ||
-            task.status == TaskStatus.needAttention ||
-            task.status == TaskStatus.observerDetached);
+        switch (_workPhaseFor(widget.workState, task.status)) {
+          WorkPhase.idle ||
+          WorkPhase.working ||
+          WorkPhase.quieting ||
+          WorkPhase.turnIdle ||
+          WorkPhase.needsApproval ||
+          WorkPhase.needsDecision ||
+          WorkPhase.needsReview ||
+          WorkPhase.needsInstruction =>
+            true,
+          WorkPhase.completed || WorkPhase.failed || WorkPhase.stopped => false,
+        };
   }
 }
 
@@ -270,29 +291,52 @@ String _readableSummary(TaskSession task) {
       .visibleText;
 }
 
-class _DarkBadge extends StatelessWidget {
-  const _DarkBadge({required this.status});
+class _StatusPill extends StatelessWidget {
+  const _StatusPill({required this.status, required this.workState});
 
   final TaskStatus status;
+  final WorkState? workState;
 
   @override
   Widget build(BuildContext context) {
-    final label = switch (status) {
-      TaskStatus.running => '运行中',
-      TaskStatus.paused => '已暂停',
-      TaskStatus.stopped => '已停止',
-      TaskStatus.completed => '已完成',
-      TaskStatus.userCompleted => '已完成',
-      TaskStatus.needApproval => '需确认',
-      TaskStatus.turnIdle => '等待继续',
-      TaskStatus.needAttention => '需处理',
-      TaskStatus.observerDetached => '已断开监听',
-      TaskStatus.runtimeLost => '运行丢失',
-      TaskStatus.failed => '失败',
-      TaskStatus.userFailed => '失败',
-      TaskStatus.pending => '等待中',
-      TaskStatus.draft => '草稿',
-    };
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: _statusColor(status, workState).withValues(alpha: 0.12),
+        border: Border.all(
+          color: _statusColor(status, workState).withValues(alpha: 0.28),
+        ),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.circle, color: _statusColor(status, workState), size: 8),
+            const SizedBox(width: 6),
+            Text(
+              _statusLabel(status, workState),
+              style: TextStyle(
+                color: _statusColor(status, workState),
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _DarkBadge extends StatelessWidget {
+  const _DarkBadge({required this.status, required this.workState});
+
+  final TaskStatus status;
+  final WorkState? workState;
+
+  @override
+  Widget build(BuildContext context) {
     return DecoratedBox(
       decoration: BoxDecoration(
         color: Colors.white.withValues(alpha: 0.12),
@@ -306,7 +350,7 @@ class _DarkBadge extends StatelessWidget {
             const Icon(Icons.circle, color: ArminTheme.mint, size: 8),
             const SizedBox(width: 6),
             Text(
-              label,
+              _statusLabel(status, workState),
               style: const TextStyle(
                 color: Colors.white,
                 fontSize: 12,
@@ -338,51 +382,49 @@ String _durationLabel(TaskSession task) {
   return '${minutes}m ${seconds}s';
 }
 
-double _progressValue(TaskStatus status) {
-  return switch (status) {
-    TaskStatus.completed => 1,
-    TaskStatus.userCompleted => 1,
-    TaskStatus.failed ||
-    TaskStatus.userFailed ||
-    TaskStatus.runtimeLost ||
-    TaskStatus.stopped =>
-      1,
-    TaskStatus.paused => 0.5,
-    TaskStatus.running || TaskStatus.needApproval => 0.34,
-    TaskStatus.turnIdle || TaskStatus.needAttention => 0.72,
-    TaskStatus.observerDetached => 0.72,
-    TaskStatus.pending || TaskStatus.draft => 0,
+double _progressValue(TaskStatus status, [WorkState? workState]) {
+  return switch (_workPhaseFor(workState, status)) {
+    WorkPhase.idle => 0,
+    WorkPhase.working => 0.34,
+    WorkPhase.quieting => 0.5,
+    WorkPhase.needsApproval ||
+    WorkPhase.needsDecision ||
+    WorkPhase.needsInstruction ||
+    WorkPhase.needsReview ||
+    WorkPhase.turnIdle =>
+      0.72,
+    WorkPhase.completed || WorkPhase.failed || WorkPhase.stopped => 1,
   };
 }
 
-String _progressLabel(TaskStatus status) {
-  return switch (status) {
-    TaskStatus.running => '运行中',
-    TaskStatus.needApproval => '等待确认',
-    TaskStatus.turnIdle => '等待继续',
-    TaskStatus.needAttention => '需处理',
-    TaskStatus.observerDetached => '已断开监听',
-    TaskStatus.paused => '已暂停',
-    TaskStatus.completed => '100%',
-    TaskStatus.userCompleted => '100%',
-    TaskStatus.failed => '失败',
-    TaskStatus.userFailed => '失败',
-    TaskStatus.runtimeLost => '运行丢失',
-    TaskStatus.stopped => '已停止',
-    TaskStatus.pending => '等待开始',
-    TaskStatus.draft => '草稿',
+String _progressLabel(TaskStatus status, [WorkState? workState]) {
+  return switch (_workPhaseFor(workState, status)) {
+    WorkPhase.idle => '等待开始',
+    WorkPhase.working => '运行中',
+    WorkPhase.quieting => status == TaskStatus.runtimeLost ? '连接暂停' : '更新暂停',
+    WorkPhase.turnIdle => '等待继续',
+    WorkPhase.needsApproval || WorkPhase.needsDecision => '等待确认',
+    WorkPhase.needsReview || WorkPhase.needsInstruction => '需处理',
+    WorkPhase.completed => '100%',
+    WorkPhase.failed => '失败',
+    WorkPhase.stopped => '已停止',
   };
 }
 
-String _durationPrefix(TaskSession task) {
+String _durationPrefix(TaskSession task, [WorkState? workState]) {
   if (task.completedAt == null &&
-      (task.status == TaskStatus.running ||
-          task.status == TaskStatus.pending ||
-          task.status == TaskStatus.paused ||
-          task.status == TaskStatus.needApproval ||
-          task.status == TaskStatus.turnIdle ||
-          task.status == TaskStatus.needAttention ||
-          task.status == TaskStatus.observerDetached)) {
+      switch (_workPhaseFor(workState, task.status)) {
+        WorkPhase.idle ||
+        WorkPhase.working ||
+        WorkPhase.quieting ||
+        WorkPhase.turnIdle ||
+        WorkPhase.needsApproval ||
+        WorkPhase.needsDecision ||
+        WorkPhase.needsReview ||
+        WorkPhase.needsInstruction =>
+          true,
+        WorkPhase.completed || WorkPhase.failed || WorkPhase.stopped => false,
+      }) {
     return '已运行';
   }
   return '总耗时';
@@ -394,4 +436,94 @@ String _hostLabel(TaskSession task) {
     return task.host.name;
   }
   return '${task.host.name} / $projectPath';
+}
+
+WorkPhase _workPhaseFor(WorkState? workState, TaskStatus fallbackStatus) {
+  if (workState != null) {
+    return workState.phase;
+  }
+  return switch (fallbackStatus) {
+    TaskStatus.draft || TaskStatus.pending => WorkPhase.idle,
+    TaskStatus.running => WorkPhase.working,
+    TaskStatus.paused => WorkPhase.quieting,
+    TaskStatus.needApproval => WorkPhase.needsApproval,
+    TaskStatus.turnIdle => WorkPhase.turnIdle,
+    TaskStatus.needAttention => WorkPhase.needsInstruction,
+    TaskStatus.observerDetached || TaskStatus.runtimeLost => WorkPhase.quieting,
+    TaskStatus.userCompleted || TaskStatus.completed => WorkPhase.completed,
+    TaskStatus.userFailed || TaskStatus.failed => WorkPhase.failed,
+    TaskStatus.stopped => WorkPhase.stopped,
+  };
+}
+
+WorkState? _effectiveWorkStateFor(TaskSession task, WorkState? workState) {
+  if (workState == null) {
+    return null;
+  }
+  final phase = workState.phase;
+  if (phase == WorkPhase.idle &&
+      task.status != TaskStatus.draft &&
+      task.status != TaskStatus.pending) {
+    return null;
+  }
+  if (phase == WorkPhase.working &&
+      task.status != TaskStatus.running &&
+      task.status != TaskStatus.pending) {
+    return null;
+  }
+  if ((phase == WorkPhase.completed ||
+          phase == WorkPhase.failed ||
+          phase == WorkPhase.stopped) &&
+      !_isTaskTerminal(task.status)) {
+    return null;
+  }
+  return workState;
+}
+
+bool _isTaskTerminal(TaskStatus status) {
+  return switch (status) {
+    TaskStatus.completed ||
+    TaskStatus.userCompleted ||
+    TaskStatus.failed ||
+    TaskStatus.userFailed ||
+    TaskStatus.stopped ||
+    TaskStatus.runtimeLost =>
+      true,
+    _ => false,
+  };
+}
+
+String _statusLabel(TaskStatus status, [WorkState? workState]) {
+  final headline = workState?.headline.trim();
+  if (headline != null && headline.isNotEmpty) {
+    return headline;
+  }
+  return switch (_workPhaseFor(workState, status)) {
+    WorkPhase.idle => '等待中',
+    WorkPhase.working => '运行中',
+    WorkPhase.quieting => status == TaskStatus.runtimeLost ? '连接暂停' : '更新暂停',
+    WorkPhase.turnIdle => '等待继续',
+    WorkPhase.needsApproval || WorkPhase.needsDecision => '需确认',
+    WorkPhase.needsReview => '需查看',
+    WorkPhase.needsInstruction => '需处理',
+    WorkPhase.completed => '已完成',
+    WorkPhase.failed => '失败',
+    WorkPhase.stopped => '已停止',
+  };
+}
+
+Color _statusColor(TaskStatus status, [WorkState? workState]) {
+  return switch (_workPhaseFor(workState, status)) {
+    WorkPhase.needsApproval ||
+    WorkPhase.needsDecision ||
+    WorkPhase.needsReview ||
+    WorkPhase.needsInstruction ||
+    WorkPhase.turnIdle =>
+      Colors.orange.shade700,
+    WorkPhase.failed => Colors.red.shade700,
+    WorkPhase.completed => Colors.green.shade700,
+    WorkPhase.stopped => Colors.grey.shade700,
+    WorkPhase.quieting => Colors.blueGrey.shade700,
+    WorkPhase.idle || WorkPhase.working => ArminTheme.primary,
+  };
 }

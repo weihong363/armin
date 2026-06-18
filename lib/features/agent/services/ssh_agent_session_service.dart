@@ -5,36 +5,32 @@ import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter/foundation.dart';
 
 import '../../hosts/models/host_config.dart';
+import '../../runtime/models/approval_state.dart';
 import '../../tasks/services/agent_instruction_discovery.dart';
-import '../models/agent_approval_config.dart';
-import '../parsers/approval_parser.dart';
-import '../parsers/approval_request.dart';
 import '../parsers/terminal_prompt.dart';
 import '../parsers/terminal_prompt_parser.dart';
-import 'agent_session_service.dart';
-import 'agent_runtime_config.dart';
 import 'agent_output_cleaner.dart';
+import 'agent_runtime_config.dart';
+import 'agent_session_service.dart';
 import 'native_output_observer.dart';
 import 'runtime_policy.dart';
 
 class SSHAgentSessionService
     implements AgentSessionService, RemoteTaskProbeService {
+  static const _staleExitMarker = '__ARMIN_STALE_EXIT_MARKER__';
   static const _controlCommandTimeout = Duration(seconds: 15);
   static const _controlConnectionIdleTimeout = Duration(seconds: 20);
 
   SSHAgentSessionService({
-    ApprovalParser? approvalParser,
     TerminalPromptParser terminalPromptParser = const TerminalPromptParser(),
     Duration pollInterval = AgentRuntimeConfig.pollInterval,
     RuntimePolicy runtimePolicy = const RuntimePolicy(),
     AgentOutputCleaner cleaner = const AgentOutputCleaner(),
-  })  : _approvalParser = approvalParser ?? const ApprovalParser(),
-        _terminalPromptParser = terminalPromptParser,
+  })  : _terminalPromptParser = terminalPromptParser,
         _pollInterval = pollInterval,
         _runtimePolicy = runtimePolicy,
         _cleaner = cleaner;
 
-  final ApprovalParser _approvalParser;
   final TerminalPromptParser _terminalPromptParser;
   final Duration _pollInterval;
   final RuntimePolicy _runtimePolicy;
@@ -42,7 +38,6 @@ class SSHAgentSessionService
   final Map<String, _PooledControlConnection> _controlConnections = {};
   final Map<String, Future<_PooledControlConnection>>
       _controlConnectionCreates = {};
-  AgentApprovalConfig? _currentApprovalConfig;
 
   @override
   Future<AgentConnectionTestResult> testConnection(
@@ -127,7 +122,6 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
   @override
   Stream<AgentExecutionUpdate> execute(AgentExecutionRequest request) async* {
     _validateExecutionRequest(request);
-    _currentApprovalConfig = request.approvalConfig;
     final client = await _connect(
       host: request.host,
       port: request.port,
@@ -182,6 +176,20 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
           }
           final streamOutput = output.streamText;
           final observedOutput = output.observedText;
+          if (_isStaleExit(streamOutput)) {
+            controller.add(
+              const AgentExecutionUpdate(
+                rawOutput: '',
+                cleanedOutput:
+                    'Armin observed an old agent exit marker without new output.',
+                observerState: NativeOutputObserverState.runtimeLost,
+                runtimeLost: true,
+                done: true,
+              ),
+            );
+            await controller.close();
+            return;
+          }
           if (_isMissingTmuxSession(streamOutput)) {
             controller.add(
               AgentExecutionUpdate(
@@ -196,6 +204,34 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
             return;
           }
           if (_isRuntimeLimitReached(streamOutput)) {
+            final finalRawOutput =
+                output.rawOutputForLatestUpdate(fallback: '');
+            final promptState = output.promptState(
+              terminalPromptParser: _terminalPromptParser,
+              candidateOutput: finalRawOutput,
+            );
+            final terminalPrompt = promptState.terminalPrompt;
+            final snapshot = observer.observeSettled(observedOutput);
+            final hasSettledState = snapshot.turnIdle ||
+                snapshot.needsAttention ||
+                terminalPrompt != null;
+            if (hasSettledState) {
+              controller.add(
+                AgentExecutionUpdate(
+                  rawOutput: '',
+                  cleanedOutput: snapshot.cleanedOutput,
+                  observerState: snapshot.state,
+                  turnIdle: snapshot.turnIdle,
+                  runtimeLost: snapshot.runtimeLost,
+                  needsAttention:
+                      terminalPrompt != null || snapshot.needsAttention,
+                  nativeApproval: _nativeApprovalFromPrompt(terminalPrompt),
+                  done: true,
+                ),
+              );
+              await controller.close();
+              return;
+            }
             controller.add(
               AgentExecutionUpdate(
                 rawOutput: '',
@@ -208,21 +244,17 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
             await controller.close();
             return;
           }
-          final approval = _approvalParser.parse(observedOutput);
-          final terminalPrompt = _terminalPromptParser.parse(observedOutput);
-          final isSafeMode =
-              _currentApprovalConfig?.mode == AgentApprovalMode.safe;
-          // Bridge native terminal prompts into approval requests so that
-          // users see the simplified Approve / Reject card — except in
-          // safe mode where the full terminal prompt card is preferred.
-          final effectiveApproval = approval ??
-              (isSafeMode ? null : _approvalFromTerminalPrompt(terminalPrompt));
+          final finalRawOutput = output.rawOutputForLatestUpdate(fallback: '');
+          final promptState = output.promptState(
+            terminalPromptParser: _terminalPromptParser,
+            candidateOutput: finalRawOutput,
+          );
+          final terminalPrompt = promptState.terminalPrompt;
           final snapshot = observer.observeSettled(observedOutput);
           final shouldFinishUpdate = snapshot.turnIdle ||
               snapshot.runtimeLost ||
               snapshot.needsAttention ||
-              terminalPrompt != null ||
-              effectiveApproval != null;
+              terminalPrompt != null;
           controller.add(
             AgentExecutionUpdate(
               rawOutput: '',
@@ -230,11 +262,8 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
               observerState: snapshot.state,
               turnIdle: snapshot.turnIdle,
               runtimeLost: snapshot.runtimeLost,
-              needsAttention: terminalPrompt != null ||
-                  snapshot.needsAttention ||
-                  effectiveApproval != null,
-              approval: effectiveApproval,
-              terminalPrompt: terminalPrompt,
+              needsAttention: terminalPrompt != null || snapshot.needsAttention,
+              nativeApproval: _nativeApprovalFromPrompt(terminalPrompt),
               done: shouldFinishUpdate,
             ),
           );
@@ -260,23 +289,16 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
     final snapshot = observer.observe(observedOutput);
     final promptState = output.promptState(
       terminalPromptParser: _terminalPromptParser,
-      approvalParser: _approvalParser,
+      candidateOutput: rawOutput,
     );
     final terminalPrompt = promptState.terminalPrompt;
-    final approval = promptState.approval;
-    final isSafeMode = _currentApprovalConfig?.mode == AgentApprovalMode.safe;
-    final effectiveApproval = approval ??
-        (isSafeMode ? null : _approvalFromTerminalPrompt(terminalPrompt));
     return AgentExecutionUpdate(
       rawOutput: rawOutput,
       cleanedOutput: snapshot.cleanedOutput,
       observerState: snapshot.state,
       runtimeLost: snapshot.runtimeLost,
-      needsAttention: effectiveApproval != null ||
-          terminalPrompt != null ||
-          snapshot.needsAttention,
-      approval: effectiveApproval,
-      terminalPrompt: terminalPrompt,
+      needsAttention: terminalPrompt != null || snapshot.needsAttention,
+      nativeApproval: _nativeApprovalFromPrompt(terminalPrompt),
     );
   }
 
@@ -299,21 +321,32 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
     return output.contains('Armin runtime limit reached while session');
   }
 
-  /// Converts a native terminal prompt into an [ApprovalRequest] so the
-  /// simplified Approve / Reject card is available even when the legacy
-  /// NEED_APPROVAL markers are absent.
-  ///
-  /// Handles both command-level prompts (where a specific shell command
-  /// needs approval) and plan-level prompts (where the agent asks "ready
-  /// to proceed?" without a concrete command).
-  ApprovalRequest? _approvalFromTerminalPrompt(TerminalPrompt? prompt) {
-    if (prompt == null || prompt.question.trim().isEmpty) {
+  bool _isStaleExit(String output) {
+    return output.contains(_staleExitMarker);
+  }
+
+  NativeTerminalApproval? _nativeApprovalFromPrompt(
+    TerminalPrompt? prompt,
+  ) {
+    final question = prompt?.question.trim() ?? '';
+    if (question.isEmpty) {
       return null;
     }
-    return ApprovalRequest(
-      reason: prompt.question,
-      command: prompt.command.trim().isEmpty ? 'plan_approval' : prompt.command,
-      risk: 'medium',
+    final options = prompt!.options
+        .map(
+          (option) => NativeApprovalOption(
+            key: option.key,
+            label: option.label,
+          ),
+        )
+        .toList(growable: false);
+    return NativeTerminalApproval(
+      id: 'approval-${question.hashCode}',
+      taskId: '',
+      question: question,
+      options: options,
+      state: ApprovalState.pending,
+      createdAt: DateTime.now(),
     );
   }
 
@@ -425,22 +458,59 @@ $tmux capture-pane -p -t $session -S -${_runtimePolicy.monitorCaptureLines} 2>/d
     }
     final snapshot = output.trim();
     final terminalPrompt = _terminalPromptParser.parse(snapshot);
-    final approval = _approvalParser.parse(snapshot) ??
-        _approvalFromTerminalPrompt(terminalPrompt);
+    final currentAttention =
+        !_hasNewerWorkOutputAfterAttention(snapshot, terminalPrompt);
+    final exitMarkerCount = _exitMarkerCount(snapshot);
     return RemoteTaskProbe(
       sessionExists: true,
       snapshot: snapshot,
-      hasApprovalPrompt: approval != null,
-      hasTerminalPrompt: terminalPrompt != null,
-      hasExitedMarker: _hasExitedMarker(snapshot),
+      hasApprovalPrompt: terminalPrompt != null && currentAttention,
+      hasTerminalPrompt: terminalPrompt != null && currentAttention,
+      hasExitedMarker: exitMarkerCount > 0,
+      exitMarkerCount: exitMarkerCount,
     );
   }
 
-  bool _hasExitedMarker(String output) {
+  int _exitMarkerCount(String output) {
     return RegExp(
       r'Armin\s+(?:Codex|Qoder)\s+exited with status',
       caseSensitive: false,
-    ).hasMatch(output);
+    ).allMatches(output).length;
+  }
+
+  bool _hasNewerWorkOutputAfterAttention(
+    String snapshot,
+    TerminalPrompt? terminalPrompt,
+  ) {
+    final anchor = terminalPrompt?.question.trim() ?? '';
+    if (anchor.isEmpty) {
+      return false;
+    }
+    final index = snapshot.toLowerCase().lastIndexOf(anchor.toLowerCase());
+    if (index < 0) {
+      return false;
+    }
+    final tail = snapshot.substring(index + anchor.length);
+    return tail.split('\n').any(_isNewerWorkOutputLine);
+  }
+
+  bool _isNewerWorkOutputLine(String line) {
+    final text = line.trim();
+    if (text.isEmpty) {
+      return false;
+    }
+    if (RegExp(r'^(?:[❯>]\s*)?\d+\.\s+').hasMatch(text)) {
+      return false;
+    }
+    if (text == 'Permission Required' || text == 'Apply this change?') {
+      return false;
+    }
+    return text == 'Thinking' ||
+        text.startsWith('▪') ||
+        text.startsWith('▫') ||
+        text.startsWith('> ') ||
+        text.contains('Armin Codex exited with status') ||
+        text.contains('Armin Qoder exited with status');
   }
 
   Future<SSHClient> _connect({
@@ -643,6 +713,8 @@ $tmux send-keys -t "\$pane" C-m$clearHistory
     final delayMs = _pollInterval.inMilliseconds;
     final stablePolls = runtimePolicy.stablePollCount(_pollInterval);
     final maxPolls = runtimePolicy.maxPollCount(_pollInterval);
+    final staleExitPolls =
+        (const Duration(seconds: 10).inMilliseconds + delayMs - 1) ~/ delayMs;
     final monitorStart = -runtimePolicy.monitorCaptureLines;
     final approvalPromptPattern = _approvalPromptPattern(profile);
     final sessionSetup = request.attachOnly
@@ -710,10 +782,13 @@ $tmux pipe-pane -t "\$pane_id" 2>/dev/null || true
 $tmux pipe-pane -t "\$pane_id" "cat > \\"\$pipe_file\\""
 initial_output="\$($tmux capture-pane -p -t $session -S $monitorStart 2>/dev/null || true)"
 initial_hash="\$(printf "%s" "\$initial_output" | shasum | awk "{print \\\$1}")"
+initial_exit_marker_count="\$(printf "%s" "\$initial_output" | grep -c "Armin ${profile.label} exited with status" || true)"
+initial_attention_marker_count="\$(printf "%s" "\$initial_output" | grep -E -i -c ${_shellQuote(approvalPromptPattern)} || true)"
 last_hash="\$initial_hash"
 last_emitted_hash="\$initial_hash"
 $promptSubmit
 stable_count=0
+stale_exit_polls=0
 last_stable_emitted_hash=""
 changed_after_start=0
 i=0
@@ -746,7 +821,8 @@ while [ "\$i" -lt $maxPolls ]; do
     snapshot_emitted=1
   fi
   agent_exited=0
-  if printf "%s" "\$pane_output" | grep -q "Armin ${profile.label} exited with status"; then
+  exit_marker_count="\$(printf "%s" "\$pane_output" | grep -c "Armin ${profile.label} exited with status" || true)"
+  if [ "\$exit_marker_count" -gt "\$initial_exit_marker_count" ]; then
     agent_exited=1
   fi
   if [ "\$agent_exited" -eq 1 ]; then
@@ -755,7 +831,17 @@ while [ "\$i" -lt $maxPolls ]; do
     fi
     break
   fi
-  if printf "%s" "\$pane_output" | grep -E -i -q ${_shellQuote(approvalPromptPattern)}; then
+  if [ "\$initial_exit_marker_count" -gt 0 ] && [ "\$exit_marker_count" -eq "\$initial_exit_marker_count" ] && [ "\$changed_after_start" -eq 0 ]; then
+    stale_exit_polls=\$((stale_exit_polls + 1))
+    if [ "\$stale_exit_polls" -ge $staleExitPolls ]; then
+      echo "$_staleExitMarker"
+      break
+    fi
+  else
+    stale_exit_polls=0
+  fi
+  attention_marker_count="\$(printf "%s" "\$pane_output" | grep -E -i -c ${_shellQuote(approvalPromptPattern)} || true)"
+  if [ "\$attention_marker_count" -gt "\$initial_attention_marker_count" ]; then
     if [ "\$snapshot_emitted" -eq 0 ]; then
       emit_armin_snapshot
     fi
@@ -915,6 +1001,11 @@ fi
   }
 
   @visibleForTesting
+  RemoteTaskProbe parseRemoteTaskProbeForTest(String output) {
+    return _parseRemoteTaskProbe(output);
+  }
+
+  @visibleForTesting
   String buildTerminalOptionCommandForTest(
     AgentControlRequest request,
     String optionKey,
@@ -925,6 +1016,11 @@ fi
   @visibleForTesting
   String missingStructuredResultLogForTest(String output) {
     return _missingResultLog(output);
+  }
+
+  @visibleForTesting
+  bool staleExitForTest(String output) {
+    return _isStaleExit(output);
   }
 
   @visibleForTesting
@@ -1128,9 +1224,10 @@ class _ExecutionOutputState {
 
   _PromptParseResult promptState({
     required TerminalPromptParser terminalPromptParser,
-    required ApprovalParser approvalParser,
+    String candidateOutput = '',
   }) {
-    final observed = observedText;
+    final observed =
+        candidateOutput.trim().isEmpty ? observedText : candidateOutput;
     final semanticSignature = _semanticSignature(observed);
     final signature =
         semanticSignature.isEmpty ? observed.trim() : semanticSignature;
@@ -1140,7 +1237,6 @@ class _ExecutionOutputState {
     _lastPromptParseSignature = signature;
     _lastPromptParseResult = _PromptParseResult(
       terminalPrompt: terminalPromptParser.parse(observed),
-      approval: approvalParser.parse(observed),
     );
     return _lastPromptParseResult;
   }
@@ -1296,11 +1392,9 @@ class _PooledControlConnection {
 class _PromptParseResult {
   const _PromptParseResult({
     this.terminalPrompt,
-    this.approval,
   });
 
   final TerminalPrompt? terminalPrompt;
-  final ApprovalRequest? approval;
 }
 
 class SSHAuthPlan {

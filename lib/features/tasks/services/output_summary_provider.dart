@@ -1,4 +1,5 @@
 import '../../../core/models/task_status.dart';
+import '../../agent/parsers/terminal_prompt_parser.dart';
 import '../../agent/services/agent_output_cleaner.dart';
 import '../../voice/services/device_voice_service.dart';
 import 'secret_redactor.dart';
@@ -76,6 +77,15 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
     );
     final cleaned =
         _redactor.redactInlineSecrets(_cleaner.clean(withoutPromptBlocks));
+    final packageSummary = _packageTreeSummary(cleaned);
+    if (packageSummary.isNotEmpty) {
+      final speech = DeviceVoiceService.cleanSpeechSummary(packageSummary);
+      return OutputSummary(
+        displaySummary: packageSummary,
+        speechSummary: speech,
+        importantLines: packageSummary.split('\n'),
+      );
+    }
     final structuredLines = _structuredLines(cleaned, request);
     if (structuredLines.isNotEmpty) {
       final display = _structuredDisplaySummary(
@@ -118,18 +128,72 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
       request.taskTitle,
       ...request.promptInputs,
     }.where((input) => input.trim().isNotEmpty).toList(growable: false);
-    return cleaned
-        .split('\n')
-        .map((line) => line.trim())
-        .where((line) => line.startsWith('▪'))
-        .map((line) => line.substring(1).trim())
-        .where((line) => line.isNotEmpty)
-        .where((line) => !_looksLikePromptEcho(line, promptInputs))
-        .where((line) => !_isPureTableDecorator(line))
-        .toList(growable: false);
+    final blocks = <List<String>>[];
+    var current = <String>[];
+
+    void flush() {
+      final useful = current
+          .where((line) => line.trim().isNotEmpty)
+          .where((line) => !_looksLikePromptEcho(line, promptInputs))
+          .where((line) => !_looksLikeLowValueLine(line))
+          .where((line) => !_isStructuredTableDecorator(line))
+          .toList(growable: false);
+      if (useful.any((line) => _scoreLine(line) >= 20)) {
+        blocks.add(useful);
+      }
+      current = <String>[];
+    }
+
+    for (final rawLine in cleaned.split('\n')) {
+      final trimmed = rawLine.trim();
+      if (trimmed.isEmpty) {
+        continue;
+      }
+      final bulletMatch = RegExp(r'^[▪■●•]\s*(.+)$').firstMatch(trimmed);
+      if (bulletMatch != null) {
+        flush();
+        final content = bulletMatch.group(1)?.trim() ?? '';
+        if (_looksLikeBulletToolCall(content)) {
+          continue;
+        }
+        final semantic = _semanticLine(content);
+        if (semantic.isNotEmpty) {
+          current.add(semantic);
+        }
+        continue;
+      }
+      if (current.isEmpty) {
+        continue;
+      }
+      final semantic = _semanticLine(trimmed);
+      if (semantic.isNotEmpty && !_looksLikeBulletToolCall(semantic)) {
+        current.add(semantic);
+      }
+    }
+    flush();
+    if (blocks.isEmpty) {
+      return const [];
+    }
+    return blocks.last;
   }
 
-  bool _isPureTableDecorator(String line) {
+  bool _looksLikeBulletToolCall(String line) {
+    final lower = line.trim().toLowerCase();
+    return lower.startsWith('bash(') ||
+        lower.startsWith('grep(') ||
+        lower.startsWith('glob(') ||
+        lower.startsWith('read(') ||
+        lower.startsWith('write(') ||
+        lower.startsWith('edit(') ||
+        lower.startsWith('ls(') ||
+        lower.startsWith('cat(') ||
+        lower.startsWith('python ') ||
+        lower.startsWith('go test ') ||
+        lower.startsWith('flutter test ') ||
+        lower.startsWith('dart test ');
+  }
+
+  bool _isStructuredTableDecorator(String line) {
     final compact = line.replaceAll(RegExp(r'\s+'), '');
     if (compact.isEmpty) return true;
     return RegExp(r'^[┌┬┐├┼┤└┴┘─━│]+\$').hasMatch(compact);
@@ -190,15 +254,15 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
     }
 
     for (final line in lines) {
-      if (_looksLikeTableLine(line) ||
-          (current.isNotEmpty && _looksLikeTableContinuation(line))) {
+      if (_isStructuredTableLine(line) ||
+          (current.isNotEmpty && _structuredTableContinuation(line))) {
         if (current.isEmpty && pendingIntro != null) {
           current.add(pendingIntro);
         }
         current.add(line);
       } else {
         flush();
-        pendingIntro = _looksLikeStructuredIntroLine(line) ? line : null;
+        pendingIntro = _structuredIntroLine(line) ? line : null;
       }
     }
     flush();
@@ -213,33 +277,33 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
     if (lines.length < 3) {
       return false;
     }
-    final dataRows = lines.where(_looksLikeTableDataRow).length;
+    final dataRows = lines.where(_structuredTableDataRow).length;
     return dataRows >= 2;
   }
 
   int _structuredScore(List<String> lines) {
-    final dataRows = lines.where(_looksLikeTableDataRow).length;
-    final fileRows = lines.where(_looksLikeFileReferenceLine).length;
+    final dataRows = lines.where(_structuredTableDataRow).length;
+    final fileRows = lines.where(_structuredFileReferenceLine).length;
     return dataRows * 10 + fileRows * 4 + lines.length;
   }
 
-  bool _looksLikeTableLine(String line) {
-    return _looksLikeTableDataRow(line) || _looksLikeTableSeparator(line);
+  bool _isStructuredTableLine(String line) {
+    return _structuredTableDataRow(line) || _structuredTableSeparator(line);
   }
 
-  bool _looksLikeTableDataRow(String line) {
+  bool _structuredTableDataRow(String line) {
     if (!_hasTableDelimiter(line)) {
       return false;
     }
-    if (_looksLikeTableSeparator(line)) {
+    if (_structuredTableSeparator(line)) {
       return false;
     }
     final cells = _tableCells(line);
     return cells.where((cell) => cell.isNotEmpty).length >= 2 &&
-        cells.any(_looksLikeStructuredCell);
+        cells.any(_structuredCell);
   }
 
-  bool _looksLikeStructuredCell(String cell) {
+  bool _structuredCell(String cell) {
     final lower = cell.toLowerCase();
     return lower.contains('.py') ||
         lower.contains('.dart') ||
@@ -250,28 +314,126 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
         RegExp(r'[\u4e00-\u9fff]').hasMatch(cell);
   }
 
-  bool _looksLikeTableSeparator(String line) {
+  bool _structuredTableSeparator(String line) {
     final trimmed = line.trim();
     return RegExp(r'^\|?\s*[-:─━_\s|]+\|?\s*$').hasMatch(trimmed) ||
         RegExp(r'^[┌┬┐├┼┤└┴┘─━│\s]+$').hasMatch(trimmed);
   }
 
-  bool _looksLikeTableContinuation(String line) {
-    return _looksLikeFileReferenceLine(line) ||
-        _looksLikeTableSeparator(line) ||
+  bool _structuredTableContinuation(String line) {
+    return _structuredFileReferenceLine(line) ||
+        _structuredTableSeparator(line) ||
         _hasTableDelimiter(line);
   }
 
-  bool _looksLikeFileReferenceLine(String line) {
+  bool _structuredFileReferenceLine(String line) {
     return RegExp(r'\b[A-Za-z0-9_\-./]*test[A-Za-z0-9_\-./]*\.(?:py|dart|ts)\b')
         .hasMatch(line);
+  }
+
+  String _packageTreeSummary(String cleaned) {
+    final lines = _semanticLines(_removeTerminalPromptBlocks(cleaned));
+    if (!_hasDirectoryTree(lines)) {
+      return '';
+    }
+    final packageName = _packageRootName(lines);
+    final output = <String>[];
+    if (packageName.isNotEmpty) {
+      output.add('Package complete：已创建 $packageName 包结构。');
+    } else {
+      output.add('Package complete：已创建项目包结构。');
+    }
+    final widgetSupport = _packageSupportLine(lines);
+    if (widgetSupport.isNotEmpty) {
+      output.add(widgetSupport);
+    }
+    final testStatus = _packageTestStatusLine(lines);
+    if (testStatus.isNotEmpty) {
+      output.add(testStatus);
+    }
+    final commands = _packageCommandLines(lines);
+    if (commands.isNotEmpty) {
+      output.add('本地验证：${commands.join('；')}。');
+    }
+    return _compactDisplay(output);
+  }
+
+  bool _hasDirectoryTree(List<String> lines) {
+    final treeLines = lines.where(_structuredDirectoryTreeLine).length;
+    if (treeLines < 4) {
+      return false;
+    }
+    return _packageRootName(lines).isNotEmpty ||
+        lines.any((line) =>
+            line.toLowerCase().contains('each widget supports') ||
+            line.toLowerCase().contains('cannot run tests'));
+  }
+
+  bool _structuredDirectoryTreeLine(String line) {
+    final trimmed = line.trimLeft();
+    return trimmed.startsWith('├') ||
+        trimmed.startsWith('└') ||
+        trimmed.startsWith('│') ||
+        RegExp(r'^[A-Za-z0-9_.-]+/$').hasMatch(trimmed);
+  }
+
+  String _packageRootName(List<String> lines) {
+    for (final line in lines) {
+      final trimmed = line.trim();
+      if (RegExp(r'^[A-Za-z0-9_.-]+/$').hasMatch(trimmed)) {
+        return trimmed.substring(0, trimmed.length - 1);
+      }
+    }
+    return '';
+  }
+
+  String _packageSupportLine(List<String> lines) {
+    for (final line in lines) {
+      final lower = line.toLowerCase();
+      if (lower.contains('each widget supports') ||
+          lower.startsWith('supports:')) {
+        final supports = line
+            .replaceFirst(
+                RegExp(r'^each widget supports:?\s*', caseSensitive: false), '')
+            .replaceFirst(RegExp(r'^supports:?\s*', caseSensitive: false), '')
+            .replaceFirst(RegExp(r'\.?$'), '')
+            .trim();
+        if (supports.isNotEmpty) {
+          return '组件支持：$supports。';
+        }
+      }
+    }
+    return '';
+  }
+
+  String _packageTestStatusLine(List<String> lines) {
+    for (final line in lines) {
+      final lower = line.toLowerCase();
+      if (lower.contains('cannot run tests')) {
+        return '测试未运行：当前环境未安装 flutter/dart。';
+      }
+    }
+    return '';
+  }
+
+  List<String> _packageCommandLines(List<String> lines) {
+    final commands = <String>[];
+    for (final line in lines) {
+      final trimmed = line.trim();
+      if (trimmed == 'flutter pub get' ||
+          trimmed == 'flutter test' ||
+          trimmed.contains('flutter run')) {
+        _addUnique(commands, trimmed);
+      }
+    }
+    return commands;
   }
 
   bool _hasTableDelimiter(String line) {
     return line.contains('|') || line.contains('│');
   }
 
-  bool _looksLikeStructuredIntroLine(String line) {
+  bool _structuredIntroLine(String line) {
     return line.contains('汇总') ||
         line.contains('如下') ||
         line.contains('表格') ||
@@ -305,8 +467,7 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
   String _structuredNaturalSummary(List<String> lines) {
     final intro = lines
         .firstWhere(
-          (line) =>
-              !_looksLikeTableLine(line) && _looksLikeStructuredIntroLine(line),
+          (line) => !_isStructuredTableLine(line) && _structuredIntroLine(line),
           orElse: () => '结构化结果如下',
         )
         .replaceFirst(RegExp(r'[：:，,。.\s]+$'), '');
@@ -363,12 +524,12 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
     var seenStructured = false;
     for (final line in lines) {
       if (structuredSet.contains(line) ||
-          _looksLikeTableLine(line) ||
-          _looksLikeTableContinuation(line)) {
+          _isStructuredTableLine(line) ||
+          _structuredTableContinuation(line)) {
         seenStructured = true;
         continue;
       }
-      if (_looksLikeStructuredIntroLine(line)) {
+      if (_structuredIntroLine(line)) {
         seenStructured = true;
         continue;
       }
@@ -401,7 +562,7 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
   List<List<String>> _logicalTableRows(List<String> lines) {
     final rows = <List<String>>[];
     for (final line in lines) {
-      if (!_hasTableDelimiter(line) || _looksLikeTableSeparator(line)) {
+      if (!_hasTableDelimiter(line) || _structuredTableSeparator(line)) {
         continue;
       }
       final cells = _normalizedTableCells(line);
@@ -666,99 +827,7 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
       RegExp(r'test[A-Za-z0-9_]*\.(?:py|dart|ts)');
 
   String _removeTerminalPromptBlocks(String cleaned) {
-    final lines = cleaned
-        .replaceAll(RegExp(r'\x1B\[[0-?]*[ -/]*[@-~]'), '')
-        .replaceAll('\r', '\n')
-        .split('\n');
-    final kept = <String>[];
-    var skipping = false;
-    var sawOption = false;
-
-    for (final line in lines) {
-      final trimmed = line.trim();
-      if (!skipping && _isTerminalPromptStart(trimmed)) {
-        _removeTerminalPromptPreface(kept);
-        skipping = true;
-        sawOption = false;
-        continue;
-      }
-      if (!skipping) {
-        kept.add(line);
-        continue;
-      }
-      if (trimmed.isEmpty ||
-          _isTerminalPromptStart(trimmed) ||
-          _isTerminalPromptSeparator(trimmed)) {
-        continue;
-      }
-      if (_isTerminalPromptFooter(trimmed)) {
-        skipping = false;
-        sawOption = false;
-        continue;
-      }
-      if (_isTerminalPromptOption(trimmed)) {
-        sawOption = true;
-        continue;
-      }
-      if (!sawOption || line.startsWith(RegExp(r'\s'))) {
-        continue;
-      }
-      skipping = false;
-      kept.add(line);
-    }
-    return kept.join('\n');
-  }
-
-  void _removeTerminalPromptPreface(List<String> lines) {
-    while (lines.isNotEmpty) {
-      final trimmed = lines.last.trim();
-      if (trimmed.isEmpty ||
-          _isTerminalPromptOption(trimmed) ||
-          _isTerminalPromptSeparator(trimmed) ||
-          _looksLikeTerminalPromptPreface(trimmed)) {
-        lines.removeLast();
-        continue;
-      }
-      break;
-    }
-  }
-
-  bool _looksLikeTerminalPromptPreface(String line) {
-    return line.startsWith('▪') ||
-        line.startsWith('•') ||
-        line.endsWith('?') ||
-        line.endsWith('？') ||
-        line.contains('你是指以下哪种') ||
-        line.contains('请选择') ||
-        line.contains('请具体说明');
-  }
-
-  bool _isTerminalPromptStart(String line) {
-    final lower = line.toLowerCase();
-    return lower == 'asking user' ||
-        lower == 'permission required' ||
-        lower.startsWith('allow this command to run') ||
-        lower.startsWith('allow execution of') ||
-        lower.startsWith('allow command execution') ||
-        lower.startsWith('would you like to run') ||
-        lower.startsWith('approve this command') ||
-        lower.startsWith('apply this change');
-  }
-
-  bool _isTerminalPromptOption(String line) {
-    return RegExp(r'^[>›❯]?\s*\d{1,2}[.)]\s+.+').hasMatch(line);
-  }
-
-  bool _isTerminalPromptFooter(String line) {
-    final lower = line.toLowerCase();
-    return lower.contains('navigate') ||
-        lower.contains('enter select') ||
-        lower.contains('esc back') ||
-        lower.contains('ctrl+o');
-  }
-
-  bool _isTerminalPromptSeparator(String line) {
-    return RegExp(r'^[─━_\-=]{3,}$').hasMatch(line);
+    return const TerminalPromptParser().stripPromptBlocks(cleaned);
   }
 
   List<String> _semanticLines(String cleaned) {

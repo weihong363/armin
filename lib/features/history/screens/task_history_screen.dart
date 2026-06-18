@@ -9,7 +9,8 @@ class TaskHistoryScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final tasks = AppStateScope.of(context).tasks;
+    final state = AppStateScope.of(context);
+    final tasks = state.tasks;
     return Scaffold(
       appBar: AppBar(title: const Text('历史任务')),
       body: tasks.isEmpty
@@ -20,6 +21,7 @@ class TaskHistoryScreen extends StatelessWidget {
                 for (final task in tasks)
                   TaskCard(
                     task: task,
+                    workState: state.workState(task.id),
                     onTap: () => Navigator.of(context).push(
                       MaterialPageRoute<void>(
                         builder: (_) => TaskDetailScreen(taskId: task.id),

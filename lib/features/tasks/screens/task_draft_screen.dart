@@ -582,6 +582,7 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
     final taskId = 'task-${now.microsecondsSinceEpoch}';
     final prompt = _buildPrompt();
     final tmuxSessionName = _taskTmuxSessionName(host.tmuxSessionName, taskId);
+    final approvalMode = _executionMode.toApprovalMode();
     final taskHost = host
         .copyWith(
           projectPath: projectPath,
@@ -608,6 +609,7 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
       finalPrompt: prompt,
       secretRecords: secretRecords,
       rawLog: '',
+      approvalMode: approvalMode,
       voiceInputs: [
         if (_rawStt.isNotEmpty)
           VoiceInput(
@@ -684,7 +686,7 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
         password: host.password,
         approvalConfig: AgentApprovalConfig(
           agentType: AgentTypeDetection.detect(host.agentCommand),
-          mode: _executionMode.toApprovalMode(),
+          mode: approvalMode,
         ),
       ),
     );

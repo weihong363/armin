@@ -114,6 +114,51 @@ Thinking
     expect(summary.displaySummary, isNot(contains('Simple request')));
   });
 
+  test('rule provider prefers final bullet deliverable over earlier progress',
+      () async {
+    const output = OutputSummaryRequest(
+      cleanedOutput: '''
+Thinking
+│ The user is asking to add GET /stats/{code} which I already implemented.
+▪ 这个已经在上一轮实现了。让我确认一下当前代码状态。
+
+▪ Grep('stats|Stats' within /Users/.../shotlink/handler.go)
+  └ Found 5 matches (Ctrl+O to expand)
+
+Thinking
+│ It's already implemented. Let me run the tests to confirm everything still works.
+▪ Bash(go test -v -run TestStats ./... 2>&1)
+  └ === RUN   TestStatsInitialZero
+    --- PASS: TestStatsInitialZero (0.00s)
+
+Thinking
+│ Everything is already in place and working. Just confirm to the user.
+▪ GET /stats/{code} 已经实现了，3 个相关测试全部通过。
+
+  当前行为：
+  - GET /stats/{code} — 返回 {"code":"1","hits":3}（JSON）
+  - 短码不存在时返回 404 Not Found
+  - 每次 GET /{code} 重定向时自动计数 +1
+
+  无需额外改动，可以直接使用。
+''',
+      status: TaskStatus.turnIdle,
+      taskTitle: '添加 GET /stats/{code}',
+      promptInputs: ['添加 GET /stats/{code}'],
+    );
+
+    final summary =
+        await const RuleBasedOutputSummaryProvider().summarize(output);
+
+    expect(summary.displaySummary, contains('GET /stats/{code} 已经实现了'));
+    expect(summary.displaySummary, contains('3 个相关测试全部通过'));
+    expect(summary.displaySummary, contains('短码不存在时返回 404 Not Found'));
+    expect(summary.displaySummary, contains('无需额外改动'));
+    expect(summary.displaySummary, isNot(contains('上一轮实现')));
+    expect(summary.displaySummary, isNot(contains('Grep(')));
+    expect(summary.displaySummary, isNot(contains('Bash(')));
+  });
+
   test('rule provider strips governance prefix but keeps the actual result',
       () async {
     const noisyPrefix = OutputSummaryRequest(
@@ -764,6 +809,52 @@ pin-up 风格，含 9 个动画状态（idle/running/waving/jumping/failed/waiti
     expect(summary.displaySummary, isNot(contains('--recursiv e')));
     expect(summary.displaySummary, isNot(contains('原文件名保，模板中')));
     expect(summary.displaySummary, isNot(contains('│')));
+  });
+
+  test('rule provider summarizes package tree without dumping the tree',
+      () async {
+    const packageOutput = OutputSummaryRequest(
+      cleanedOutput: '''
+Package complete. Here's what was created:
+    countdown_widgets/
+    ├── lib/
+    │   ├── countdown_widgets.dart          # barrel export
+    │   └── src/
+    │       ├── circular_countdown.dart      # CircularCountdown (CustomPainter arc)
+    │       ├── linear_countdown.dart        # LinearCountdown (progress bar)
+    │       └── flip_countdown.dart          # FlipCountdown (animated digit cards)
+    ├── test/
+    │   └── countdown_widgets_test.dart      # 16 widget tests
+    ├── example/
+    │   ├── pubspec.yaml
+    │   └── lib/main.dart                    # demo app
+    ├── pubspec.yaml
+    ├── analysis_options.yaml
+    └── README.md
+   Each widget supports: duration, color/backgroundColor, size params, and onFinished
+   callback.
+
+   Cannot run tests - flutter and dart are not installed in this environment. To run tests
+    locally:
+    flutter pub get
+    flutter test
+   To run the example app:
+    cd example && flutter pub get && flutter run
+''',
+      status: TaskStatus.turnIdle,
+      taskTitle: '创建倒计时 widget package',
+    );
+
+    final summary =
+        await const RuleBasedOutputSummaryProvider().summarize(packageOutput);
+
+    expect(summary.displaySummary, contains('已创建 countdown_widgets 包结构'));
+    expect(summary.displaySummary, contains('组件支持：duration'));
+    expect(summary.displaySummary, contains('测试未运行'));
+    expect(summary.displaySummary, contains('flutter test'));
+    expect(summary.displaySummary, isNot(contains('├──')));
+    expect(summary.displaySummary, isNot(contains('│')));
+    expect(summary.displaySummary, isNot(contains('pub...')));
   });
 
   test('local model provider falls back when unavailable', () async {

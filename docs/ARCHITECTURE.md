@@ -4,6 +4,8 @@ Armin 是一个 Flutter 应用，采用本地优先的状态管理，并围绕�
 
 长期 Runtime 方向见 [Bridge Runtime Long-Term Architecture](runtime/bridge-runtime-long-term-architecture.md)。当前 Flutter 内 Bridge Runtime 是过渡实现；最终任务生命周期、审批状态、事件流和 watcher offset 的持久化边界应在 SQLite，并逐步迁移到远端 Runtime daemon 或支持可靠断线续传。
 
+长期目标不是消除文本解析。Codex / Qoder 是 TUI 程序，文本仍然是原始观察输入；目标是把“文本 → 事件”的转换集中在 Runtime Watcher / Agent Adapter 层，解析新增文本后写入结构化事件，再由 Runtime reducer 归约任务状态。AppState、结果卡片、TTS 和 UI 不应各自反复解析 raw terminal text，也不应让 pane 中残留的 exit marker、thinking、approval prompt 或旧结果直接决定当前 turn 状态。
+
 ## 层级结构
 
 - `core/models`: 共享状态和跨功能值类型
@@ -51,6 +53,26 @@ Armin 不负责代理的推理、规划、代码合并或调度。它仅管理 s
 
 `tmux capture-pane` 是观察输入，不是任务状态权威。输出稳定或无新增可见文本只能表示 `outputQuieting` / `no visible update`，不能单独触发 `turnIdle`、结果卡片或 TTS 播报。长期应由 Runtime Event + SQLite Store 派生 `WorkState`、`ApprovalState` 和结果可见性。
 
+目标链路：
+
+```text
+tmux / Codex / Qoder
+↓
+Raw TUI text stream
+↓
+CodexAdapter / QoderAdapter / GenericTuiAdapter
+↓
+RuntimeEventBus
+↓
+Runtime reducer
+↓
+SQLite Task / Turn / Event Store
+↓
+Armin App UI
+```
+
+Adapter 可以解析文本中的审批、等待输入、进度、交付结果和进程退出，但它只产出事件候选；是否进入 `turnIdle`、`needApproval`、`completed` 或显示结果卡片，必须由 reducer 基于新增事件和持久化状态决定。
+
 ## 输出与提示层
 
 纯 Dart 服务保持行为可测试：
@@ -65,11 +87,15 @@ Armin 不负责代理的推理、规划、代码合并或调度。它仅管理 s
 - `ConstraintExtractor`
 - `OutputSummaryProvider`
 
-`TaskResultParser` 和 `ApprovalParser` 仍为 legacy 兼容代码。即便 adapter 提供 legacy `TaskResult`，它也只作为本轮可读摘要进入 `turnIdle` 或 `needAttention`，不再决定任务完成或触发 session cleanup。测试覆盖 ANSI/TUI 清洗、turn idle/runtime lost、敏感信息脱敏、上下文治理、语音草稿和规则摘要。
+旧的 `TaskResultParser` / `TASK_RESULT_*` 协议解析外壳已移除。产出摘要来自当前 turn 的原始/清洗输出和 `OutputSummaryProvider`，审批终端提示直接映射为 `NativeTerminalApproval`。测试覆盖 ANSI/TUI 清洗、turn idle/runtime lost、敏感信息脱敏、上下文治理、语音草稿和规则摘要。
 
 ## 指标/事件层
 
 `MetricEvent` 记录 shell 级别的事件，如任务创建、任务开始、接收到原始输出、请求批准和任务完成。第一阶段在任务详情时间线中显示这些事件。后续阶段可以聚合诸如持续时间、编辑次数、批准次数、中断次数、验证状态、变更文件数和原始日志大小等字段。
+
+后续指标层还应覆盖单次任务交互效率，而不是只记录 runtime 事件数量。重点观察用户 token 消耗、Agent 输出长度、有效结果占比、追加/重试次数、审批次数、等待时间、用户是否接受结果，以及任务从创建到可验收的耗时。这些指标服务于“每次交互是否更高效、结果是否更符合预期”，不用于把 Armin 扩展成模型基准测试平台。
+
+Armin 适合采用轻量 Loop Engineering 视角：Plan → Execute → Observe → Evaluate → Adjust → Verify。该 loop 描述用户围绕任务持续补充上下文、观察结果和确认下一步的产品循环；它不是 workflow engine，也不代表自动多 Agent 编排。Runtime 负责可靠观察和状态归约，评估层负责记录本轮循环是否消耗过高、是否需要返工、是否达到用户预期。
 
 ### RuntimeEventBus（Phase 2.5）
 
@@ -174,3 +200,14 @@ none → pending → resolving → resolved
 - 已结束、失败、停止或运行丢失的任务可重新执行，并预选原任务的 Host 和 project path；仍在交互中的任务不能通过重跑另起 session。
 
 Armin 不解释或重写 Agent 的执行逻辑。`SelectableOutputSummaryProvider` 支持用户打开实验性的端侧摘要增强，并在 runner 不存在、设备不支持、超时或失败时回落至脱敏后的规则摘要。生产包仍待接入实际 Android 模型 runner；它只用于 TTS/展示摘要，不参与 Agent 执行。
+
+## 交互效率与 Loop Engineering
+
+长期上，Armin 不只判断“任务有没有结束”，还要帮助用户判断“这轮 Agent 交互是否值得继续用同样方式推进”。效率评估应绑定到 Task / Turn，而不是绑定到某个聊天会话：
+
+- 输入侧：任务描述长度、上下文追加次数、语音/文本比例、审批次数和用户等待时间
+- 输出侧：deliverable 是否存在、摘要是否可读、TTS 是否同源、无效输出和 thinking/CLI 噪声是否被过滤
+- 结果侧：用户接受、继续、拒绝、重做或标记完成的行为
+- 成本侧：token 消耗、重复执行次数、用户返工次数和从任务创建到验收的时长
+
+Loop Engineering 在 Armin 中的边界是单任务闭环优化：更清楚地计划任务、更可靠地观察执行、更早发现偏离、更低成本地追加上下文和验收结果。它不应变成复杂工作流系统、自动 fork/join runtime 或多 Agent 调度器。

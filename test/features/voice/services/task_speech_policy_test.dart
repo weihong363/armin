@@ -1,7 +1,6 @@
 import 'package:armin/core/models/task_status.dart';
-import 'package:armin/features/agent/parsers/approval_request.dart';
-import 'package:armin/features/agent/parsers/task_result.dart';
 import 'package:armin/features/hosts/models/host_config.dart';
+import 'package:armin/features/runtime/models/approval_state.dart';
 import 'package:armin/features/tasks/models/native_output_turn.dart';
 import 'package:armin/features/tasks/models/task_session.dart';
 import 'package:armin/features/tasks/services/output_summary_provider.dart';
@@ -16,9 +15,7 @@ void main() {
     final previous = _task(status: TaskStatus.running);
     final current = previous.copyWith(
       status: TaskStatus.completed,
-      result: const TaskResult(
-        status: 'success',
-        summary: '''
+      summary: '''
 已修复登录失败。
 
 ```dart
@@ -29,11 +26,6 @@ flutter test
 /Users/ironion/workspace/armin/lib/login.dart
 可以验证。
 ''',
-        changedFiles: [],
-        validation: [],
-        risks: [],
-        nextActions: [],
-      ),
     );
 
     final decision = await policy.decide(
@@ -152,6 +144,52 @@ runbook-copilot 是面向工程团队的 RAG 事故排障助手，用于根据�
     );
 
     expect(decision.shouldSpeak, isTrue);
+  });
+
+  test('auto speech uses latest raw turn output before stale cleaned output',
+      () async {
+    final previous = _task(status: TaskStatus.running);
+    final current = previous.copyWith(
+      status: TaskStatus.turnIdle,
+      summary: '旧摘要不应播报',
+      turns: [
+        _turnWithInput(1, '实现接口').copyWith(
+          rawOutput: '旧结果',
+          cleanedOutput: '旧结果',
+        ),
+        _turnWithInput(2, '确认 stats').copyWith(
+          rawOutput: '''
+旧结果
+确认 stats
+Thinking
+ │ Checking current implementation.
+▪ GET /stats/{code} 已经实现了，3 个相关测试全部通过。
+''',
+          cleanedOutput: '这个已经在上一轮实现了。让我确认一下当前代码状态。',
+        ),
+      ],
+    );
+    final provider = _CapturingSummaryProvider(
+      const OutputSummary(
+        displaySummary: 'GET /stats/{code} 已经实现了，3 个相关测试全部通过。',
+        speechSummary: '',
+      ),
+    );
+
+    final decision = await policy.decide(
+      previous: previous,
+      current: current,
+      settings: settings,
+      outputSummaryProvider: provider,
+    );
+
+    expect(decision.shouldSpeak, isTrue);
+    expect(provider.lastRequest?.cleanedOutput, contains('GET /stats/{code}'));
+    expect(
+      provider.lastRequest?.cleanedOutput,
+      isNot(contains('这个已经在上一轮实现了')),
+    );
+    expect(decision.text, contains('GET /stats/{code}'));
   });
 
   test('auto speech does not fallback to stale previous turn summary',
@@ -315,11 +353,7 @@ runbook-copilot 是面向工程团队的 RAG 事故排障助手，用于根据�
     final previous = _task(status: TaskStatus.running);
     final current = previous.copyWith(
       status: TaskStatus.needApproval,
-      approval: const ApprovalRequest(
-        reason: '删除临时构建产物，风险中等。',
-        command: 'rm -rf build',
-        risk: 'medium',
-      ),
+      nativeApproval: _approval('删除临时构建产物，风险中等。'),
     );
 
     final decision = await policy.decide(
@@ -337,11 +371,8 @@ runbook-copilot 是面向工程团队的 RAG 事故排障助手，用于根据�
     final current = previous.copyWith(
       status: TaskStatus.needApproval,
       summary: 'Turn 1 old result should not be spoken',
-      approval: const ApprovalRequest(
-        reason: 'Turn 2 needs permission to inspect build output.',
-        command: 'cat build.log',
-        risk: 'low',
-      ),
+      nativeApproval:
+          _approval('Turn 2 needs permission to inspect build output.'),
       turns: [
         _turnWithInput(1, '输出旧结果').copyWith(
           rawOutput: 'Turn 1 old result',
@@ -374,11 +405,7 @@ runbook-copilot 是面向工程团队的 RAG 事故排障助手，用于根据�
     final previous = _task(status: TaskStatus.running);
     final current = previous.copyWith(
       status: TaskStatus.needApproval,
-      approval: const ApprovalRequest(
-        reason: '请确认删除临时文件。',
-        command: 'rm -rf build',
-        risk: 'medium',
-      ),
+      nativeApproval: _approval('请确认删除临时文件。'),
     );
 
     final decision = await policy.decide(
@@ -419,6 +446,54 @@ runbook-copilot 是面向工程团队的 RAG 事故排障助手，用于根据�
           .shouldSpeak,
       isFalse,
     );
+  });
+
+  test('need attention without current prompt or output does not speak summary',
+      () async {
+    final previous = _task(status: TaskStatus.running);
+    final current = previous.copyWith(
+      status: TaskStatus.needAttention,
+      summary: '初始提示词不应该被播报',
+      shortSummary: '任务已创建底下的内容不应该被播报',
+      turns: [
+        _turnWithInput(1, '初始任务').copyWith(
+          rawOutput: '旧结果',
+          cleanedOutput: '旧结果',
+        ),
+        _turnWithInput(2, '继续').copyWith(
+          rawOutput: '',
+          cleanedOutput: '',
+          status: NativeOutputTurnStatus.needAttention,
+        ),
+      ],
+    );
+
+    final decision = await policy.decide(
+      previous: previous,
+      current: current,
+      settings: settings,
+    );
+
+    expect(decision.shouldSpeak, isFalse);
+  });
+
+  test('need attention speaks current terminal prompt only', () async {
+    final previous = _task(status: TaskStatus.running);
+    final current = previous.copyWith(
+      status: TaskStatus.needAttention,
+      summary: '旧摘要不应该被播报',
+      nativeApproval: _approval('Apply this change?'),
+    );
+
+    final decision = await policy.decide(
+      previous: previous,
+      current: current,
+      settings: settings,
+    );
+
+    expect(decision.shouldSpeak, isTrue);
+    expect(decision.text, contains('Apply this change?'));
+    expect(decision.text, isNot(contains('旧摘要')));
   });
 
   test('stale text in a new turn is not replayed as latest speech', () async {
@@ -503,6 +578,20 @@ TaskSession _task({required TaskStatus status}) {
     finalPrompt: 'Task',
     secretRecords: const [],
     rawLog: '',
+  );
+}
+
+NativeTerminalApproval _approval(String question) {
+  return NativeTerminalApproval(
+    id: 'approval-1',
+    taskId: 'task-1',
+    question: question,
+    options: const [
+      NativeApprovalOption(key: '1', label: 'Allow once'),
+      NativeApprovalOption(key: '2', label: 'Reject'),
+    ],
+    state: ApprovalState.pending,
+    createdAt: DateTime(2026, 5, 24),
   );
 }
 

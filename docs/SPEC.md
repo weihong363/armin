@@ -113,6 +113,10 @@ Armin 拥有 shell 级别的会话抽象，而不是代理运行时：
 
 长期 Runtime 方向中，`tmux capture-pane` 只能作为观察输入，不能作为状态权威。短时间无新增输出或 pane 稳定只能表示 `outputQuieting` / `no visible update`；`turnIdle`、结果卡片和 TTS 播报应由 Runtime Event、SQLite 中的 durable state、明确等待用户输入、审批状态或 adapter 识别的强完成信号驱动。
 
+Codex / Qoder 是 TUI 程序，因此文本解析不可避免。规范要求解析边界集中在 Runtime Watcher / Agent Adapter：Adapter 只解析当前观察基线之后的新增文本，产出 `ApprovalRequested`、`TurnWaitingUser`、`DeliverableUpdated`、`ProcessExited` 等候选事件；Runtime reducer 再基于新增事件和持久化状态归约任务状态。完整 pane capture 只能用于审计、恢复和人工排查，不能直接产生状态变更事件。
+
+状态触发型事件必须具备“当前观察窗口的新证据”。旧 pane 中残留的 exit marker、approval prompt、terminal option prompt、thinking 文本、旧结果或 prompt echo 不能重新进入 reducer，不能触发 `needAttention`、`turnIdle`、结果卡片或自动 TTS。若需要从完整 capture 恢复状态，必须通过 offset、marker count、event id 或内容 fingerprint 做去重。
+
 Bridge Runtime 当前运行在 Flutter 进程内，属于过渡实现。长期应将 Runtime 的持久化边界放在 SQLite，并逐步支持断线续传或迁移为远端 Runtime daemon，使任务状态不依赖 App 进程生命周期。
 
 ### 历史和审计跟踪
@@ -161,8 +165,8 @@ MVP 不实现真正的并行运行时。数据模型为父任务、子任务、�
 - `SecretRecord`: id, taskId, name, usage, redactedValue, scope, createdAt
 - `ExecutionLog`: id, taskId, rawOutput, createdAt
 - `NativeOutputTurn`: id, taskId, turnIndex, userInput, rawOutput, cleanedOutput, status, timestamps, userDecision
-- `TaskResult`: legacy-compatible optional result representation; not required for native-output completion
-- `ApprovalRequest`: id, taskId, reason, command, risk, status, createdAt, resolvedAt
+- Result summaries are derived from native turns/output and stored on task summary fields; the legacy `TaskResult` representation has been removed
+- `NativeTerminalApproval`: id, taskId, question, options, state, createdAt, stateChangedAt, selectedOptionKey, failureReason
 - `MetricEvent`: id, taskId, eventType, payloadJson, createdAt
 - `Subtask`: id, parentTaskId, title, status, workerLabel, orderIndex, summary, createdAt, completedAt
 
@@ -173,3 +177,16 @@ MVP 不实现真正的并行运行时。数据模型为父任务、子任务、�
 ## 指标方向
 
 MVP 记录指标事件但没有仪表板。目标字段涵盖任务持续时间、重试/跟进/编辑/批准/中断计数、验证状态、原始日志大小、意图保真度、执行质量和人为中断成本。目的不是模型基准测试；而是衡量人与代理之间的委托质量。
+
+后续阶段应增加任务级交互效率评估。每个 task / turn 至少应能复盘：
+
+- 用户输入和追加上下文的长度与次数
+- Agent 输出和结果摘要的长度
+- token 消耗与有效 deliverable 的比例
+- 审批、暂停、恢复、重试和用户等待次数
+- 用户是否接受结果、继续补充、拒绝/重做或标记完成
+- 从创建任务到可验收结果的耗时
+
+这些指标用于提升用户每次交互的效率：减少无效输出、减少 prompt echo / thinking / CLI chrome 污染、减少不必要的返工，并帮助下一轮任务提示更聚焦。它们不改变 Codex/Qoder 的执行逻辑，也不要求 Agent 返回私有结构化协议。
+
+Armin 的 Loop Engineering 边界是单任务循环：Plan → Execute → Observe → Evaluate → Adjust → Verify。Runtime 负责观察和归约状态；评估层记录本轮循环的成本、结果质量和用户后续动作；UI 只暴露对用户有帮助的下一步。该循环不等同于多 Agent workflow、自动调度器或通用任务依赖图。

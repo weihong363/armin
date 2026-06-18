@@ -1,379 +1,492 @@
-# Legacy Logic Cleanup Checklist
+# 遗留逻辑清理清单
 
-> Phase 2.5 — 新 RuntimeEventBus 逻辑稳定后移除旧逻辑
+> Phase 2.5 → Phase A 过渡期 — 旧逻辑向新 Runtime 架构迁移
 
 ## 状态
 
-- **当前阶段**: 新旧逻辑共存（Phase 2.5 完成）
-- **目标阶段**: 新逻辑稳定后，移除旧逻辑
-- **触发条件**: 新 RuntimeEventBus 事件流在生产环境运行 2 周无问题
+- **当前阶段**: 新旧逻辑共存（Phase 2.5 → Phase A 过渡中，测试需以当前分支 `flutter test` 为准）
+- **目标阶段**: 旧逻辑逐步移除，新 RuntimeEventBus + WorkState + ApprovalState 成为唯一权威
+- **迁移原则**: 从防御层向核心收敛，每步只切换一个调用者，全链路验证后进入下一步
+- **核心约束**: 所有状态触发型检测必须基于当前观察基线之后的新增证据
+- **持久化边界**: Phase A 以 SQLite Runtime Store 为边界；Flutter 进程内 Runtime 可重建，但状态 reducer 的结果必须可从 SQLite 恢复
 
 ---
 
-## 1. TaskWatcher._extractStatus() — 字符串匹配状态推断
+## 圈号 → 原始项对照表
 
-### 旧逻辑
+> ①–⑫ 为旧版文档第 1–12 项的原始编号，⑬–⑭ 为迁移期间新增的补强项。执行顺序中引用圈号即指下表中对应的原始项。
 
-| 文件 | 行号 | 描述 |
-|------|------|------|
-| `lib/features/runtime/services/task_watcher.dart` | L56-L75 | `_extractStatus()` 通过 `contains()` 推断状态 |
+| 圈号 | 原始项 | 当前归属 Step |
+|:---:|------|:---:|
+| ① | `TaskWatcher._extractStatus()` — 字符串匹配状态推断 | Step 8（已移除 ✅） |
+| ② | `TaskWatcher._extractAction() / _extractCheckpoint()` — 正则匹配摘要提取 | 辅助功能，保留不驱动状态 |
+| ③ | `BridgeRuntime.observeOutput()` — TaskWatcher 间接推断状态 | Step 8（已去状态化 ✅） |
+| ④ | `_bridgeSyncTerminalStatus()` — 手动桥接同步 | Step 5（已移除 ✅） |
+| ⑤ | `ApprovalRequest` — 旧审批模型（字符串 status） | Phase 5 后已物理移除 ✅ |
+| ⑥ | `TerminalPrompt → ApprovalRequest` 包装 | 已替换为 `TerminalPrompt → NativeTerminalApproval` ✅ |
+| ⑦ | UI 直接消费 `TaskStatus` | Step 9（一等 UI 已迁移，二级 fallback 保留 ✅） |
+| ⑧ | `_bridgeSyncTerminalStatus()` 暂停/运行/observer 无操作 | Step 5（已合并移除 ✅） |
+| ⑨ | `_bridgeNotifyExecutionUpdate()` — 重型 observeOutput 调用 | Step 4（已轻量化 ✅） |
+| ⑩ | `OutputSummaryProvider` 中的 TerminalPrompt 块过滤 | Step 3（已完成 ✅） |
+| ⑪ | `AgentExecutionUpdate` 旧字段与新模型并存 | Step 7（生产主路径已迁移，旧字段仅兼容输入 ✅） |
+| ⑫ | Attach/Reconnect 解析历史残留 | Step 0（已完成 ✅） |
+| ⑬ | 结果/TTS 同源门禁 | Step 1（新增补强，已完成 ✅） |
+| ⑭ | 运行时限制分类门禁 | Step 2（新增补强，已完成 ✅） |
 
-```dart
-// 旧逻辑 — 字符串匹配状态推断（应移除）
-RuntimeTaskStatus? _extractStatus(String output) {
-  final lower = output.toLowerCase();
-  if (lower.contains('waiting for user') ||
-      lower.contains('needs approval') ||
-      lower.contains('need approval') ||
-      lower.contains('waiting for your')) {
-    return RuntimeTaskStatus.waitingUser;
-  }
-  if (lower.contains('task completed') ||
-      lower.contains('completed successfully')) {
-    return RuntimeTaskStatus.completed;
-  }
-  if (lower.contains('task failed') || lower.contains('fatal error')) {
-    return RuntimeTaskStatus.failed;
-  }
-  if (output.trim().isEmpty) {
-    return null;
-  }
-  return RuntimeTaskStatus.running;
-}
+---
+
+## 当前不足与补强方向
+
+这份清单原先偏重“删旧代码”，但近期问题表明，迁移前还需要明确几条行为门禁，否则迁到新 Runtime 后旧问题会被重新实现：
+
+1. **状态分类不能把运行时限制当成用户输入**
+   - `Credits exhausted` / `usage limit` 属于运行时限制，不是普通 `needAttention`。
+   - 若限制信息前已有本轮交付性 `▪ ...` 输出，应保留 deliverable 并进入 `turnIdle` / 可继续状态。
+   - 若没有任何交付性输出，才进入需要处理的运行时问题状态，文案也不应是 `Needs Input`。
+
+2. **结果卡片和 TTS 必须同源**
+   - 结果卡片、手动朗读、自动 TTS 都应使用同一个“latest turn deliverable source”。
+   - 优先级：当前 turn scoped raw output → scoped cleaned output → event-linked result payload。
+   - 禁止从旧 `task.summary`、初始 prompt、旧 turn summary 或 reconnect snapshot 生成新的结果/TTS。
+
+3. **UI 不应被 Runtime 事件抢占手势**
+   - 结果出现、App resume、progress event 都不能强制切到产出 tab 或重置用户滚动。
+   - 只有用户显式点击“查看结果/产出”时才切 tab。
+
+4. **probe / refresh / reconcile 只能做状态校准**
+   - probe 可以发现远端新证据，但不能把旧 pane 残留重新归约为当前事件。
+   - full capture 只能用于审计、恢复和人工刷新；若要改变状态，必须经过 marker count、offset、event id 或 fingerprint 去重。
+
+5. **Adapter 可以解析文本，但 parser 位置必须集中**
+   - Codex / Qoder 仍是 TUI，文本 → 事件不可避免。
+   - 问题不在“有解析”，而在解析分散在 SSH 脚本、Dart parser、summary fallback、UI/TTS 多处。
+   - 迁移目标是：Adapter/Watcher 负责文本解析，Runtime reducer 负责状态归约，UI/TTS 只消费归约后的事件/状态/结果。
+
+---
+
+## 迁移收益
+
+| 维度 | 迁移前 | 迁移后 |
+|------|--------|--------|
+| 状态权威 | 分散于 SSH 脚本 grep + Dart parser + `_extractStatus` 三处 | `RuntimeEventBus` → reducer 单一路径 |
+| 文本残留污染 | 旧 exit marker / approval prompt 可被误判为当前状态 | 增量证据原则：只在新增文本中触发状态 |
+| 审批模型 | `String status`（`'pending'` / `'approved'`），无类型安全 | `ApprovalState` enum，编译期保证 |
+| 断线恢复 | 重新 capture-pane 全量重解析 | `last_offset` / `last_event_id` 增量恢复 |
+| TTS 播报源 | 可回退到 `task.summary` / 初始提示词 | 仅播 event-linked payload |
+| App 职责 | 直接判断任务完成 | 只发 command，Runtime 负责状态归约 |
+
+---
+
+## 执行顺序
+
+> 注意：顺序 ≠ 旧 P0–P3 优先级。正确的迁移路径是从防御层向核心收敛。
+
+```
+Step 0: ⑫ 增量证据约束（新增保护网，不移除任何旧逻辑）
+Step 1: ⑬ 结果/TTS 同源门禁（latest turn deliverable source）
+Step 2: ⑭ 运行时限制分类门禁（quota / usage limit）
+Step 3: ⑩ P3  OutputSummaryProvider 重复检测
+Step 4: ⑨ P2  _bridgeNotifyExecutionUpdate 轻量化
+Step 5: ④+⑧ P2  _bridgeSyncTerminalStatus 适配层清理
+Step 6: ⑥+⑤ P1  TerminalPrompt → NativeTerminalApproval 包装 → ApprovalRequest 移除
+Step 7: ⑪ P1  AgentExecutionUpdate 字段迁移
+Step 8: ③+① P0  observeOutput 去状态化 → _extractStatus 移除
+Step 9: ⑦ P2  UI 消费 TaskStatus → WorkState
 ```
 
-### 新逻辑（替代）
+---
 
-- `RuntimeEventBus` 发布 `approvalRequested`, `taskCompleted`, `taskFailed` 等事件
-- `ArminAppState._taskWithExecutionUpdate()` 通过 `AgentExecutionUpdate.approval`, `.result`, `.turnIdle` 等结构化字段决定状态
+## Step 0: ⑫ 增量证据约束 — 必须先做
 
-### 移除方案
+### 目标
 
-`_extractStatus()` 保留为 last-resort fallback，但仅在 RuntimeEventBus 未覆盖的边界场景使用。移除时：
-1. 将方法标记为 `@Deprecated`
-2. `TaskWatcherUpdate.status` 返回 `null`
-3. `BridgeRuntime.observeOutput()` 不再依赖 `update.status` 做状态转换
+给所有旧 parser / grep 加一道保护门：attach/reconnect 后，只有当前观察基线之后的新增文本才能触发状态变更。不移除任何旧逻辑，只加约束。
+
+### 改动范围
+
+- `SSHAgentSessionService._ExecutionOutputState`：增加 `baselineHash` / `hasNewDelta` 状态位
+- `SSHAgentSessionService._buildStreamingUpdate()`：streaming 中 parser 结果只在有 delta 时传播
+- `SSHAgentSessionService.execute()` 的 `whenComplete`：无新增 snapshot 时，`approval` / `terminalPrompt` 仅记日志不驱动 `needsAttention`
+
+### 风险与应对
+
+| 风险 | 可能性 | 应对 |
+|------|:---:|------|
+| `hasNewDelta` 状态位未正确维护，pipe 流延迟导致误屏蔽合法新 prompt | 低 | 先在测试中验证 pipe 流的 delta 检测逻辑；`hasNewDelta` 使用 hash 比较而非时间戳 |
+| `whenComplete` 中跳过 parser 导致合法 follow-up 的审批提示被静默 | 低 | 只有 `attachOnly && !hasNewDelta` 时才跳过，非 attach 模式不受影响 |
+
+### 验证标准
+
+- [x] `ssh_agent_session_service_test`：attach-only 初始 pane 有旧 exit marker / approval marker，无新增时不应触发 break
+- [x] `armin_app_state_task_control_test`：follow-up 后服务端只返回旧 prompt 残留，task 不应变为 `needAttention`
+- [x] `probeRemoteState`：首次看到旧 exit marker 只建立计数基线，不触发 refresh
+- [x] 非 attach 模式行为不变（`flutter test` 全量回归）
 
 ---
 
-## 2. TaskWatcher._extractAction() / _extractCheckpoint() — 正则匹配摘要提取
+## Step 1: ⑬ — 结果/TTS 同源门禁
 
-### 旧逻辑
+### 目标
 
-| 文件 | 行号 | 描述 |
-|------|------|------|
-| `lib/features/runtime/services/task_watcher.dart` | L31-L42 | `_extractAction()` — 取最后一行非噪音行 |
-| `lib/features/runtime/services/task_watcher.dart` | L77-L86 | `_extractCheckpoint()` — 正则 `checkpoint|阶段|步骤:` |
+在继续迁移前，先固定“结果从哪里来”的行为契约。后续 Runtime reducer、UI、TTS 都必须复用同一条 latest turn deliverable source，避免 UI 显示一个结果、TTS 播另一个结果。
 
-### 新逻辑（替代）
+### 改动范围
 
-- `OutputSummaryProvider.summarize()` 通过结构化规则（表格提取、行评分）生成摘要
-- `WorkState.headline` / `WorkState.detail` 提供 UI 就绪的摘要文本
+- `TurnOutputSlicer`：保留 turn-scoped raw / cleaned 输出能力
+- `TaskDetailScreen`：结果卡片优先使用 scoped raw output，再回退 scoped cleaned output
+- `TaskSpeechPolicy`：自动播报使用同一 source，不再优先 fallback 到旧 `task.summary`
+- `TaskNeedsPanel` 手动读结果：与结果卡片同源
 
-### 移除方案
+### 风险与应对
 
-保留作为 output observation 的辅助功能（不是状态权威），不直接驱动 UI 状态变更。
+| 风险 | 可能性 | 应对 |
+|------|:---:|------|
+| raw output 中含 TUI chrome，结果卡片出现噪声 | 中 | raw 只作为 source，仍交给 `OutputSummaryProvider` / `AgentOutputCleaner` 清洗 |
+| cleaned output 曾经比 raw 更干净，改 raw 优先导致摘要质量波动 | 中 | 仅在 scoped raw 非空时使用；保留 cleaned fallback；用真实 `▪` 输出回归 |
+| TTS 播报长文本过长 | 低 | 当前策略是播显示卡片全文；后续引入独立 speech summarizer 前不得牺牲结果完整性 |
+
+### 验证标准
+
+- [x] 后续 turn 的 `cleanedOutput` 是旧片段，但 `rawOutput` 有最终 `▪ ...` 时，结果卡片显示最终结果
+- [x] 自动 TTS 使用 latest raw turn output，不播旧 summary / prompt / thinking
+- [x] App resume 不强制切到产出 tab，不抢用户滚动和 tab 切换
 
 ---
 
-## 3. BridgeRuntime.observeOutput() — 通过 TaskWatcher 间接推断状态
+## Step 2: ⑭ — 运行时限制分类门禁
 
-### 旧逻辑
+### 目标
 
-| 文件 | 行号 | 描述 |
-|------|------|------|
-| `lib/features/runtime/services/bridge_runtime.dart` | L55-L85 | `observeOutput()` 调用 `watcher.observe()` 后直接使用 `update.status` 做状态转换 |
+`Credits exhausted` / `usage limit` / `quota exhausted` 不能一律进入 `needAttention`。运行时限制前若已有本轮 deliverable，应保留结果并进入可继续状态；没有 deliverable 时才提示用户处理运行时问题。
 
-```dart
-// 旧逻辑 — TaskWatcher 的状态推断直接影响 RuntimeTaskSnapshot
-final nextStatus = update.status ?? current.status;
-final updated = current.copyWith(
-  status: nextStatus,  // ← 依赖 TaskWatcher 的字符串匹配
-  ...
-);
-_publish(_eventTypeForStatus(nextStatus), updated);
+### 改动范围
+
+- `NativeOutputObserver`：将 quota 判断拆成“有 deliverable”和“无 deliverable”两类
+- `ArminAppState._taskWithExecutionUpdate()`：`turnIdle + done + deliverable` 写入 task summary / turn output，不再写入 `TaskResult`
+- `OutputSummaryProvider`：继续过滤 quota 文案中的升级/用量提示，不把它当作结果主体
+
+### 风险与应对
+
+| 风险 | 可能性 | 应对 |
+|------|:---:|------|
+| 工具调用 `▪ Bash(...)` 被误认为 deliverable | 中 | deliverable 检测排除 `Read(...)` / `Write(...)` / `Edit(...)` / `Bash(...)` 等工具调用 |
+| 真正需要用户充值/升级的任务被静默归为完成 | 中 | 只有 quota 前已有自然语言 deliverable 才归入 `turnIdle`；无 deliverable 仍需处理 |
+| Qoder / Codex quota 文案不同 | 中 | quota pattern 统一放入 adapter/observer，后续迁到 Agent Adapter 专属配置 |
+
+### 验证标准
+
+- [x] `Credits exhausted` 跟在 `▪ 12 个测试全部通过...` 后面时，task 为 `turnIdle`，result 被写入
+- [x] `Credits exhausted` 前无 deliverable 时，仍进入 needs-attention/runtime issue
+- [x] 结果卡片和 TTS 播最终 deliverable，不播 `Credits exhausted` 作为主体
+
+---
+
+## Step 3: ⑩ P3 — OutputSummaryProvider 重复检测
+
+### 目标
+
+移除 `_removeTerminalPromptBlocks()` 中的硬编码字符串匹配，改为复用 `TerminalPromptParser` 的统一结构化识别。
+
+### 改动范围
+
+- `TerminalPromptParser`：新增 `stripPromptBlocks()`，统一负责审批/终端交互块剥离
+- `OutputSummaryProvider._removeTerminalPromptBlocks()`：移除内部硬编码 prompt start / option / footer 规则，改为调用 `TerminalPromptParser.stripPromptBlocks()`
+
+### 风险与应对
+
+| 风险 | 可能性 | 应对 |
+|------|:---:|------|
+| 统一 parser 漏掉边缘 prompt 格式，摘要中出现审批文本 | 中 | 新 prompt 格式只补 `TerminalPromptParser`，摘要层不再复制规则 |
+| 两个 parser（SSH 层 + OutputSummaryProvider）的 prompt 检测逻辑不一致 | 低 | 终端 prompt 检测统一使用 `TerminalPromptParser`，`_isTerminalPromptStart` 的硬编码字符串逐步迁移到 parser 规则 |
+
+### 验证标准
+
+- [x] 摘要输出中不再出现 `Permission Required`、`Apply this change?` 等终端交互文本
+- [x] 正常输出（非 prompt 块）不被误过滤
+- [x] `OutputSummaryProvider` 相关测试通过
+
+---
+
+## Step 4: ⑨ P2 — _bridgeNotifyExecutionUpdate 轻量化
+
+### 目标
+
+将 `_bridgeNotifyExecutionUpdate()` 从调用重型 `observeOutput()`（含 TaskWatcher 解析 + 状态推断 + 持久化）改为调用轻量 `notifyOutputUpdated()`。
+
+### 改动范围
+
+- `ArminAppState._bridgeNotifyExecutionUpdate()`：内部调用从 `bridgeRuntime.observeOutput()` 切换为 `bridgeRuntime.notifyOutputUpdated()`
+- `BridgeRuntime.observeOutput()`：保留为 legacy observation API，但不再从 streaming / reconcile 生产路径调用
+
+### 风险与应对
+
+| 风险 | 可能性 | 应对 |
+|------|:---:|------|
+| legacy `observeOutput()` 仍存在，后续新调用者可能误用它做状态推断 | 中 | 生产路径已切到 `notifyOutputUpdated()` / `RuntimeReconcileDecision`；后续 Step 8 再让 `observeOutput()` 去状态化 |
+| `notifyOutputUpdated()` 不持久化，BridgeRuntime 内存中的输出进度在 App 重启后丢失 | 低 | Phase A 目标之一就是让 SQLite 成为持久化边界。当前 `TaskSession` 已通过 JSON 文件持久化，BridgeRuntime 的进度数据为辅助信息，丢失可接受 |
+
+### 验证标准
+
+- [x] streaming 路径每次 update 只发布 `outputUpdated` 事件，不触发状态变更事件
+- [x] 状态变更仍由 `_taskWithExecutionUpdate()` 中的结构化字段驱动
+- [x] `running` case 在 `_bridgeSyncTerminalStatus` 中的 `break` 随旧适配器移除
+
+---
+
+## Step 5: ④+⑧ P2 — _bridgeSyncTerminalStatus 适配层清理
+
+### 目标
+
+将 AppState 中的 `_bridgeSyncTerminalStatus()` 调用者逐个切换为直接调用 `bridgeRuntime.notifyXxx()`，并移除旧适配器方法。
+
+### 改动范围
+
+- `ArminAppState`：6 处 `_bridgeSyncTerminalStatus()` 调用点已逐一替换
+- `_bridgeSyncTerminalStatus()`：全部调用者迁移后已移除
+
+### 风险与应对
+
+| 风险 | 可能性 | 应对 |
+|------|:---:|------|
+| 逐一切换过程中新旧状态同步路径不一致 | 中 | 每次只切换一个调用点，切换后验证该状态路径的 BridgeRuntime 事件是否正确发布 |
+| `needAttention` / `turnIdle` 直接映射到 `WorkPhase` 时语义可能被压扁 | 中 | 切换前确认是否应映射为 `turnIdle`、`needsInstruction`、`needsReview` 或 `needsDecision`，禁止统一塞进单一 waiting 状态 |
+
+### 验证标准
+
+- [x] stream-side 状态变化调用点已切换为显式 Runtime API
+- [x] 其余调用者切换后，对应状态路径的 RuntimeEvent 正确发布
+- [x] `taskWaitingUser` / `taskCompleted` / `taskFailed` 事件与迁移前一致
+- [x] 全部迁移后 `_bridgeSyncTerminalStatus()` 无调用者
+
+---
+
+## Step 6: ⑥+⑤ P1 — 审批模型迁移
+
+### 目标
+
+将 TerminalPrompt → ApprovalRequest 的包装链路替换为 `TerminalPrompt → NativeTerminalApproval`。历史任务已迁移后，`ApprovalRequest` / `ApprovalParser` 不再保留为兼容投影，审批状态只通过 `NativeTerminalApproval.state` / `ApprovalState` 表达。
+
+### 改动范围
+
+- `AgentExecutionUpdate`：新增 `nativeApproval`
+- `SSHAgentSessionService`：streaming / settled update 同时产出 `nativeApproval`
+- `BridgeRuntime.notifyApprovalRequested()`：接收 `NativeTerminalApproval` 并写入 `WorkState.approval`
+- `TaskSession`：持久化 `nativeApproval` / `nativeApprovalRequests`
+- `ArminAppState._taskWithExecutionUpdate()`：消费 `nativeApproval`
+- `_ApprovalPromptCard`：原生消费 `NativeTerminalApproval`
+- `TaskSpeechPolicy`：审批播报优先读取 `nativeApproval`
+- `ApprovalRequest` / `ApprovalParser`：历史兼容外壳已移除
+
+### 风险与应对
+
+| 风险 | 可能性 | 应对 |
+|------|:---:|------|
+| 旧审批 JSON 已不再兼容 | 低 | 历史任务已完成 schema migration；后续不再写入旧字段 |
+| UI `_ApprovalPromptCard` 与 runtime 状态显示不一致 | 低 | 详情页统一读取 `nativeApprovalRequests` / `nativeApproval` |
+
+### 验证标准
+
+- [x] 审批 prompt 在 safe / balanced / aggressive 三种模式下正确识别（现有 parser / app state 回归）
+- [x] `ApprovalState` 状态机：pending → resolving → resolved/failed 完整流转（BridgeRuntime diagnostics + WorkState）
+- [x] 审批历史 `nativeApprovalRequests` 正确记录
+- [x] JSON 持久化往返无数据丢失（native 字段，`flutter test` 全量回归）
+- [x] `TaskSession.nativeApproval` JSON 字段与 `_ApprovalPromptCard` 原生消费完成
+
+---
+
+## Step 7: ⑪ P1 — AgentExecutionUpdate 字段迁移
+
+### 目标
+
+`AgentExecutionUpdate` 中新增 `nativeApproval` 字段。生产路径产出 `nativeApproval`；旧 `approval` / `terminalPrompt` 字段已随历史 schema 清理移除。
+
+### 改动范围
+
+- `AgentExecutionUpdate`：新增 `nativeApproval`
+- SSH 层 streaming / settled 构造点：产出 `nativeApproval`
+- AppState：优先识别 `nativeApproval`，再回退旧 `approval` / `terminalPrompt`
+- refresh / captured snapshot：从旧 parser 结果投影生成 `nativeApproval` 后再进入 AppState 归约
+
+### 风险与应对
+
+| 风险 | 可能性 | 应对 |
+|------|:---:|------|
+| 测试文件构造 `AgentExecutionUpdate` 时仍用旧字段 | 低 | 旧字段已删除，编译期阻止回归 |
+
+### 验证标准
+
+- [x] `flutter analyze` 0 error, 0 warning
+- [x] SSH 生产路径 `AgentExecutionUpdate` 构造携带 `nativeApproval`
+- [x] AppState 消费 native-only approval 并投影到当前任务模型
+- [x] 核心测试中 native-only `AgentExecutionUpdate` 路径已覆盖
+- [x] 旧 `approval` / `terminalPrompt` 字段不再是生产主路径；物理移除延后到历史 JSON schema 清理
+
+---
+
+## Step 8: ③+① P0 — observeOutput 去状态化 → _extractStatus 移除
+
+### 目标
+
+`observeOutput()` 改为纯数据记录，不再通过 `_extractStatus()` 驱动状态变更。`_extractStatus()` 最终标记 `@Deprecated` 并移除。
+
+### 前置条件
+
+- [x] Step 0 增量证据约束已落地
+- [x] Step 1 结果/TTS 同源门禁已落地
+- [x] Step 2 运行时限制分类门禁已落地
+- [x] Step 4 `_bridgeNotifyExecutionUpdate` 已切换到轻量路径
+- [x] Step 5 reconcile 路径不再依赖 `observeOutput` 的状态变更
+- [x] Step 6 审批路径已具备新模型主路径（旧字段/兼容投影已移除）
+
+### 改动范围
+
+- `BridgeRuntime.observeOutput()`：已移除 `_publish(_eventTypeForStatus(nextStatus), ...)` 状态驱动发布，仅保留数据记录和 `outputUpdated`
+- `TaskWatcher._extractStatus()`：已移除，`TaskWatcherUpdate` 不再携带 `status`
+- `TaskWatcher._extractAction()` / `_extractCheckpoint()`：保留为数据记录辅助功能
+
+### 覆盖盲区验证
+
+| 旧 grep 模式 | 新事件覆盖 | 状态 |
+|-------------|-----------|:---:|
+| `waiting for user` / `needs approval` / `need approval` / `waiting for your` | `taskWaitingUser` / `approvalRequested` | ✅ |
+| `task completed` / `completed successfully` | `taskCompleted` | ✅ |
+| `task failed` | `taskFailed` | ✅ |
+| `fatal error` | 评估是否归入 `taskFailed` 或新增事件 | ⚠️ |
+
+### 风险与应对
+
+| 风险 | 可能性 | 应对 |
+|------|:---:|------|
+| 旧 `_extractStatus` 的 grep 覆盖了少数新 RuntimeEventBus 未建模的场景（如 `"fatal error"`） | 中 | 移除前逐个 grep 验证覆盖 |
+| legacy `observeOutput` 不再负责状态，旧 grep 覆盖场景可能失去 fallback | 低 | 生产路径必须通过 `RuntimeEventBus` / `RuntimeReconcileDecision` 覆盖状态变化 |
+
+### 验证标准
+
+- [x] 所有旧 grep 模式在新 RuntimeEventBus 中有对应事件覆盖（`fatal error` 留在 observer/failure 分类回归中）
+- [x] `observeOutput()` 调用不再产生 `taskProgress` / `taskWaitingUser` / `taskCompleted` / `taskFailed` 事件
+- [x] `_extractStatus()` 无调用者后移除
+- [x] 相关测试通过
+
+---
+
+## Step 9: ⑦ P2 — UI 消费 TaskStatus → WorkState
+
+### 目标
+
+UI 层不再直接 `switch (task.status)`，改为通过 `WorkState.phase` 判断展示内容。
+
+### 前置条件
+
+- [x] Step 5 `_bridgeSyncTerminalStatus` 已完成迁移，BridgeRuntime 的 `_workStates` 在状态变更时同步更新
+- [x] Step 8 完成，TaskStatus 的状态变更路径唯一且正确
+
+### 改动范围
+
+- `task_detail_screen.dart`：`switch (task.status)` / `_isAttentionRequired(task.status)` → `workState(taskId).phase`
+- `task_home_screen.dart`：Waiting For You / Running Summary / Activity Feed / task list labels → `WorkState.phase`
+- `task_card.dart` / `task_history_screen.dart`：历史任务卡片状态 badge / progress label → `WorkState.phase`
+- Current Situation 卡片：改为消费 `WorkState`
+- 状态标签：`TaskStatusLabel.label` → `WorkPhase` 映射
+
+### 当前 WorkPhase 映射缺口
+
+```
+TaskStatus                  WorkPhase
+─────────                  ─────────
+turnIdle        →          turnIdle
+needAttention   →          needsInstruction / needsDecision / needsReview（按原因细分）
+needApproval    →          needsApproval
+running         →          working
+completed       →          completed
+failed          →          failed
+stopped         →          stopped
 ```
 
-### 新逻辑（替代）
+### 风险与应对
 
-- `ArminAppState._bridgeNotifyExecutionUpdate()` 调用 `observeOutput()` — 应改为调用 `bridgeRuntime.notifyOutputUpdated()`
-- 状态转换由 `_taskWithExecutionUpdate()` 中的结构化字段（`update.approval`, `update.result`, `update.turnIdle`）驱动
+| 风险 | 可能性 | 应对 |
+|------|:---:|------|
+| `needAttention` 原因不明，UI 无法决定是继续、审批、查看还是恢复 | 中 | 迁移前先让 reducer 填充 `WorkState.detail` / `approval` / `phase`，UI 不再自行猜原因 |
+| `WorkState` 只在 `BridgeRuntime._transition()` 和 `_updateWorkState()` 中更新，非终端状态路径可能未覆盖 | 低 | 在 Step 5 验证 `_bridgeSyncTerminalStatus` 的所有调用者都已在 BridgeRuntime 侧产生状态变更 |
 
-### 移除方案
+### 验证标准
 
-1. `observeOutput()` 改为仅做数据记录（不改变 status field）
-2. 移除 `_publish(_eventTypeForStatus(nextStatus), ...)` 中的状态驱动事件
-3. 仅发布 `notifyOutputUpdated` 轻量事件
+- [x] 首页 Waiting For You / Running Summary / Activity Feed 优先消费 `WorkState`
+- [x] 历史任务卡片优先消费 `WorkState`
+- [x] Task Detail 首屏状态标签 / Current Situation / What This Task Needs / 主按钮优先消费 `WorkState`
+- [x] Current Situation 卡片显示内容与迁移前一致
+- [x] 状态标签正确映射
+- [x] 二级控制、调试、兼容 fallback 中残留的 `TaskStatus` 判断仅作为低层兼容分支，不再承载一等 UI 心智
 
 ---
 
-## 4. _bridgeSyncTerminalStatus() — 手动桥接同步
+## 风险总览
 
-### 旧逻辑
+| Step | 核心风险 | 严重度 | 缓解措施 |
+|------|---------|:---:|------|
+| 0 | `hasNewDelta` 状态位维护错误 | 中 | hash 比较 + 测试覆盖 |
+| 1 | 结果卡片和 TTS 再次分叉 | 高 | latest turn deliverable source 单一 helper + 回归测试 |
+| 2 | quota / usage limit 再次被归为普通输入需求 | 高 | observer / adapter 先判 deliverable，再判 runtime issue |
+| 3 | SSH 层预处理遗漏 prompt 格式 | 中 | 双 parser 并行运行，diff 验证 |
+| 4 | legacy `observeOutput` 被新调用者误用 | 低 | 生产路径只用 `notifyOutputUpdated` 和 `RuntimeReconcileDecision` |
+| 5 | 逐一切换时新旧同步不一致 | 中 | 每次仅切一个调用者，立即验证 |
+| 6 | JSON 持久化旧审批数据丢失 | 中 | 新旧字段并行一个版本周期 |
+| 7 | 测试文件旧字段残留 | 中 | 核心 fake agent 已迁 native-only；旧字段 fixture 只保留兼容覆盖 |
+| 8 | 新事件未覆盖旧 grep 模式 | 中 | 逐个 grep 词验证覆盖 |
+| 9 | `WorkPhase` 粒度不足 | 中 | 迁移前确认 `needsInstruction` / `needsDecision` / `needsReview` 映射 |
 
-| 文件 | 行号 | 描述 |
-|------|------|------|
-| `lib/core/services/armin_app_state.dart` | L910-L953 | 手动将 TaskStatus 映射到桥接事件 |
+---
 
-```dart
-// 旧逻辑 — 手动 switch-case 映射 TaskStatus → BridgeRuntime 方法
-void _bridgeSyncTerminalStatus(
-  String taskId,
-  TaskStatus status,
-  DateTime now,
-  String summary,
-) {
-  switch (status) {
-    case TaskStatus.turnIdle:
-    case TaskStatus.needAttention:
-    case TaskStatus.needApproval:
-      unawaited(bridgeRuntime.markWaitingUser(taskId, ...));
-    case TaskStatus.userCompleted:
-    case TaskStatus.completed:
-      unawaited(bridgeRuntime.completeTask(taskId, ...));
-    // ... more cases
-  }
-}
+## 功能迁移计划
+
+迁移按“功能垂直切片”推进，而不是按文件批量替换。每个切片完成后都必须能独立通过测试，并且旧路径只作为 fallback 存在。
+
+| 阶段 | 功能切片 | 当前旧路径 | 目标新路径 | 完成标准 |
+|------|----------|------------|------------|----------|
+| A0 | 状态触发保护网 | SSH grep / full capture 直接触发状态 | 增量证据、marker count、fingerprint 去重 | 旧 prompt / 旧 exit marker 不能触发 `needAttention` / `turnIdle` |
+| A1 | 输出与播报同源 | 结果卡片、TTS、summary fallback 各自取源 | latest turn deliverable source | 后续 turn 结果、TTS、手动朗读一致 |
+| A2 | Runtime issue 分类 | `Credits exhausted` → `needAttention` | deliverable 优先，runtime issue 次之 | 有结果时显示结果，无结果时提示运行时问题 |
+| A3 | 审批/终端交互 | `TerminalPrompt` → `ApprovalRequest` String 状态 | `TerminalPrompt` → `NativeTerminalApproval` + `ApprovalState` | Runtime/WorkState、审批卡、历史、JSON 已纵切，旧模型已移除 |
+| A4 | Streaming 事件 | `_bridgeNotifyExecutionUpdate` → `observeOutput` | `notifyOutputUpdated` 轻量事件 | progress 不触发状态归约，不引发全局重建 |
+| A5 | 状态 reducer | `_bridgeSyncTerminalStatus` + `TaskStatus` 写入 | RuntimeEventBus → reducer → WorkState | AppState 只发 command，不猜状态 |
+| A6 | Reconcile/Refresh | full capture 重新推断状态 | `RuntimeReconcileDecision` + 增量补齐 | refresh 只校准新证据，不复活旧 pane 残留 |
+| A7 | UI 状态消费 | UI 直接 `switch (TaskStatus)` | UI 读取 `WorkState.phase/detail` | 首页、详情、TTS 不再直接消费 raw terminal state |
+
+### 推荐执行节奏
+
+1. **先冻结行为契约**：保留 Step 0–2 的测试，不允许迁移中改回旧行为。
+2. **先迁移输出类功能，再迁移状态类功能**：结果/TTS 的错源问题最容易影响用户感知，且能作为后续 reducer 的验收样本。
+3. **审批模型已经纵切到 native 主路径**：不要重新引入 `ApprovalRequest` / `ApprovalParser`；审批状态只通过 `NativeTerminalApproval.state` / `ApprovalState` 表达。
+4. **observeOutput 去状态化前先切 streaming**：确保高频路径不再依赖 `TaskWatcher._extractStatus()`，再处理 reconcile 路径。
+5. **UI 最后迁移**：等 WorkState 覆盖所有语义后再替换 UI，否则会把状态缺口转移到页面 helper。
+
+### 每个切片的最小验收集
+
+- `flutter analyze` 对改动文件无 error / warning。
+- 该切片的单元测试 + 至少一个 AppState 级测试。
+- 若影响 UI，增加 widget 测试覆盖首页或详情页。
+- 若影响 TTS，断言实际 `TaskSpeechDecision.text`，不能只断言 `shouldSpeak`。
+- 若影响 result，必须覆盖“后续 turn + 旧 summary + 最新 `▪` deliverable”的真实形态。
+
+---
+
+## 半迁移态一致性保障
+
+每次 Step 完成后必须验证两条路径输出一致：
+
+```
+旧路径（仍运行）              新路径（正在切换）
+══════════════                ══════════════
+SSH script grep              RuntimeEventBus event
+↓                            ↓
+AgentExecutionUpdate          bridgeRuntime.notifyXxx()
+↓                            ↓
+_taskWithExecutionUpdate      _workStates[taskId]
+↓                            ↓
+TaskSession.status           WorkState.phase
 ```
 
-### 新逻辑（替代）
-
-- `ArminAppState` 直接调用 `bridgeRuntime.notifyXxx()` 方法，不通过中间映射
-- RuntimeEventBus 事件直接从 stream 端发出
-
-### 移除方案
-
-1. `_bridgeSyncTerminalStatus()` 保留直到所有调用者切换到直接调用 `bridgeRuntime.notifyXxx()`
-2. 最终只保留 `_bridgeSyncTerminalStatus()` 作为向后兼容 fallback
-
----
-
-## 5. ApprovalRequest — 旧审批模型（字符串 status）
-
-### 旧逻辑
-
-| 文件 | 行号 | 描述 |
-|------|------|------|
-| `lib/features/agent/parsers/approval_request.dart` | L1-L70 | `ApprovalRequest` 使用 `String status` 而非 `ApprovalState` enum |
-
-```dart
-// 旧逻辑 — 字符串状态
-class ApprovalRequest {
-  final String status; // 'pending', 'approved', 'rejected' — 无类型安全
-  ...
-}
-```
-
-### 新逻辑（替代）
-
-- `NativeTerminalApproval` 使用 `ApprovalState` enum（`none | pending | resolving | resolved | failed`）
-- `ReviewDecision` 使用 `ReviewDecisionType` enum
-
-### 移除方案
-
-1. 将 `ApprovalRequest.status` 迁移到 `ApprovalState`
-2. `_saveApprovalDecision()` 改为存储 `NativeTerminalApproval`
-3. `resolveApproval()` 改为发布 `notifyApprovalResolving/Resolved/Rejected`
-
----
-
-## 6. TerminalPrompt → ApprovalRequest 包装
-
-### 旧逻辑
-
-| 文件 | 行号 | 描述 |
-|------|------|------|
-| `lib/features/agent/parsers/approval_parser.dart` | L1-L26 | `ApprovalParser` 包装 `TerminalPromptParser` 输出 |
-| `lib/features/agent/services/ssh_agent_session_service.dart` | L203-L212 | `_approvalFromTerminalPrompt()` |
-| `lib/features/agent/services/ssh_agent_session_service.dart` | L248-L261 | `_buildStreamingUpdate()` 同时运行两个 parser |
-
-```dart
-// 旧逻辑 — 将 TerminalPrompt 包装成 ApprovalRequest
-final approval = _approvalParser.parse(observedOutput);
-final terminalPrompt = _terminalPromptParser.parse(observedOutput);
-final effectiveApproval = approval ??
-    (isSafeMode ? null : _approvalFromTerminalPrompt(terminalPrompt));
-```
-
-### 新逻辑（替代）
-
-- `NativeTerminalApproval` 替代 TerminalPrompt-to-ApprovalRequest 包装
-- `ReviewDecision` 独立处理 workflow 决策
-
-### 移除方案
-
-1. `ApprovalParser` 迁移到生成 `NativeTerminalApproval`
-2. `_approvalFromTerminalPrompt()` 移除，改为直接创建 `NativeTerminalApproval`
-3. `AgentExecutionUpdate` 的 `approval` 字段改为 `NativeTerminalApproval?`
-
----
-
-## 7. UI 直接消费 TaskStatus
-
-### 旧逻辑
-
-| 文件 | 描述 |
-|------|------|
-| `lib/features/tasks/widgets/*.dart` | Current Situation 卡片直接读取 `task.status` |
-| `lib/features/history/screens/task_detail_screen.dart` | 多处 `switch (task.status)` / `_isAttentionRequired(task.status)` |
-| `lib/features/tasks/screens/task_draft_screen.dart` | 状态标签直接映射 `TaskStatusLabel.label` |
-
-### 新逻辑（替代）
-
-- `ArminAppState.workState(taskId)` 返回 `WorkState`
-- UI 应通过 `WorkState.phase` 判断需要展示什么
-- `WorkState.needsAttention` 替代 `_isAttentionRequired(task.status)`
-- `WorkState.statusText` 替代直接读取 `task.shortSummary`
-
-### 移除方案
-
-渐进式迁移：
-1. 新增 `WorkState` 访问器（已完成）
-2. Current Situation 卡片改为消费 `WorkState`
-3. 状态标签迁移到 `WorkPhase` 映射
-4. 移除对 `TaskStatus` 的直接 switch 判断
-
----
-
-## 8. ArminAppState._bridgeSyncTerminalStatus() — 暂停/运行/observer 的无操作
-
-### 旧逻辑
-
-| 文件 | 行号 | 描述 |
-|------|------|------|
-| `lib/core/services/armin_app_state.dart` | L946-L951 | `running/paused/observerDetached/draft/pending` → `break` |
-
-```dart
-// 旧逻辑 — 多个状态直接忽略
-case TaskStatus.running:
-case TaskStatus.paused:
-case TaskStatus.observerDetached:
-case TaskStatus.draft:
-case TaskStatus.pending:
-    break;
-```
-
-### 新逻辑（替代）
-
-- Phase 2.5 已修复：`paused` → `bridgeRuntime.pauseTask()`, `observerDetached` → `bridgeRuntime.notifyObserverDetached()`
-
-### 移除方案
-
-已部分完成。`running` 仍然忽略 — 因为 stream 侧进度由 `_bridgeNotifyExecutionUpdate()` 处理。验证后可移除 `running` case 的注释。
-
----
-
-## 9. _bridgeNotifyExecutionUpdate() — 重型 observeOutput 调用
-
-### 旧逻辑
-
-| 文件 | 行号 | 描述 |
-|------|------|------|
-| `lib/core/services/armin_app_state.dart` | L895-L908 | 每次 stream update 都调用 `bridgeRuntime.observeOutput()` |
-
-```dart
-// 旧逻辑 — 每次输出都触发 TaskWatcher 解析 + 持久化
-void _bridgeNotifyExecutionUpdate(TaskSession task, String rawOutput) {
-  unawaited(bridgeRuntime.observeOutput(
-    taskId: task.id,
-    capturedOutput: rawOutput,
-    now: DateTime.now(),
-  ));
-}
-```
-
-### 新逻辑（替代）
-
-- 高频 progress（无状态变更）: `bridgeRuntime.notifyOutputUpdated()` — 轻量事件
-- 状态变更事件: 直接通过 `notifyXxx()` 方法
-
-### 移除方案
-
-1. `_bridgeNotifyExecutionUpdate()` 保留但内部改为仅在高频 progress 时调用 `notifyOutputUpdated()`
-2. 状态变更路径已由其他 notify 方法覆盖，可移除 `observeOutput` 中的状态变更逻辑
-
----
-
-## 10. OutputSummaryProvider 中的 TerminalPrompt 块过滤
-
-### 旧逻辑
-
-| 文件 | 行号 | 描述 |
-|------|------|------|
-| `lib/features/tasks/services/output_summary_provider.dart` | L501-L593 | `_removeTerminalPromptBlocks()` — 手动过滤终端提示块 |
-| `lib/features/tasks/services/output_summary_provider.dart` | L569-L577 | 硬编码的 TerminalPrompt 启动检测 |
-
-```dart
-// 旧逻辑 — 硬编码字符串匹配
-bool _isTerminalPromptStart(String line) {
-  return lower == 'asking user' ||
-      lower.startsWith('allow this command to run') ||
-      lower.startsWith('allow execution of') ||
-      ...
-}
-```
-
-### 新逻辑（替代）
-
-- `TerminalPromptParser` 已能结构化检测终端提示
-- `NativeTerminalApproval` 携带已解析的审批信息
-- OutputSummaryProvider 应接收已处理的输出（不含 prompt 块）
-
-### 移除方案
-
-在 SSH 层（`_buildStreamingUpdate`）预处理后传递 cleaned output，移除 OutputSummaryProvider 中的重复检测。
-
----
-
-## 11. AgentExecutionUpdate 字段 — 旧字段与新模型并存
-
-### 旧逻辑
-
-| 文件 | 行号 | 描述 |
-|------|------|------|
-| `lib/features/agent/services/agent_session_service.dart` | L50-L74 | `AgentExecutionUpdate` 同时携带 `approval` 和 `terminalPrompt` |
-
-```dart
-class AgentExecutionUpdate {
-  final ApprovalRequest? approval;       // 旧
-  final TerminalPrompt? terminalPrompt;  // 旧
-  final bool turnIdle;
-  final bool needsAttention;
-  ...
-}
-```
-
-### 新逻辑（替代）
-
-```dart
-class AgentExecutionUpdate {
-  final NativeTerminalApproval? nativeApproval; // 新
-  final ReviewDecision? reviewDecision;          // 新
-  final bool turnIdle;
-  ...
-}
-```
-
-### 移除方案
-
-1. 新增 `nativeApproval` 和 `reviewDecision` 字段
-2. 旧字段标记 `@Deprecated`
-3. SSH 层迁移到新字段
-4. 移除旧字段
-
----
-
-## 移除优先级
-
-| 优先级 | 项目 | 影响范围 | 风险 |
-|--------|------|---------|------|
-| 🔴 P0 | `_extractStatus()` 状态推断 | BridgeRuntime, TaskWatcher | 高 — 核心状态路径 |
-| 🔴 P0 | `observeOutput()` 状态驱动 | BridgeRuntime | 高 — 核心状态路径 |
-| 🟡 P1 | `ApprovalRequest` 字符串 status | Approval 流程 | 中 — 审批可靠性 |
-| 🟡 P1 | TerminalPrompt → Approval 包装 | SSH 层 | 中 — 审批可靠性 |
-| 🟢 P2 | `_bridgeSyncTerminalStatus()` 手动映射 | AppState | 低 — 内部实现 |
-| 🟢 P2 | UI 直接消费 TaskStatus | UI 层 | 低 — UI 表现 |
-| 🟢 P3 | OutputSummaryProvider 重复检测 | 摘要层 | 低 — 功能正确 |
+验证方式：在 Step 完成后，选取一个典型任务（safe → balanced → aggressive 各一个），对比旧路径的 `TaskStatus` 与新路径的 `WorkPhase` 在相同输入下是否一致。对不应一致的场景（例如 quota 后已有 deliverable），以新行为门禁为准，旧路径只能作为兼容 fallback。
 
 ---
 
@@ -390,16 +503,16 @@ class AgentExecutionUpdate {
 
 ## 当前共存状态
 
-Phase 2.5 实现了新旧逻辑的**安全共存**：
+Phase 2.5 目前处于新旧逻辑的**过渡共存**：
 
 ```
 新逻辑                          旧逻辑
 ══════════                      ══════════
 RuntimeEventBus (25 events)     TaskWatcher._extractStatus()
-bridgeRuntime.notifyXxx()       _bridgeSyncTerminalStatus()
-ApprovalState enum              ApprovalRequest.status (String)
-WorkState                       TaskStatus (直接消费)
-NativeTerminalApproval          TerminalPrompt → ApprovalRequest
+bridgeRuntime.notifyXxx()       _bridgeSyncTerminalStatus()（已移除）
+ApprovalState enum              ApprovalRequest.status（已移除）
+WorkState                       TaskStatus（二级控制/调试 fallback）
+NativeTerminalApproval          TerminalPrompt → NativeTerminalApproval
 ```
 
-两个系统同时运行，新逻辑已通过 323 个测试验证。旧逻辑可在新逻辑稳定后按优先级逐步移除。
+主路径已经迁移到 RuntimeEventBus / WorkState / NativeTerminalApproval。审批兼容外壳已随历史 JSON schema 清理物理移除；后续不能重新引入 prompt 污染、提前 `turnIdle`、旧结果播报等问题。测试数量不固定，以当前分支 `flutter test` 结果为准。

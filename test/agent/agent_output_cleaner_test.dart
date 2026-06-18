@@ -217,7 +217,7 @@ Credits exhausted.
     expect(cleaned, isNot(contains('print("hello world")')));
     expect(cleaned, contains('已创建 hello.py，输出验证正常。'));
     expect(cleaned, contains('创建一个输出hello world的py文件'));
-    expect(cleaned, contains('Credits exhausted'));
+    expect(cleaned, isNot(contains('Credits exhausted')));
   });
 
   test('removes unindented thinking blocks before deliverable output', () {
@@ -242,7 +242,7 @@ Credits exhausted. Use /usage for details or /upgrade for more.
     expect(cleaned, isNot(contains('Done. README.md created')));
     expect(cleaned, contains('README.md 已写入'));
     expect(cleaned, contains('公共参数表'));
-    expect(cleaned, contains('Credits exhausted'));
+    expect(cleaned, isNot(contains('Credits exhausted')));
   });
 
   test('uses black small square line as post-thinking output boundary', () {

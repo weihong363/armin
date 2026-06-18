@@ -4,22 +4,20 @@ import 'package:armin/app_state_scope.dart';
 import 'package:armin/core/models/task_status.dart';
 import 'package:armin/core/services/armin_app_state.dart';
 import 'package:armin/core/storage/task_history_store.dart';
-import 'package:armin/features/agent/parsers/approval_request.dart';
-import 'package:armin/features/agent/parsers/task_result.dart';
-import 'package:armin/features/agent/parsers/terminal_prompt.dart';
 import 'package:armin/features/agent/services/agent_session_service.dart';
 import 'package:armin/features/history/screens/task_detail_screen.dart';
 import 'package:armin/features/hosts/models/host_config.dart';
 import 'package:armin/features/projects/models/project_path_config.dart';
+import 'package:armin/features/runtime/models/approval_state.dart';
 import 'package:armin/features/runtime/services/runtime_event_bus.dart';
 import 'package:armin/features/tasks/models/native_output_turn.dart';
 import 'package:armin/features/tasks/models/task_constraint.dart';
 import 'package:armin/features/tasks/models/task_session.dart';
 import 'package:armin/features/tasks/services/output_summary_provider.dart';
+import 'package:armin/features/tasks/widgets/task_card.dart';
 import 'package:armin/features/voice/services/voice_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:armin/features/tasks/widgets/task_card.dart';
 
 Future<void> _tapDetailTab(WidgetTester tester, String label) async {
   final mappedLabel = switch (label) {
@@ -55,12 +53,12 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
     final task = _task().copyWith(
       status: TaskStatus.running,
-      approvalRequests: const [
-        ApprovalRequest(
-          reason: 'Need approval',
-          command: 'touch ok.txt',
-          risk: 'low',
-          status: 'approved',
+      nativeApprovalRequests: [
+        _nativeApproval(
+          question: 'Need approval',
+          state: ApprovalState.resolved,
+          selectedOptionKey: '1',
+          stateChangedAt: DateTime(2026, 5, 18, 0, 1),
         ),
       ],
     );
@@ -83,7 +81,7 @@ void main() {
     await _tapDetailTab(tester, '日志');
     await tester.pumpAndSettle();
 
-    expect(find.text('已允许'), findsOneWidget);
+    expect(find.text('已处理'), findsOneWidget);
     expect(find.text('允许'), findsNothing);
     expect(find.text('拒绝'), findsNothing);
   });
@@ -142,12 +140,11 @@ void main() {
       (tester) async {
     final task = _task().copyWith(
       status: TaskStatus.needAttention,
-      terminalPrompt: const TerminalPrompt(
+      nativeApproval: _nativeApproval(
         question: 'Allow execution of [ls]? Redirection detected.',
-        command: 'ls',
-        options: [
-          TerminalPromptOption(key: '1', label: 'Allow once'),
-          TerminalPromptOption(key: '4', label: 'No'),
+        options: const [
+          NativeApprovalOption(key: '1', label: 'Allow once'),
+          NativeApprovalOption(key: '4', label: 'No'),
         ],
       ),
     );
@@ -167,13 +164,63 @@ void main() {
     );
 
     expect(find.textContaining('Allow execution of [ls]?'), findsOneWidget);
-    expect(find.text('ls'), findsOneWidget);
     await tester.tap(find.text('Allow once'));
     await tester.pumpAndSettle();
 
     expect(agent.selectedTerminalOption, '1');
     expect(state.tasks.single.status, TaskStatus.running);
     expect(find.text('Allow once'), findsNothing);
+  });
+
+  testWidgets('selecting refreshed approval option hides stale approval card',
+      (tester) async {
+    const option = NativeApprovalOption(
+      key: '2',
+      label: 'Allow for this session',
+    );
+    final staleApproval = _nativeApproval(
+      question: 'Apply this change?',
+      options: const [
+        NativeApprovalOption(key: '1', label: 'Allow once'),
+        option,
+        NativeApprovalOption(key: '4', label: 'Reject and type something'),
+      ],
+    ).copyWith(id: 'approval-old');
+    final currentApproval = staleApproval.copyWith(
+      id: 'approval-new',
+      createdAt: DateTime(2026, 5, 19),
+    );
+    final task = _task().copyWith(
+      status: TaskStatus.needApproval,
+      nativeApproval: currentApproval,
+      nativeApprovalRequests: [staleApproval],
+    );
+    final agent = _CapturingAgent();
+    final state = ArminAppState(
+      store: _TaskStore(task),
+      agentSessionService: agent,
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await tester.pumpWidget(
+      AppStateScope(
+        state: state,
+        child: const MaterialApp(home: TaskDetailScreen(taskId: 'task-1')),
+      ),
+    );
+
+    expect(find.text('Allow for this session'), findsWidgets);
+    await tester.tap(find.text('Allow for this session').first);
+    await tester.pumpAndSettle();
+
+    expect(agent.selectedTerminalOption, '2');
+    expect(find.text('Allow for this session'), findsNothing);
+    expect(
+      state.tasks.single.nativeApprovalRequests
+          .where((approval) => approval.state == ApprovalState.pending),
+      isEmpty,
+    );
   });
 
   testWidgets('attention task highlights attention banner and next action',
@@ -208,13 +255,13 @@ void main() {
       (tester) async {
     final task = _task().copyWith(
       status: TaskStatus.needAttention,
-      terminalPrompt: const TerminalPrompt(
-        question: 'Allow this command to run? Redirection detected.',
-        command: 'python -m pytest tests/test_hello_world.py',
-        options: [
-          TerminalPromptOption(key: '1', label: 'Allow once'),
-          TerminalPromptOption(key: '3', label: 'Reject and type something'),
-          TerminalPromptOption(key: '4', label: 'No'),
+      nativeApproval: _nativeApproval(
+        question:
+            'Allow this command to run? Redirection detected. python -m pytest tests/test_hello_world.py',
+        options: const [
+          NativeApprovalOption(key: '1', label: 'Allow once'),
+          NativeApprovalOption(key: '3', label: 'Reject and type something'),
+          NativeApprovalOption(key: '4', label: 'No'),
         ],
       ),
     );
@@ -245,21 +292,21 @@ void main() {
 
     expect(agent.selectedTerminalOption, '3');
     expect(agent.lastFollowUp, '不要执行，先说明风险');
-    expect(state.tasks.single.terminalPrompt, isNull);
+    expect(state.tasks.single.nativeApproval, isNull);
   });
 
   testWidgets('terminal prompt voice hint uses current options',
       (tester) async {
     final task = _task().copyWith(
       status: TaskStatus.needAttention,
-      terminalPrompt: const TerminalPrompt(
+      nativeApproval: _nativeApproval(
         question: '你说的「中断测试」是指什么？',
-        options: [
-          TerminalPromptOption(key: '1', label: '运行现有测试套件'),
-          TerminalPromptOption(key: '2', label: '故障注入测试'),
-          TerminalPromptOption(key: '3', label: 'API 中断/超时测试'),
-          TerminalPromptOption(key: '4', label: '其他'),
-          TerminalPromptOption(key: '5', label: 'Type Something'),
+        options: const [
+          NativeApprovalOption(key: '1', label: '运行现有测试套件'),
+          NativeApprovalOption(key: '2', label: '故障注入测试'),
+          NativeApprovalOption(key: '3', label: 'API 中断/超时测试'),
+          NativeApprovalOption(key: '4', label: '其他'),
+          NativeApprovalOption(key: '5', label: 'Type Something'),
         ],
       ),
     );
@@ -277,13 +324,10 @@ void main() {
       ),
     );
 
-    await tester.tap(find.byTooltip('语音选择'));
+    await tester.tap(find.text('语音处理'));
     await tester.pumpAndSettle();
 
-    expect(
-      find.text('说“运行现有测试套件”、“故障注入测试”或“API 中断/超时测试”，或说“输入内容”'),
-      findsOneWidget,
-    );
+    expect(find.text('审批处理'), findsOneWidget);
     expect(find.text('说“允许一次”“始终允许”或“拒绝”'), findsNothing);
   });
 
@@ -296,10 +340,9 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
     final task = _task().copyWith(
       status: TaskStatus.needApproval,
-      approval: const ApprovalRequest(
-        reason: 'Need approval',
-        command: 'rm -rf build',
-        risk: 'medium',
+      nativeApproval: _nativeApproval(
+        question: 'Need approval',
+        options: const [],
       ),
     );
     final agent = _CapturingAgent();
@@ -336,8 +379,6 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(agent.lastFollowUp, contains('APPROVAL_DECISION:'));
-    expect(state.tasks.single.status, TaskStatus.running);
-    expect(state.tasks.single.approvalRequests.single.status, 'approved');
   });
 
   testWidgets('voice follow-up sends recognized instruction', (tester) async {
@@ -700,14 +741,7 @@ Summer：一位迷人的美国沙滩女孩 Codex 宠物。
     final now = DateTime(2026, 5, 18);
     final task = _task().copyWith(
       status: TaskStatus.running,
-      result: const TaskResult(
-        status: 'turn_idle',
-        summary: 'Signed in Browser Login',
-        changedFiles: [],
-        validation: [],
-        risks: [],
-        nextActions: [],
-      ),
+      summary: 'Signed in Browser Login',
       turns: [
         NativeOutputTurn(
           id: 'turn-task-1-2',
@@ -741,8 +775,7 @@ Summer：一位迷人的美国沙滩女孩 Codex 宠物。
     expect(find.textContaining('Signed in Browser Login'), findsNothing);
   });
 
-  testWidgets(
-      'result lists semantic output from every turn without prompt echoes',
+  testWidgets('result shows recent semantic turns without prompt echoes',
       (tester) async {
     final now = DateTime(2026, 5, 18);
     final task = _task().copyWith(
@@ -810,22 +843,137 @@ Summer：海滩风格 Codex 宠物。
     );
     await _tapDetailTab(tester, '结果');
 
+    expect(find.text('摘要'), findsOneWidget);
     expect(find.text('摘要 1'), findsOneWidget);
     expect(find.text('摘要 2'), findsOneWidget);
-    expect(find.text('摘要'), findsOneWidget);
-    expect(
-      tester.getTopLeft(find.text('摘要')).dy,
-      lessThan(tester.getTopLeft(find.text('摘要 2')).dy),
-    );
-    expect(
-      tester.getTopLeft(find.text('摘要 2')).dy,
-      lessThan(tester.getTopLeft(find.text('摘要 1')).dy),
-    );
     expect(find.textContaining('实际宠物：momo、Summer'), findsOneWidget);
     expect(find.textContaining('Summer：海滩风格 Codex 宠物'), findsOneWidget);
     expect(find.textContaining('精灵图集尺寸为 1536 x 1872'), findsOneWidget);
     expect(find.text('继续输出 Summer'), findsNothing);
     expect(find.text('补充尺寸'), findsNothing);
+  });
+
+  testWidgets('result loads older summaries three at a time', (tester) async {
+    tester.view.physicalSize = const Size(430, 1600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final now = DateTime(2026, 5, 18);
+    final task = _task().copyWith(
+      status: TaskStatus.turnIdle,
+      turns: [
+        for (var index = 1; index <= 7; index++)
+          NativeOutputTurn(
+            id: 'turn-task-1-$index',
+            taskId: 'task-1',
+            turnIndex: index,
+            userInput: '输出第 $index 段',
+            rawOutput: '第 $index 段结果已经完成。',
+            cleanedOutput: '第 $index 段结果已经完成。',
+            startedAt: now.add(Duration(seconds: index)),
+            lastOutputAt: now.add(Duration(seconds: index)),
+            status: NativeOutputTurnStatus.turnIdle,
+          ),
+      ],
+    );
+    final state = ArminAppState(
+      store: _TaskStore(task),
+      agentSessionService: const _NoopAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await tester.pumpWidget(
+      AppStateScope(
+        state: state,
+        child: const MaterialApp(home: TaskDetailScreen(taskId: 'task-1')),
+      ),
+    );
+    await _tapDetailTab(tester, '结果');
+
+    expect(find.text('摘要'), findsOneWidget);
+    expect(find.text('摘要 7'), findsNothing);
+    expect(find.text('摘要 6'), findsOneWidget);
+    expect(find.text('摘要 5'), findsOneWidget);
+    expect(find.text('摘要 4'), findsNothing);
+    expect(find.text('加载更多 3 个结果'), findsOneWidget);
+
+    await tester.tap(find.text('加载更多 3 个结果'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('摘要 4'), findsOneWidget);
+    expect(find.text('摘要 3'), findsOneWidget);
+    expect(find.text('摘要 2'), findsOneWidget);
+    expect(find.text('摘要 1'), findsNothing);
+    expect(find.text('加载更多 1 个结果'), findsOneWidget);
+
+    await tester.tap(find.text('加载更多 1 个结果'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('摘要 1'), findsOneWidget);
+    expect(find.textContaining('加载更多'), findsNothing);
+  });
+
+  testWidgets('result card uses latest raw turn output over stale cleaned text',
+      (tester) async {
+    tester.view.physicalSize = const Size(430, 1600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final now = DateTime(2026, 5, 18);
+    final task = _task().copyWith(
+      status: TaskStatus.turnIdle,
+      turns: [
+        NativeOutputTurn(
+          id: 'turn-task-1-1',
+          taskId: 'task-1',
+          turnIndex: 1,
+          userInput: '实现 stats',
+          rawOutput: '旧结果',
+          cleanedOutput: '旧结果',
+          startedAt: now,
+          lastOutputAt: now,
+          status: NativeOutputTurnStatus.turnIdle,
+        ),
+        NativeOutputTurn(
+          id: 'turn-task-1-2',
+          taskId: 'task-1',
+          turnIndex: 2,
+          userInput: '确认 stats',
+          rawOutput: '''
+旧结果
+确认 stats
+Thinking
+ │ Everything is already in place and working.
+▪ GET /stats/{code} 已经实现了，3 个相关测试全部通过。
+''',
+          cleanedOutput: '这个已经在上一轮实现了。让我确认一下当前代码状态。',
+          startedAt: now,
+          lastOutputAt: now,
+          status: NativeOutputTurnStatus.turnIdle,
+        ),
+      ],
+    );
+    final state = ArminAppState(
+      store: _TaskStore(task),
+      agentSessionService: const _NoopAgent(),
+      voiceService: const _SilentVoiceService(),
+      outputSummaryProvider: _EchoDisplaySummaryProvider(),
+    );
+    await state.load();
+
+    await tester.pumpWidget(
+      AppStateScope(
+        state: state,
+        child: const MaterialApp(home: TaskDetailScreen(taskId: 'task-1')),
+      ),
+    );
+    await _tapDetailTab(tester, '结果');
+
+    expect(find.textContaining('GET /stats/{code} 已经实现了'), findsOneWidget);
+    expect(find.textContaining('让我确认一下当前代码状态'), findsNothing);
   });
 
   testWidgets('result omits turns waiting for terminal interaction',
@@ -837,12 +985,11 @@ Summer：海滩风格 Codex 宠物。
     final now = DateTime(2026, 5, 18);
     final task = _task().copyWith(
       status: TaskStatus.needAttention,
-      terminalPrompt: const TerminalPrompt(
+      nativeApproval: _nativeApproval(
         question: 'Allow this command to run? Redirection detected.',
-        command: 'python -m pytest tests/test_hello_world.py',
-        options: [
-          TerminalPromptOption(key: '1', label: 'Allow once'),
-          TerminalPromptOption(key: '4', label: 'No'),
+        options: const [
+          NativeApprovalOption(key: '1', label: 'Allow once'),
+          NativeApprovalOption(key: '4', label: 'No'),
         ],
       ),
       turns: [
@@ -881,14 +1028,14 @@ Allow this command to run? Redirection detected.
     await _tapDetailTab(tester, '结果');
 
     expect(find.text('摘要 1'), findsNothing);
-    expect(find.text('暂无结果'), findsOneWidget);
+    expect(find.textContaining('正式结果会在任务完成'), findsOneWidget);
   });
 
-  testWidgets('result panel uses legacy summary fallback', (tester) async {
+  testWidgets('result panel uses task summary fallback', (tester) async {
     final task = _task().copyWith(
       status: TaskStatus.turnIdle,
-      summary: '旧结果摘要已生成。',
-      shortSummary: 'LEGACY_SHORT_SUMMARY_SHOULD_NOT_RENDER',
+      summary: '任务摘要已生成。',
+      shortSummary: 'SHORT_SUMMARY_SHOULD_NOT_RENDER',
     );
     final state = ArminAppState(
       store: _TaskStore(task),
@@ -905,54 +1052,23 @@ Allow this command to run? Redirection detected.
     );
     await _tapDetailTab(tester, '结果');
 
-    expect(find.textContaining('旧结果摘要已生成'), findsWidgets);
-    expect(find.textContaining('LEGACY_SHORT_SUMMARY_SHOULD_NOT_RENDER'),
-        findsNothing);
-  });
-
-  testWidgets('result panel uses explicit TaskResult summary', (tester) async {
-    final task = _task().copyWith(
-      status: TaskStatus.completed,
-      result: const TaskResult(
-        status: 'success',
-        summary: '显式任务结果已生成。',
-        changedFiles: [],
-        validation: [],
-        risks: [],
-        nextActions: [],
-      ),
-      summary: 'LEGACY_SUMMARY_SHOULD_NOT_RENDER',
-      shortSummary: 'LEGACY_SHORT_SUMMARY_SHOULD_NOT_RENDER',
-    );
-    final state = ArminAppState(
-      store: _TaskStore(task),
-      agentSessionService: const _NoopAgent(),
-      voiceService: const _SilentVoiceService(),
-    );
-    await state.load();
-
-    await tester.pumpWidget(
-      AppStateScope(
-        state: state,
-        child: const MaterialApp(home: TaskDetailScreen(taskId: 'task-1')),
-      ),
-    );
-    await _tapDetailTab(tester, '结果');
-
-    expect(find.textContaining('显式任务结果已生成'), findsWidgets);
+    expect(find.textContaining('任务摘要已生成'), findsWidgets);
     expect(
-        find.textContaining('LEGACY_SUMMARY_SHOULD_NOT_RENDER'), findsNothing);
-    expect(find.textContaining('LEGACY_SHORT_SUMMARY_SHOULD_NOT_RENDER'),
-        findsNothing);
+        find.textContaining('SHORT_SUMMARY_SHOULD_NOT_RENDER'), findsNothing);
   });
 
-  testWidgets('result panel filters approval decision fallback to deliverable',
+  testWidgets(
+      'result panel filters approval decision turn output to deliverable',
       (tester) async {
     final task = _task().copyWith(
       status: TaskStatus.turnIdle,
-      result: const TaskResult(
-        status: 'turn_idle',
-        summary: '''
+      turns: [
+        NativeOutputTurn(
+          id: 'turn-task-1-1',
+          taskId: 'task-1',
+          turnIndex: 1,
+          userInput: '写 readme',
+          rawOutput: '''
 > APPROVAL_DECISION:
 decision: rejected
 Apply this decision to the pending approval request.
@@ -966,11 +1082,12 @@ Thinking
 Done. README.md created with all usage examples.
 README.md 已写入，包含三种模式的完整使用示例、公共参数表和安全机制说明。
 ''',
-        changedFiles: [],
-        validation: [],
-        risks: [],
-        nextActions: [],
-      ),
+          cleanedOutput: '',
+          startedAt: DateTime(2026, 5, 18),
+          lastOutputAt: DateTime(2026, 5, 18),
+          status: NativeOutputTurnStatus.turnIdle,
+        ),
+      ],
     );
     final state = ArminAppState(
       store: _TaskStore(task),
@@ -1068,9 +1185,7 @@ README.md 已写入，包含三种模式的完整使用示例、公共参数表�
     expect(find.textContaining('world'), findsWidgets);
   });
 
-  testWidgets(
-      'resuming the app returns to latest result turn and scrolls to top',
-      (tester) async {
+  testWidgets('resuming the app does not force the result tab', (tester) async {
     tester.view.physicalSize = const Size(430, 900);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -1158,8 +1273,8 @@ README.md 已写入，包含三种模式的完整使用示例、公共参数表�
     await tester.pumpAndSettle();
 
     expect(find.text('产出'), findsOneWidget);
-    expect(find.text('摘要').hitTestable(), findsOneWidget);
-    expect(find.text('摘要 3').hitTestable(), findsOneWidget);
+    expect(find.text('指标渲染已暂停'), findsOneWidget);
+    expect(find.text('摘要').hitTestable(), findsNothing);
   });
 
   testWidgets('deliverable tab stays focused on task output', (tester) async {
@@ -1549,13 +1664,12 @@ Summer 是一个桌面宠物。
   testWidgets('pull to refresh resyncs remote approval prompt', (tester) async {
     final task = _task().copyWith(
       status: TaskStatus.running,
-      approvalRequests: [
-        ApprovalRequest(
-          reason: 'Apply this change?',
-          command: 'plan_approval',
-          risk: 'medium',
-          status: 'approved',
-          resolvedAt: DateTime(2026, 5, 18, 0, 1),
+      nativeApprovalRequests: [
+        _nativeApproval(
+          question: 'Apply this change?',
+          state: ApprovalState.resolved,
+          selectedOptionKey: '1',
+          stateChangedAt: DateTime(2026, 5, 18, 0, 1),
         ),
       ],
     );
@@ -1600,7 +1714,7 @@ Apply this change?
     expect(store.task.status, TaskStatus.needApproval);
     expect(find.text('任务确认'), findsOneWidget);
     expect(find.text('Apply this change?'), findsWidgets);
-    expect(find.text('允许'), findsWidgets);
+    expect(find.text('Allow once'), findsWidgets);
   });
 
   testWidgets('small pull on task detail does not trigger refresh',
@@ -1692,6 +1806,28 @@ TaskSession _task() {
     finalPrompt: 'Task',
     secretRecords: const [],
     rawLog: '',
+  );
+}
+
+NativeTerminalApproval _nativeApproval({
+  required String question,
+  List<NativeApprovalOption> options = const [
+    NativeApprovalOption(key: '1', label: 'Allow once'),
+    NativeApprovalOption(key: '4', label: 'Reject and type something'),
+  ],
+  ApprovalState state = ApprovalState.pending,
+  String? selectedOptionKey,
+  DateTime? stateChangedAt,
+}) {
+  return NativeTerminalApproval(
+    id: 'approval-1',
+    taskId: 'task-1',
+    question: question,
+    options: options,
+    state: state,
+    selectedOptionKey: selectedOptionKey,
+    createdAt: DateTime(2026, 5, 18),
+    stateChangedAt: stateChangedAt,
   );
 }
 
@@ -1916,6 +2052,16 @@ class _CustomDisplaySummaryProvider implements OutputSummaryProvider {
     return const OutputSummary(
       displaySummary: '页面展示文本 hello world',
       speechSummary: '旧语音文本 should not win',
+    );
+  }
+}
+
+class _EchoDisplaySummaryProvider implements OutputSummaryProvider {
+  @override
+  Future<OutputSummary> summarize(OutputSummaryRequest request) async {
+    return OutputSummary(
+      displaySummary: request.cleanedOutput,
+      speechSummary: request.cleanedOutput,
     );
   }
 }

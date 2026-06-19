@@ -514,13 +514,14 @@ class ArminAppState extends ChangeNotifier {
     Set<TaskConstraint> addedConstraints = const {},
     String rawVoiceText = '',
   }) async {
-    await agentSessionService.sendFollowUp(
-      await _controlRequest(task, instruction: instruction),
-    );
     if (instruction.trimLeft().startsWith('APPROVAL_DECISION:')) {
+      await agentSessionService.sendFollowUp(
+        await _controlRequest(task, instruction: instruction),
+      );
       return;
     }
     final latest = _latestTask(task.id) ?? task;
+    final hadActiveObserver = _runningExecutions.containsKey(latest.id);
     final inputAt = DateTime.now();
     final taskWithVoiceInput = _withVoiceInput(latest, rawVoiceText, inputAt);
     final updatedConstraints = {
@@ -541,8 +542,13 @@ class ArminAppState extends ChangeNotifier {
       eventType:
           rawVoiceText.trim().isEmpty ? 'runtime_control' : 'voice_follow_up',
     );
-    startTaskExecution(_latestTask(task.id) ?? latest,
-        _attachRequest(_latestTask(task.id) ?? latest));
+    final saved = _latestTask(task.id) ?? taskWithNewTurn;
+    await agentSessionService.sendFollowUp(
+      await _controlRequest(saved, instruction: instruction),
+    );
+    if (!hadActiveObserver) {
+      startTaskExecution(saved, _attachRequest(saved));
+    }
   }
 
   Future<void> selectTerminalOption(
@@ -1648,7 +1654,33 @@ Apply this decision to the pending approval request.
 
   Future<List<TaskSession>> _loadDedupedTasks() async {
     final loaded = await _store.loadTasks();
-    return _dedupeTasks(loaded);
+    return _dedupeTasks(loaded)
+        .map(_taskWithConsistentLatestTurnStatus)
+        .toList(growable: false);
+  }
+
+  TaskSession _taskWithConsistentLatestTurnStatus(TaskSession task) {
+    if (task.status != TaskStatus.running || task.turns.isEmpty) {
+      return task;
+    }
+    final latestTurn = task.turns.last;
+    final status = switch (latestTurn.status) {
+      NativeOutputTurnStatus.needAttention => task.nativeApproval == null
+          ? TaskStatus.needAttention
+          : TaskStatus.needApproval,
+      NativeOutputTurnStatus.turnIdle => TaskStatus.turnIdle,
+      NativeOutputTurnStatus.runtimeLost => TaskStatus.runtimeLost,
+      _ => null,
+    };
+    if (status == null) {
+      return task;
+    }
+    return task.copyWith(
+      status: status,
+      completedAt: status == TaskStatus.runtimeLost
+          ? task.completedAt ?? task.updatedAt
+          : task.completedAt,
+    );
   }
 
   List<TaskSession> _dedupeTasks(Iterable<TaskSession> source) {

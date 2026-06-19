@@ -5,10 +5,50 @@
 ## 状态
 
 - **当前阶段**: 新旧逻辑共存（Phase 2.5 → Phase A 过渡中，测试需以当前分支 `flutter test` 为准）
-- **目标阶段**: 旧逻辑逐步移除，新 RuntimeEventBus + WorkState + ApprovalState 成为唯一权威
-- **迁移原则**: 从防御层向核心收敛，每步只切换一个调用者，全链路验证后进入下一步
+- **目标阶段**: 旧逻辑在功能等价、性能不回退、真机验证通过后逐步移除；RuntimeEventBus + WorkState + ApprovalState 先成为主路径，再成为唯一权威
+- **迁移原则**: 功能连续性优先于架构纯度。从防御层向核心收敛，每步只切换一个调用者，全链路验证后进入下一步；任何迁移如果让原有自动刷新、Tab 切换、朗读或结果验收退化，必须暂停并回补兼容路径
 - **核心约束**: 所有状态触发型检测必须基于当前观察基线之后的新增证据
 - **持久化边界**: Phase A 以 SQLite Runtime Store 为边界；Flutter 进程内 Runtime 可重建，但状态 reducer 的结果必须可从 SQLite 恢复
+- **文档职责**: 本文件是 Phase 2.6 / Phase A 迁移的唯一执行入口。`ROADMAP.md` 只记录方向，`SPEC.md` 只记录产品/行为原则，`ARCHITECTURE.md` 只记录稳定架构边界。
+
+---
+
+## Phase 2.6 收口修订：不为迁移而迁移
+
+近期真机问题表明，Phase 2.6 不能把“旧逻辑清理”理解为尽快删除 parser / tmux capture / TaskStatus fallback。收口的目标是降低错源、减少重复解析、提升可复盘性，而不是为了形式上统一到 RuntimeEventBus / WorkState 牺牲已经可用的交互。
+
+### 功能不回退红线
+
+以下行为必须先保持，之后才能继续删除旧路径：
+
+- 任务完成后，列表和详情状态能自动从 `running` / `Agent started` 更新到 `turnIdle`、`needAttention`、`runtimeLost` 或终态。
+- 自动刷新不能依赖用户手动 pull refresh 才发现远端已完成。
+- 任务完成或输出稳定后，Tab 仍可立即切换，结果页首帧不被大日志切片或摘要阻塞。
+- 手动朗读、自动 TTS、结果卡片使用同一方向的数据契约，但不能强行绑定到一个同步重解析入口。
+- WorkState 可以增强 UI 文案，但不能覆盖或掩盖仍为主数据面的 `TaskSession.status`；当二者冲突时，必须优先保护用户可操作状态。
+
+### parser / tmux capture 的阶段性职责
+
+在完整 event-linked runtime 尚未落地前，parser / tmux capture 不能只作为审计 fallback。它们仍承担三类职责：
+
+1. **Observation input**：为 RuntimeEventBus / WorkState 提供新增证据。
+2. **Auto reconcile fallback**：当 stream marker、RuntimeEvent 或 WorkState 卡住时，自动用轻量 probe / snapshot 校准状态。
+3. **Audit recovery**：用于最终日志、人工刷新和异常恢复。
+
+禁止做法：
+
+- 仅因为迁移目标是 RuntimeEventBus，就删除自动 reconcile 能力。
+- 让 `Agent started` / `working` 文案长期覆盖已经可由 tmux snapshot 证明完成的任务。
+- 把 stable pane 或旧 exit marker 直接当作完成；自动 reconcile 必须遵守增量证据、marker count、fingerprint 或明确事件去重。
+
+### 继续迁移的前置条件
+
+后续任何状态类迁移必须同时证明：
+
+- 新 Runtime 路径能覆盖迁移前的自动完成 / 自动等待用户 / 自动断线识别能力。
+- 手动刷新能修复的状态，自动 reconcile 也有等价路径。
+- WorkState 与 TaskSession 在同一输入下不会长期分叉；若分叉，UI fallback 会保护旧有可用状态。
+- 真机完成任务后状态刷新、Tab 切换、结果首帧和朗读都通过验收。
 
 ---
 
@@ -30,7 +70,7 @@
 | ⑩ | `OutputSummaryProvider` 中的 TerminalPrompt 块过滤 | Step 3（已完成 ✅） |
 | ⑪ | `AgentExecutionUpdate` 旧字段与新模型并存 | Step 7（生产主路径已迁移，旧字段仅兼容输入 ✅） |
 | ⑫ | Attach/Reconnect 解析历史残留 | Step 0（已完成 ✅） |
-| ⑬ | 结果/TTS 同源门禁 | Step 1（新增补强，已完成 ✅） |
+| ⑬ | 结果/TTS 同源门禁 | Step 1（半迁移态：evidence / resolved summary 契约已建立，按 event-linked deliverable 继续演进） |
 | ⑭ | 运行时限制分类门禁 | Step 2（新增补强，已完成 ✅） |
 
 ---
@@ -44,18 +84,21 @@
    - 若限制信息前已有本轮交付性 `▪ ...` 输出，应保留 deliverable 并进入 `turnIdle` / 可继续状态。
    - 若没有任何交付性输出，才进入需要处理的运行时问题状态，文案也不应是 `Needs Input`。
 
-2. **结果卡片和 TTS 必须同源**
-   - 结果卡片、手动朗读、自动 TTS 都应使用同一个“latest turn deliverable source”。
-   - 优先级：当前 turn scoped raw output → scoped cleaned output → event-linked result payload。
-   - 禁止从旧 `task.summary`、初始 prompt、旧 turn summary 或 reconnect snapshot 生成新的结果/TTS。
+2. **结果卡片和 TTS 必须逐步同源，但不得破坏当前功能效率**
+   - 结果卡片、手动朗读、自动 TTS 最终应使用同一套 event-linked deliverable 数据契约。
+   - 迁移分三层：轻量 candidate / evidence、异步 resolved summary、复用 resolved speech source。
+   - `rawOutput` / `cleanedOutput` 只能作为 evidence 输入，不是结果卡片或 TTS 的最终内容。
+   - 不再为了旧数据可读性保留 `task.summary` / `shortSummary` deliverable fallback。
+   - 禁止从初始 prompt、旧 turn summary、running snapshot 或 reconnect snapshot 生成新的 latest result/TTS。
 
 3. **UI 不应被 Runtime 事件抢占手势**
    - 结果出现、App resume、progress event 都不能强制切到产出 tab 或重置用户滚动。
    - 只有用户显式点击“查看结果/产出”时才切 tab。
 
-4. **probe / refresh / reconcile 只能做状态校准**
+4. **probe / refresh / reconcile 是状态校准，不是可删除的审计尾巴**
    - probe 可以发现远端新证据，但不能把旧 pane 残留重新归约为当前事件。
-   - full capture 只能用于审计、恢复和人工刷新；若要改变状态，必须经过 marker count、offset、event id 或 fingerprint 去重。
+   - full capture 可用于审计、恢复和人工刷新；在自动刷新链路缺事件时，也可以作为轻量 reconcile 的输入。
+   - 若要改变状态，必须经过 marker count、offset、event id 或 fingerprint 去重。
 
 5. **Adapter 可以解析文本，但 parser 位置必须集中**
    - Codex / Qoder 仍是 TUI，文本 → 事件不可避免。
@@ -68,12 +111,12 @@
 
 | 维度 | 迁移前 | 迁移后 |
 |------|--------|--------|
-| 状态权威 | 分散于 SSH 脚本 grep + Dart parser + `_extractStatus` 三处 | `RuntimeEventBus` → reducer 单一路径 |
+| 状态权威 | 分散于 SSH 脚本 grep + Dart parser + `_extractStatus` 三处 | 先以 `RuntimeEventBus` → reducer 为主路径；parser / tmux 保留自动校准输入，直到功能等价后再收口 |
 | 文本残留污染 | 旧 exit marker / approval prompt 可被误判为当前状态 | 增量证据原则：只在新增文本中触发状态 |
 | 审批模型 | `String status`（`'pending'` / `'approved'`），无类型安全 | `ApprovalState` enum，编译期保证 |
 | 断线恢复 | 重新 capture-pane 全量重解析 | `last_offset` / `last_event_id` 增量恢复 |
-| TTS 播报源 | 可回退到 `task.summary` / 初始提示词 | 仅播 event-linked payload |
-| App 职责 | 直接判断任务完成 | 只发 command，Runtime 负责状态归约 |
+| TTS 播报源 | 可回退到 `task.summary` / 初始提示词 | 逐步迁移到 resolved speech summary / event-linked payload；raw output 仅作 evidence |
+| App 职责 | 直接判断任务完成 | 过渡期负责桥接命令、事件和兼容校准；Runtime 覆盖完整后再收敛为状态归约主路径 |
 
 ---
 
@@ -83,7 +126,7 @@
 
 ```
 Step 0: ⑫ 增量证据约束（新增保护网，不移除任何旧逻辑）
-Step 1: ⑬ 结果/TTS 同源门禁（latest turn deliverable source）
+Step 1: ⑬ 结果/TTS 同源门禁（candidate evidence / resolved summary / speech source）
 Step 2: ⑭ 运行时限制分类门禁（quota / usage limit）
 Step 3: ⑩ P3  OutputSummaryProvider 重复检测
 Step 4: ⑨ P2  _bridgeNotifyExecutionUpdate 轻量化
@@ -128,28 +171,67 @@ Step 9: ⑦ P2  UI 消费 TaskStatus → WorkState
 
 ### 目标
 
-在继续迁移前，先固定“结果从哪里来”的行为契约。后续 Runtime reducer、UI、TTS 都必须复用同一条 latest turn deliverable source，避免 UI 显示一个结果、TTS 播另一个结果。
+在继续迁移前，先固定“结果从哪里来、如何变成可读摘要”的行为契约，但不得以牺牲当前功能和性能为代价。Step 1 的目标不是一次性替换所有调用者，而是建立 event-linked deliverable 的 evidence → resolved summary 契约，并按场景逐步切换。
 
-### 改动范围
+### Step 1a：冻结旧体验基线
 
-- `TurnOutputSlicer`：保留 turn-scoped raw / cleaned 输出能力
-- `TaskDetailScreen`：结果卡片优先使用 scoped raw output，再回退 scoped cleaned output
-- `TaskSpeechPolicy`：自动播报使用同一 source，不再优先 fallback 到旧 `task.summary`
-- `TaskNeedsPanel` 手动读结果：与结果卡片同源
+先冻结当前功能体验，补齐行为基线：
+
+- 任务完成后可以立即切换 Tab。
+- 结果页首帧不被 summary、output slicing 或大日志处理阻塞。
+- 多 turn 结果不串线。
+- 没有当前 turn / event evidence 时，不伪造 deliverable。
+- 手动朗读和自动 TTS 仍可用。
+- reconnect / running snapshot 不生成 latest result。
+
+### Step 1b：建立三层 deliverable 契约
+
+- Candidate / Evidence Layer：只看 turn status / id / timestamp / length 选候选；真正需要解析时才读取 scoped raw / cleaned output 作为 evidence。evidence 不直接展示、不直接朗读。
+- Resolved Summary Layer：异步执行 turn output slicing、prompt echo / thinking / CLI chrome 过滤和 `OutputSummaryProvider` 摘要生成，产物是 `displaySummary` / `speechSummary` / provenance。
+- Speech Source Layer：优先复用 resolved `speechSummary`，没有时才读清洗后的 `displaySummary`；没有 resolved deliverable 时只能播明确状态提示或跳过，不能新造 latest result。
+
+### Step 1c：区分 fallback 与权威来源
+
+- 允许：当前 turn / event evidence 缺失时显示“暂无结果”或明确状态提示。
+- 禁止：latest turn deliverable 从 `task.summary`、初始 prompt、旧 turn summary、running snapshot 或 reconnect snapshot 生成。
+- 禁止：为了同源把结果卡片、TTS、diagnostics 绑到一个同步重解析入口。
+
+### Step 1d：按场景逐步切换
+
+切换顺序：
+
+1. Diagnostics 使用新 source 记录 provenance。
+2. 手动朗读使用 resolved `speechSummary` / `displaySummary`。
+3. 自动 TTS 使用 resolved deliverable / event-linked payload。
+4. 结果卡片迁移到 resolved `displaySummary`。
+5. 历史结果列表最后迁移。
+
+结果卡片和历史列表最敏感，必须最后迁移。只有真机确认不卡顿、Tab 可切换、TTS 不误播、多 turn 不串线后，才能继续删除旧逻辑。
+
+### 当前实现状态
+
+- 已建立 `TaskDeliverableSource` 作为 evidence → resolved summary 的基础服务。
+- `TaskDetailScreen` 结果卡片不再使用 `summary` / `shortSummary` 作为 deliverable fallback。
+- `TaskSpeechPolicy` 自动 TTS 不再从 `summary` / `shortSummary` 生成 latest result；没有 evidence 时只播状态提示或跳过。
+- 还没有持久化完整 event-linked deliverable payload；当前 provenance 先绑定 turn id / turn index / evidence fingerprint。
 
 ### 风险与应对
 
 | 风险 | 可能性 | 应对 |
 |------|:---:|------|
+| 为了同源再次把 UI 首帧变成重解析路径 | 高 | Candidate Layer 必须保持同步轻量；resolved deliverable 只能异步运行 |
+| 删除 `summary` fallback 后没有 turn evidence 的任务显示暂无结果 | 中 | 当前未发布应用，不为旧数据兜底；功能路径必须保证新任务写入 turn / event evidence |
 | raw output 中含 TUI chrome，结果卡片出现噪声 | 中 | raw 只作为 source，仍交给 `OutputSummaryProvider` / `AgentOutputCleaner` 清洗 |
-| cleaned output 曾经比 raw 更干净，改 raw 优先导致摘要质量波动 | 中 | 仅在 scoped raw 非空时使用；保留 cleaned fallback；用真实 `▪` 输出回归 |
-| TTS 播报长文本过长 | 低 | 当前策略是播显示卡片全文；后续引入独立 speech summarizer 前不得牺牲结果完整性 |
+| TTS 播报长文本过长 | 低 | 当前策略保持旧行为；后续 speech summarizer 必须单独验收 |
 
 ### 验证标准
 
-- [x] 后续 turn 的 `cleanedOutput` 是旧片段，但 `rawOutput` 有最终 `▪ ...` 时，结果卡片显示最终结果
-- [x] 自动 TTS 使用 latest raw turn output，不播旧 summary / prompt / thinking
-- [x] App resume 不强制切到产出 tab，不抢用户滚动和 tab 切换
+- [x] Candidate lookup 不切大输出。
+- [x] resolved deliverable 请求时才做 turn output slicing。
+- [x] running / needAttention turn 不进入 deliverable candidate。
+- [x] 结果页不再使用 legacy summary fallback 伪造 deliverable。
+- [x] 自动 TTS、手动朗读和结果卡片既有测试保持通过。
+- [ ] 真机确认任务完成后不卡顿，Tab 可切换，结果页首帧不卡。
 
 ---
 
@@ -332,7 +414,7 @@ Step 9: ⑦ P2  UI 消费 TaskStatus → WorkState
 ### 前置条件
 
 - [x] Step 0 增量证据约束已落地
-- [x] Step 1 结果/TTS 同源门禁已落地
+- [x] Step 1 evidence → resolved summary 契约已建立，结果卡片和 TTS 保持半迁移态
 - [x] Step 2 运行时限制分类门禁已落地
 - [x] Step 4 `_bridgeNotifyExecutionUpdate` 已切换到轻量路径
 - [x] Step 5 reconcile 路径不再依赖 `observeOutput` 的状态变更
@@ -425,7 +507,7 @@ stopped         →          stopped
 | Step | 核心风险 | 严重度 | 缓解措施 |
 |------|---------|:---:|------|
 | 0 | `hasNewDelta` 状态位维护错误 | 中 | hash 比较 + 测试覆盖 |
-| 1 | 结果卡片和 TTS 再次分叉 | 高 | latest turn deliverable source 单一 helper + 回归测试 |
+| 1 | 结果卡片和 TTS 再次分叉 | 高 | evidence → resolved summary 契约 + 分场景回归测试；禁止 UI 同步重解析 |
 | 2 | quota / usage limit 再次被归为普通输入需求 | 高 | observer / adapter 先判 deliverable，再判 runtime issue |
 | 3 | SSH 层预处理遗漏 prompt 格式 | 中 | 双 parser 并行运行，diff 验证 |
 | 4 | legacy `observeOutput` 被新调用者误用 | 低 | 生产路径只用 `notifyOutputUpdated` 和 `RuntimeReconcileDecision` |
@@ -444,7 +526,7 @@ stopped         →          stopped
 | 阶段 | 功能切片 | 当前旧路径 | 目标新路径 | 完成标准 |
 |------|----------|------------|------------|----------|
 | A0 | 状态触发保护网 | SSH grep / full capture 直接触发状态 | 增量证据、marker count、fingerprint 去重 | 旧 prompt / 旧 exit marker 不能触发 `needAttention` / `turnIdle` |
-| A1 | 输出与播报同源 | 结果卡片、TTS、summary fallback 各自取源 | latest turn deliverable source | 后续 turn 结果、TTS、手动朗读一致 |
+| A1 | 输出与播报同源 | 结果卡片、TTS 曾分散取源，summary fallback 已移除 | event-linked evidence / resolved summary / speech source 分层迁移 | 后续 turn 结果、TTS、手动朗读一致，raw output 只作 evidence |
 | A2 | Runtime issue 分类 | `Credits exhausted` → `needAttention` | deliverable 优先，runtime issue 次之 | 有结果时显示结果，无结果时提示运行时问题 |
 | A3 | 审批/终端交互 | `TerminalPrompt` → `ApprovalRequest` String 状态 | `TerminalPrompt` → `NativeTerminalApproval` + `ApprovalState` | Runtime/WorkState、审批卡、历史、JSON 已纵切，旧模型已移除 |
 | A4 | Streaming 事件 | `_bridgeNotifyExecutionUpdate` → `observeOutput` | `notifyOutputUpdated` 轻量事件 | progress 不触发状态归约，不引发全局重建 |
@@ -466,7 +548,7 @@ stopped         →          stopped
 - 该切片的单元测试 + 至少一个 AppState 级测试。
 - 若影响 UI，增加 widget 测试覆盖首页或详情页。
 - 若影响 TTS，断言实际 `TaskSpeechDecision.text`，不能只断言 `shouldSpeak`。
-- 若影响 result，必须覆盖“后续 turn + 旧 summary + 最新 `▪` deliverable”的真实形态。
+- 若影响 result，必须覆盖“后续 turn + legacy summary 不参与 + 最新 `▪` deliverable”的真实形态。
 
 ---
 

@@ -190,11 +190,12 @@ void main() {
     await eventBus.dispose();
   });
 
-  test('notifyOutputUpdated emits output event without watcher state changes',
+  test('notifyOutputUpdated emits transient event without persistence',
       () async {
     final eventBus = RuntimeEventBus();
+    final store = InMemoryRuntimeTaskStore();
     final runtime = BridgeRuntime(
-      taskStore: InMemoryRuntimeTaskStore(),
+      taskStore: store,
       eventBus: eventBus,
     );
     final events = <RuntimeEvent>[];
@@ -215,6 +216,37 @@ void main() {
       events.map((event) => event.type),
       isNot(contains(RuntimeEventType.taskWaitingUser)),
     );
+    expect(await store.loadEvents(taskId: 'task-1'), isEmpty);
+
+    runtime.notifyDeliverableUpdated('task-1', now: now);
+    await Future<void>.delayed(Duration.zero);
+
+    final persisted = await store.loadEvents(taskId: 'task-1');
+    expect(persisted, hasLength(1));
+    expect(persisted.single.type, RuntimeEventType.deliverableUpdated);
+
+    await subscription.cancel();
+    await eventBus.dispose();
+  });
+
+  test('high-frequency output events stay memory-only', () async {
+    final eventBus = RuntimeEventBus();
+    final store = InMemoryRuntimeTaskStore();
+    final runtime = BridgeRuntime(taskStore: store, eventBus: eventBus);
+    var received = 0;
+    final subscription = eventBus.events.listen((event) {
+      if (event.type == RuntimeEventType.outputUpdated) {
+        received++;
+      }
+    });
+
+    for (var index = 0; index < 500; index++) {
+      runtime.notifyOutputUpdated('task-1');
+    }
+    await Future<void>.delayed(Duration.zero);
+
+    expect(received, 500);
+    expect(await store.loadEvents(taskId: 'task-1'), isEmpty);
 
     await subscription.cancel();
     await eventBus.dispose();

@@ -4,6 +4,10 @@ Armin 是一个 Flutter 应用，采用本地优先的状态管理，并围绕�
 
 长期 Runtime 方向见 [Bridge Runtime Long-Term Architecture](runtime/bridge-runtime-long-term-architecture.md)。当前 Flutter 内 Bridge Runtime 是过渡实现；最终任务生命周期、审批状态、事件流和 watcher offset 的持久化边界应在 SQLite，并逐步迁移到远端 Runtime daemon 或支持可靠断线续传。
 
+Session Manager Daemon 是向远端 Runtime daemon 架构演进的第一步，设计决策见 [Session Manager Daemon 设计](runtime/session-manager-daemon.md)。
+
+安全远端执行器也是长期架构考虑，而不是 Phase 2.5 / Phase 3 的近期目标。近期仍应优先验证语音任务创建、Loop-based 工作流、长生命周期编码任务和多设备远程访问需求是否真实存在；在这些假设成立前，不应显著增加 relay、身份、权限和多执行器路由等基础设施复杂度。
+
 长期目标不是消除文本解析。Codex / Qoder 是 TUI 程序，文本仍然是原始观察输入；目标是把“文本 → 事件”的转换集中在 Runtime Watcher / Agent Adapter 层，解析新增文本后写入结构化事件，再由 Runtime reducer 归约任务状态。AppState、结果卡片、TTS 和 UI 不应各自反复解析 raw terminal text，也不应让 pane 中残留的 exit marker、thinking、approval prompt 或旧结果直接决定当前 turn 状态。
 
 ## 层级结构
@@ -51,7 +55,7 @@ AgentExecutionUpdate(
 
 Armin 不负责代理的推理、规划、代码合并或调度。它仅管理 shell 级别的通信和可审计性。
 
-`tmux capture-pane` 是观察输入，不是任务状态权威。输出稳定或无新增可见文本只能表示 `outputQuieting` / `no visible update`，不能单独触发 `turnIdle`、结果卡片或 TTS 播报。长期应由 Runtime Event + SQLite Store 派生 `WorkState`、`ApprovalState` 和结果可见性。
+`tmux capture-pane` 是观察输入，不是任务状态的唯一权威。输出稳定或无新增可见文本只能表示 `outputQuieting` / `no visible update`，不能单独触发 `turnIdle`、结果卡片或 TTS 播报。但在 Runtime Event 覆盖完整前，tmux snapshot / parser 仍是自动 reconcile 的必要输入：当 stream marker、RuntimeEvent 或 WorkState 卡住时，可以用新增证据、marker count、fingerprint 或 offset 去重后的 capture 结果校准 `TaskSession.status` 和 `WorkState`。长期应由 Runtime Event + SQLite Store 派生 `WorkState`、`ApprovalState` 和结果可见性。
 
 目标链路：
 
@@ -142,7 +146,7 @@ Armin 适合采用轻量 Loop Engineering 视角：Plan → Execute → Observe 
 
 ## Bridge Runtime（Phase 2.5）
 
-`BridgeRuntime` 是 Flutter 进程内的过渡 Runtime 实现，作为任务状态的唯一写入源。它消费 SSH/tmux 输出流，通过 `TaskWatcher` 解析增量输出，经由 `RuntimeEventBus` 分发结构化事件，并派生 `WorkState` 和 `ApprovalState` 供 UI 消费。长期方向是将持久化边界迁移至 SQLite，再逐步迁移至远端 Runtime daemon。
+`BridgeRuntime` 是 Flutter 进程内的过渡 Runtime 实现，是任务状态收敛的主路径，但在 Phase 2.6 不能被视为已经覆盖所有旧能力的唯一写入源。它消费 SSH/tmux 输出流，通过 `TaskWatcher` 解析增量输出，经由 `RuntimeEventBus` 分发结构化事件，并派生 `WorkState` 和 `ApprovalState` 供 UI 消费。直到自动完成、自动等待用户、断线恢复和手动刷新等旧能力都有等价 Runtime 覆盖前，AppState 仍保留桥接和自动校准职责。长期方向是将持久化边界迁移至 SQLite，再逐步迁移至远端 Runtime daemon。
 
 ### 核心组件
 
@@ -211,3 +215,43 @@ Armin 不解释或重写 Agent 的执行逻辑。`SelectableOutputSummaryProvide
 - 成本侧：token 消耗、重复执行次数、用户返工次数和从任务创建到验收的时长
 
 Loop Engineering 在 Armin 中的边界是单任务闭环优化：更清楚地计划任务、更可靠地观察执行、更早发现偏离、更低成本地追加上下文和验收结果。它不应变成复杂工作流系统、自动 fork/join runtime 或多 Agent 调度器。
+
+## Phase 2.6 结果迁移架构
+
+结果、TTS 和诊断应逐步迁移到同一套 deliverable 数据契约，但不能让 UI 同步路径承担重解析工作。迁移执行顺序和验收标准统一维护在 [legacy-cleanup-checklist.md](runtime/legacy-cleanup-checklist.md)。架构上只保留三层边界：
+
+| 层 | 同步性 | 职责 | 禁止事项 |
+|----|--------|------|----------|
+| Candidate / Evidence Layer | 同步选择、按需取证 | 选择可能包含结果的 turn；需要解析时读取 scoped raw / cleaned output 作为 evidence | 不生成摘要，不直接展示 evidence，不直接朗读 raw output |
+| Resolved Summary Layer | 异步、可缓存 | 对 evidence 做过滤和摘要生成，产出 `displaySummary` / `speechSummary` / provenance | 不阻塞 build / Tab 切换 / 任务完成状态更新 |
+| Speech Source Layer | 异步优先，复用 resolved summary | 手动朗读和自动 TTS 复用 resolved `speechSummary`，缺失时读清洗后的 `displaySummary` | 不从 prompt、running snapshot、reconnect snapshot 或 legacy summary 推导 latest result |
+
+`rawOutput` / `cleanedOutput` 是 resolver evidence，不是产品层 deliverable。`task.summary` / `shortSummary` 不再作为结果兜底；没有当前 turn / event evidence 时，UI 应显示暂无结果或明确状态提示。后续应将 provenance 从 turn id / evidence fingerprint 继续升级为完整 event-linked deliverable payload。
+
+## 未来安全远端执行器
+
+Codex 近期方向中的 authenticated remote executor、端到端加密 relay channel 和基于 Noise 的安全通信，为 Armin 的远期架构提供了参考。未来可考虑的 Secure Remote Executor Infrastructure 包括：
+
+- Executor Identity
+- Device Authentication
+- 基于 Noise 的端到端加密
+- Authenticated Relay Channels
+- Permission Profiles
+- Audit Logs
+- Multi-Device Synchronization
+- Multi-Executor Routing
+- Secure Session Management
+
+参考链路：
+
+```text
+Mobile App
+↓
+Encrypted Relay
+↓
+Executor
+↓
+Codex / Claude Code / Other Agents
+```
+
+Relay 必须被视为不可信组件。长期上，敏感通信应由 Mobile App 与 Executor 之间的端到端加密保护，relay 只承担转发能力，不应成为明文状态、密钥或用户任务内容的信任边界。

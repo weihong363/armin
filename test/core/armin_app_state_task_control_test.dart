@@ -297,6 +297,34 @@ void main() {
     expect(state.tasks.single.shortSummary, 'newer');
   });
 
+  test('load aligns running task with latest attention turn', () async {
+    final now = DateTime(2026, 5, 17);
+    final task = _task(status: TaskStatus.running).copyWith(
+      turns: [
+        NativeOutputTurn(
+          id: 'turn-1',
+          taskId: 'task-1',
+          turnIndex: 1,
+          userInput: 'Task',
+          rawOutput: 'Permission Required',
+          cleanedOutput: 'Permission Required',
+          startedAt: now,
+          lastOutputAt: now,
+          status: NativeOutputTurnStatus.needAttention,
+        ),
+      ],
+    );
+    final state = ArminAppState(
+      store: _TaskStore(task),
+      agentSessionService: _ControlAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+
+    await state.load();
+
+    expect(state.tasks.single.status, TaskStatus.needAttention);
+  });
+
   test('refreshTasks asynchronously syncs remote snapshot for running tasks',
       () async {
     final task = _task(status: TaskStatus.running).copyWith(
@@ -1221,6 +1249,30 @@ Thinking
     expect(store.task!.turns, hasLength(2));
     expect(store.task!.turns.last.turnIndex, 2);
     expect(store.task!.turns.last.userInput, '只输出 pets 名字');
+  });
+
+  test('sendFollowUp preserves fast observer attention update', () async {
+    final task = _task(status: TaskStatus.turnIdle);
+    final store = _TaskStore(task);
+    final agent = _FastAttentionFollowUpAgent();
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: agent,
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+    state.startTaskExecution(
+      task,
+      const AgentExecutionRequest(prompt: 'Task'),
+    );
+
+    await state.sendFollowUp(task, '继续执行');
+    await Future<void>.delayed(Duration.zero);
+
+    expect(store.task!.status, TaskStatus.needAttention);
+    expect(store.task!.turns.last.status, NativeOutputTurnStatus.needAttention);
+    state.dispose();
+    await agent.close();
   });
 
   test('sendFollowUp preserves aggressive execution mode on reattach',
@@ -2193,6 +2245,29 @@ class _ControlAgent implements AgentSessionService {
   ) async {
     return const AgentInstructionDiscoveryResult(paths: []);
   }
+}
+
+class _FastAttentionFollowUpAgent extends _ControlAgent {
+  final StreamController<AgentExecutionUpdate> _updates =
+      StreamController<AgentExecutionUpdate>.broadcast();
+
+  @override
+  Stream<AgentExecutionUpdate> execute(AgentExecutionRequest request) {
+    lastExecuteRequest = request;
+    return _updates.stream;
+  }
+
+  @override
+  Future<void> sendFollowUp(AgentControlRequest request) async {
+    await super.sendFollowUp(request);
+    _updates.add(const AgentExecutionUpdate(
+      rawOutput: 'Permission Required',
+      cleanedOutput: 'Permission Required',
+      needsAttention: true,
+    ));
+  }
+
+  Future<void> close() => _updates.close();
 }
 
 class _ProbeAgent extends _ControlAgent implements RemoteTaskProbeService {

@@ -18,6 +18,7 @@ Armin 是一个语言优先的 shell，用于将工作委派给计算机上的�
 6. 敏感值应该被输入、脱敏并从普通历史中排除。
 7. Armin 不实现复杂的代理执行、调度、合并或规划逻辑。
 8. 未来的指标应有助于调试人与代理之间的委托质量。
+9. 用户采纳和任务完成率比基础设施复杂度更重要。
 
 ## 当前 Phase 2 范围
 
@@ -113,7 +114,7 @@ Armin 拥有 shell 级别的会话抽象，而不是代理运行时：
 
 长期 Runtime 方向中，`tmux capture-pane` 只能作为观察输入，不能作为状态权威。短时间无新增输出或 pane 稳定只能表示 `outputQuieting` / `no visible update`；`turnIdle`、结果卡片和 TTS 播报应由 Runtime Event、SQLite 中的 durable state、明确等待用户输入、审批状态或 adapter 识别的强完成信号驱动。
 
-Codex / Qoder 是 TUI 程序，因此文本解析不可避免。规范要求解析边界集中在 Runtime Watcher / Agent Adapter：Adapter 只解析当前观察基线之后的新增文本，产出 `ApprovalRequested`、`TurnWaitingUser`、`DeliverableUpdated`、`ProcessExited` 等候选事件；Runtime reducer 再基于新增事件和持久化状态归约任务状态。完整 pane capture 只能用于审计、恢复和人工排查，不能直接产生状态变更事件。
+Codex / Qoder 是 TUI 程序，因此文本解析不可避免。规范要求解析边界集中在 Runtime Watcher / Agent Adapter：Adapter 只解析当前观察基线之后的新增文本，产出 `ApprovalRequested`、`TurnWaitingUser`、`DeliverableUpdated`、`ProcessExited` 等候选事件；Runtime reducer 再基于新增事件和持久化状态归约任务状态。长期上，完整 pane capture 不应直接产生状态变更事件；Phase 2.6 过渡期内，它仍可作为自动 reconcile 输入，但必须先经过增量证据、marker count、fingerprint 或 event id 去重，再由统一状态归约路径更新 `TaskSession.status` / `WorkState`。
 
 状态触发型事件必须具备“当前观察窗口的新证据”。旧 pane 中残留的 exit marker、approval prompt、terminal option prompt、thinking 文本、旧结果或 prompt echo 不能重新进入 reducer，不能触发 `needAttention`、`turnIdle`、结果卡片或自动 TTS。若需要从完整 capture 恢复状态，必须通过 offset、marker count、event id 或内容 fingerprint 做去重。
 
@@ -190,3 +191,31 @@ MVP 记录指标事件但没有仪表板。目标字段涵盖任务持续时间�
 这些指标用于提升用户每次交互的效率：减少无效输出、减少 prompt echo / thinking / CLI chrome 污染、减少不必要的返工，并帮助下一轮任务提示更聚焦。它们不改变 Codex/Qoder 的执行逻辑，也不要求 Agent 返回私有结构化协议。
 
 Armin 的 Loop Engineering 边界是单任务循环：Plan → Execute → Observe → Evaluate → Adjust → Verify。Runtime 负责观察和归约状态；评估层记录本轮循环的成本、结果质量和用户后续动作；UI 只暴露对用户有帮助的下一步。该循环不等同于多 Agent workflow、自动调度器或通用任务依赖图。
+
+## Phase 2.6 迁移收口边界
+
+结果来源和 Runtime 状态迁移必须保证原有功能不受影响。收口目标是减少错误来源，而不是把所有展示、朗读、诊断和状态刷新逻辑强行合并到一个尚未覆盖完整场景的入口。具体执行步骤统一以 [legacy-cleanup-checklist.md](runtime/legacy-cleanup-checklist.md) 为准。
+
+稳定行为原则：
+
+- UI 同步路径不得做大字符串切片、summary、TTS 清洗、raw log 扫描或 prompt echo 判断。
+- 任务完成、等待用户、运行时中断等状态必须能自动刷新；不能要求用户手动刷新才能从 `running` / `Agent started` 进入可验收状态。
+- RuntimeEventBus / WorkState 尚未覆盖完整前，parser / tmux capture 仍可作为自动 reconcile 输入，但必须遵守增量证据、marker count、fingerprint 或 event id 去重。
+- WorkState 是 UI 语义增强，不得长期掩盖与 `TaskSession.status` 冲突的真实可操作状态。
+- 没有当前 turn / event evidence 时，结果页不伪造 deliverable；`task.summary` / `shortSummary` 不能作为结果兜底。
+- latest turn deliverable 不得来自 prompt echo、thinking、旧 turn、running snapshot、reconnect snapshot 或 legacy summary。
+- `rawOutput` / `cleanedOutput` 只能作为 resolver evidence，最终展示和 TTS 应消费 resolved `displaySummary` / `speechSummary`。
+- 手动朗读和自动 TTS 的迁移必须以真机验证为门槛，不能为了同源牺牲旧有可用性和性能。
+
+## 未来安全远端执行方向
+
+近期 Codex 方向中出现的 authenticated remote executor、端到端加密 relay channel 和基于 Noise 的安全通信，是 Armin 未来可以参考的重要架构方向，但不属于 Phase 2.5 或 Phase 3 的近期优先级。
+
+在实现 Secure Remote Executor Infrastructure 前，Armin 必须先验证：
+
+1. 用户会稳定使用语音驱动的任务创建。
+2. 用户会采用 Loop-based 工作流。
+3. 用户会通过 Armin 运行长生命周期编码任务。
+4. 用户确实需要从多个设备远程访问执行器。
+
+只有这些假设成立后，安全远端执行器基础设施才应进入开发优先级。

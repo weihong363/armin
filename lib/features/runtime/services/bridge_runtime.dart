@@ -630,7 +630,13 @@ class BridgeRuntime {
       snapshot: snapshot,
     );
     eventBus.publish(event);
-    unawaited(_saveEvent(event));
+    if (_shouldPersistEvent(type)) {
+      unawaited(_saveEvent(event));
+    }
+  }
+
+  bool _shouldPersistEvent(RuntimeEventType type) {
+    return type != RuntimeEventType.outputUpdated;
   }
 
   void _ensureDiagnostics(String taskId) {

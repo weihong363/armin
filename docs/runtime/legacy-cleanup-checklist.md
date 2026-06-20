@@ -5,11 +5,12 @@
 ## 状态
 
 - **当前阶段**: 新旧逻辑共存（Phase 2.5 → Phase A 过渡中，测试需以当前分支 `flutter test` 为准）
-- **目标阶段**: 旧逻辑在功能等价、性能不回退、真机验证通过后逐步移除；RuntimeEventBus + WorkState + ApprovalState 先成为主路径，再成为唯一权威
+- **目标阶段**: 旧逻辑在功能等价、性能不回退、真机验证通过后逐步移除；Phase 2.6 让 RuntimeEventBus + WorkState + ApprovalState 成为稳定主路径，跨重启持久化与 event replay 完成后再讨论唯一权威
 - **迁移原则**: 功能连续性优先于架构纯度。从防御层向核心收敛，每步只切换一个调用者，全链路验证后进入下一步；任何迁移如果让原有自动刷新、Tab 切换、朗读或结果验收退化，必须暂停并回补兼容路径
 - **核心约束**: 所有状态触发型检测必须基于当前观察基线之后的新增证据
 - **持久化边界**: Phase A 以 SQLite Runtime Store 为边界；Flutter 进程内 Runtime 可重建，但状态 reducer 的结果必须可从 SQLite 恢复
 - **文档职责**: 本文件是 Phase 2.6 / Phase A 迁移的唯一执行入口。`ROADMAP.md` 只记录方向，`SPEC.md` 只记录产品/行为原则，`ARCHITECTURE.md` 只记录稳定架构边界。
+- **回归契约**: 所有迁移必须满足 [Armin 核心行为与性能基线](core-behavior-performance-baseline.md)。任一适用基线失败时，不得继续删除旧逻辑或通过放宽验收标准完成收口。
 
 ---
 
@@ -68,7 +69,7 @@
 | ⑧ | `_bridgeSyncTerminalStatus()` 暂停/运行/observer 无操作 | Step 5（已合并移除 ✅） |
 | ⑨ | `_bridgeNotifyExecutionUpdate()` — 重型 observeOutput 调用 | Step 4（已轻量化 ✅） |
 | ⑩ | `OutputSummaryProvider` 中的 TerminalPrompt 块过滤 | Step 3（已完成 ✅） |
-| ⑪ | `AgentExecutionUpdate` 旧字段与新模型并存 | Step 7（生产主路径已迁移，旧字段仅兼容输入 ✅） |
+| ⑪ | `AgentExecutionUpdate` 旧字段与新模型并存 | Step 7（旧字段已物理移除，native-only ✅） |
 | ⑫ | Attach/Reconnect 解析历史残留 | Step 0（已完成 ✅） |
 | ⑬ | 结果/TTS 同源门禁 | Step 1（半迁移态：evidence / resolved summary 契约已建立，按 event-linked deliverable 继续演进） |
 | ⑭ | 运行时限制分类门禁 | Step 2（新增补强，已完成 ✅） |
@@ -136,6 +137,48 @@ Step 7: ⑪ P1  AgentExecutionUpdate 字段迁移
 Step 8: ③+① P0  observeOutput 去状态化 → _extractStatus 移除
 Step 9: ⑦ P2  UI 消费 TaskStatus → WorkState
 ```
+
+---
+
+## 2026-06-20 核对结果与剩余计划
+
+本节以当前代码和测试为准，覆盖下文较早的阶段性勾选。Phase 2.6 不再重复建设已经存在的异步解析、页面缓存或 Tab 隔离能力，也不在本阶段提前实现 Phase 3 的完整跨重启 deliverable 持久化。
+
+| 切片 | 当前状态 | 代码证据 | Phase 2.6 剩余工作 |
+|------|----------|----------|--------------------|
+| A0 增量证据保护 | 已完成 | attach/probe 使用新增证据、exit marker count 和基线保护 | 保持回归测试，不再扩张 |
+| A1 输出与播报同源 | **部分完成** | `TaskDeliverableSource` 已提供 candidate/evidence/resolve/provenance；结果页已有 `Isolate.run`、页面缓存和 in-flight 去重 | 结果页和 TTS 接入同一个 resolver/cache；移除 deliverable 场景的 `summary` / `shortSummary` fallback；发布 event-linked provenance |
+| A2 Runtime issue 分类 | 已完成 | quota 前有 deliverable 与无 deliverable 已分流并有测试 | 补正常额度下真机用例，不调整分类语义 |
+| A3 审批/终端交互 | 已完成 | `NativeTerminalApproval` + `ApprovalState` 为生产模型 | 保持 safe/balanced/aggressive 回归 |
+| A4 Streaming 事件 | 已完成 | streaming 使用 `notifyOutputUpdated()`；`OUTPUT_UPDATED` 只走内存 EventBus，不写 SQLite | 保持高频事件 memory-only 回归 |
+| A5 状态 reducer | **部分完成** | 显式 Runtime API 和 WorkState 已存在，但 AppState 仍通过 `_taskWithExecutionUpdate()` / `_bridgeSyncStreamStatus()` 归约部分状态 | 先补齐 Runtime 事件覆盖和一致性测试；不得为了删除 AppState 判断破坏自动刷新 |
+| A6 Reconcile/Refresh | **部分完成** | exit marker count、probe baseline、fingerprint 类保护已存在；full capture 仍承担恢复输入 | 验证自动 reconcile 与手动刷新等价；watcher offset/event replay 完整化留到 Phase 3 |
+| A7 UI 状态消费 | 主 UI 已迁移，fallback 保留 | 首页、详情、历史卡片优先读取 WorkState，仍保留 TaskStatus 低层/兼容分支 | A5/A6 完整前不删除 fallback；只清理被证明无调用者的重复映射 |
+| E1 交互效率指标 | **未开始** | 目前只有通用 `MetricEvent` 和 bounded append | 增加 task/turn 级轻量字段与事件，不建设 workflow engine |
+
+### 已具备、不得重复建设
+
+- 结果摘要在规则 provider 下通过 `Isolate.run()` 后台执行。
+- 结果页拥有有界内存缓存和相同 signature 的 in-flight 去重。
+- 摘要工作在首帧后调度，`FutureBuilder` 异步展示。
+- 高频 progress 不写任务 JSON、不触发全局 AppState rebuild。
+- `OUTPUT_UPDATED` 是瞬时事件，不写入 SQLite；状态、审批和 deliverable 事件仍持久化。
+
+### 修订后的执行顺序
+
+1. **P0 行为基线冻结**：以 [Armin 核心行为与性能基线](core-behavior-performance-baseline.md) 为门禁，保留状态自动刷新、follow-up observer 连续性、Tab 可切换和高频事件 memory-only 测试。
+2. **P1 A1 主路径接入**：让结果卡片、手动朗读和自动 TTS 复用同一个 `ResolvedDeliverable` resolver/cache；cache key 使用 turn id + evidence fingerprint + provider 配置。
+3. **P2 移除 deliverable fallback**：只在新任务功能路径已稳定写入 turn/event evidence 后，移除结果/TTS 的 `task.summary` / `shortSummary` fallback；状态卡和时间线仍可使用状态摘要。
+4. **P3 event-linked provenance**：发布 `DELIVERABLE_UPDATED` 时关联 turn id、evidence fingerprint 和 resolved summary identity。Phase 2.6 只要求当前运行期同源；完整 SQLite payload、App 重启恢复和 event replay 归 Phase 3。
+5. **P4 A5/A6 一致性补齐**：按 safe → balanced → aggressive 验证 `TaskSession.status` 与 `WorkState.phase`；自动 reconcile 必须覆盖手动刷新可恢复的场景。
+6. **P5 交互效率指标**：记录输入/摘要长度、追加/审批/重试次数、等待与验收耗时、接受/继续/拒绝/重做/完成动作；token 指标只记录可获得的数据，不引入模型基准平台。
+7. **P6 最终验收**：正常 deliverable、quota、审批、断线/重连、多 turn 和 TTS 真机回归；确认任务运行与完成后 Tab、首帧和状态刷新无退化。
+
+### 明确延后到 Phase 3
+
+- resolved deliverable payload 的完整 SQLite 持久化与跨 App 重启恢复。
+- watcher offset/event replay 替代 full capture 恢复。
+- Loop Engine、日历触发、调度、自动恢复和长期任务自动化。
 
 ---
 
@@ -210,10 +253,12 @@ Step 9: ⑦ P2  UI 消费 TaskStatus → WorkState
 
 ### 当前实现状态
 
-- 已建立 `TaskDeliverableSource` 作为 evidence → resolved summary 的基础服务。
-- `TaskDetailScreen` 结果卡片不再使用 `summary` / `shortSummary` 作为 deliverable fallback。
-- `TaskSpeechPolicy` 自动 TTS 不再从 `summary` / `shortSummary` 生成 latest result；没有 evidence 时只播状态提示或跳过。
-- 还没有持久化完整 event-linked deliverable payload；当前 provenance 先绑定 turn id / turn index / evidence fingerprint。
+- 已建立 `TaskDeliverableSource` 作为 evidence → resolved summary 的基础服务，但尚未成为结果页和 TTS 的共享主路径。
+- `TaskDetailScreen` 已具备后台 isolate、页面级有界缓存、in-flight 去重和首帧后调度；这些性能能力已经完成，不需要重建。
+- `TaskDetailScreen` 仍保留 `_summaryOutputSource()`，相关 widget test 仍明确覆盖 task summary fallback。
+- `TaskSpeechPolicy` 仍独立执行 turn slicing / summary，并保留 `_summarySource()`；因此自动 TTS 尚未复用结果页的 resolved deliverable/cache。
+- `TaskDeliverableSource.resolve()` 已产出 turn id / turn index / evidence fingerprint provenance，但当前没有共享 cache，也没有 event-linked payload 持久化。
+- Phase 2.6 只完成当前运行期 UI/TTS 同源与 provenance；完整 SQLite payload 和跨重启恢复延后到 Phase 3。
 
 ### 风险与应对
 
@@ -229,9 +274,11 @@ Step 9: ⑦ P2  UI 消费 TaskStatus → WorkState
 - [x] Candidate lookup 不切大输出。
 - [x] resolved deliverable 请求时才做 turn output slicing。
 - [x] running / needAttention turn 不进入 deliverable candidate。
-- [x] 结果页不再使用 legacy summary fallback 伪造 deliverable。
-- [x] 自动 TTS、手动朗读和结果卡片既有测试保持通过。
-- [ ] 真机确认任务完成后不卡顿，Tab 可切换，结果页首帧不卡。
+- [ ] 结果页移除 deliverable 场景的 legacy summary fallback。
+- [ ] 自动 TTS、手动朗读和结果卡片接入同一个 resolved deliverable/cache。
+- [x] 结果页规则摘要使用后台 isolate，并具备页面级有界缓存与 in-flight 去重。
+- [x] 高频 `OUTPUT_UPDATED` 不写 SQLite，运行后 Tab 可切换的模拟器审批场景已验证。
+- [ ] 真机确认正常 deliverable 完成后不卡顿，Tab 可切换，结果页首帧不卡。
 
 ---
 
@@ -526,7 +573,7 @@ stopped         →          stopped
 | 阶段 | 功能切片 | 当前旧路径 | 目标新路径 | 完成标准 |
 |------|----------|------------|------------|----------|
 | A0 | 状态触发保护网 | SSH grep / full capture 直接触发状态 | 增量证据、marker count、fingerprint 去重 | 旧 prompt / 旧 exit marker 不能触发 `needAttention` / `turnIdle` |
-| A1 | 输出与播报同源 | 结果卡片、TTS 曾分散取源，summary fallback 已移除 | event-linked evidence / resolved summary / speech source 分层迁移 | 后续 turn 结果、TTS、手动朗读一致，raw output 只作 evidence |
+| A1 | 输出与播报同源 | 结果卡片、TTS 仍分散解析，且保留 summary fallback | event-linked evidence / shared resolved summary cache / speech source | 后续 turn 结果、TTS、手动朗读一致，raw output 只作 evidence |
 | A2 | Runtime issue 分类 | `Credits exhausted` → `needAttention` | deliverable 优先，runtime issue 次之 | 有结果时显示结果，无结果时提示运行时问题 |
 | A3 | 审批/终端交互 | `TerminalPrompt` → `ApprovalRequest` String 状态 | `TerminalPrompt` → `NativeTerminalApproval` + `ApprovalState` | Runtime/WorkState、审批卡、历史、JSON 已纵切，旧模型已移除 |
 | A4 | Streaming 事件 | `_bridgeNotifyExecutionUpdate` → `observeOutput` | `notifyOutputUpdated` 轻量事件 | progress 不触发状态归约，不引发全局重建 |
@@ -593,8 +640,8 @@ Phase 2.5 目前处于新旧逻辑的**过渡共存**：
 RuntimeEventBus (25 events)     TaskWatcher._extractStatus()
 bridgeRuntime.notifyXxx()       _bridgeSyncTerminalStatus()（已移除）
 ApprovalState enum              ApprovalRequest.status（已移除）
-WorkState                       TaskStatus（二级控制/调试 fallback）
+WorkState（UI 语义投影）        TaskStatus（当前可操作状态数据面）
 NativeTerminalApproval          TerminalPrompt → NativeTerminalApproval
 ```
 
-主路径已经迁移到 RuntimeEventBus / WorkState / NativeTerminalApproval。审批兼容外壳已随历史 JSON schema 清理物理移除；后续不能重新引入 prompt 污染、提前 `turnIdle`、旧结果播报等问题。测试数量不固定，以当前分支 `flutter test` 结果为准。
+审批和主要 UI 语义已经迁移到 RuntimeEventBus / WorkState / NativeTerminalApproval；`TaskStatus` 与 AppState reducer 仍承担当前可操作状态和兼容校准，不能描述成已经完成的二级 fallback。审批兼容外壳已物理移除；后续不能重新引入 prompt 污染、提前 `turnIdle`、旧结果播报等问题。测试数量不固定，以当前分支 `flutter test` 结果为准。

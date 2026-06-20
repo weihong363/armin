@@ -207,6 +207,10 @@ Armin 的 Loop Engineering 边界是单任务循环：Plan → Execute → Obser
 - `rawOutput` / `cleanedOutput` 只能作为 resolver evidence，最终展示和 TTS 应消费 resolved `displaySummary` / `speechSummary`。
 - 手动朗读和自动 TTS 的迁移必须以真机验证为门槛，不能为了同源牺牲旧有可用性和性能。
 
+当前实现状态：结果页规则摘要已经在后台 isolate 中执行，并具有页面级有界缓存、in-flight 去重和首帧后调度；高频输出事件也不触发持久化或全局重建。尚未完成的是结果卡片、手动朗读和自动 TTS 对同一个 `ResolvedDeliverable` resolver/cache 的复用，以及 deliverable 场景中 `summary` / `shortSummary` fallback 的移除。完整 resolved payload 的 SQLite 持久化与跨重启恢复不属于 Phase 2.6，延后到 Phase 3。
+
+所有阶段中，任何 Runtime、状态、结果、TTS、observer、reconcile、持久化或 UI 核心变更都必须满足 [Armin 核心行为与性能基线](runtime/core-behavior-performance-baseline.md)。基线失败表示方案尚未达到功能等价或性能等价，不能以架构收口、技术升级或进入新阶段为理由接受回归，也不能通过降低基线完成迁移。
+
 ## 未来安全远端执行方向
 
 近期 Codex 方向中出现的 authenticated remote executor、端到端加密 relay channel 和基于 Noise 的安全通信，是 Armin 未来可以参考的重要架构方向，但不属于 Phase 2.5 或 Phase 3 的近期优先级。

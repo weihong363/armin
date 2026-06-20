@@ -226,7 +226,11 @@ Loop Engineering 在 Armin 中的边界是单任务闭环优化：更清楚地�
 | Resolved Summary Layer | 异步、可缓存 | 对 evidence 做过滤和摘要生成，产出 `displaySummary` / `speechSummary` / provenance | 不阻塞 build / Tab 切换 / 任务完成状态更新 |
 | Speech Source Layer | 异步优先，复用 resolved summary | 手动朗读和自动 TTS 复用 resolved `speechSummary`，缺失时读清洗后的 `displaySummary` | 不从 prompt、running snapshot、reconnect snapshot 或 legacy summary 推导 latest result |
 
-`rawOutput` / `cleanedOutput` 是 resolver evidence，不是产品层 deliverable。`task.summary` / `shortSummary` 不再作为结果兜底；没有当前 turn / event evidence 时，UI 应显示暂无结果或明确状态提示。后续应将 provenance 从 turn id / evidence fingerprint 继续升级为完整 event-linked deliverable payload。
+目标数据契约中，`rawOutput` / `cleanedOutput` 是 resolver evidence，不是产品层 deliverable；`task.summary` / `shortSummary` 不作为 deliverable 兜底，没有当前 turn / event evidence 时，UI 显示暂无结果或明确状态提示。当前调用者尚未全部迁移，后续应先完成运行期共享 resolver/cache，再将 provenance 从 turn id / evidence fingerprint 升级为 event-linked identity。
+
+当前结果页已经通过后台 isolate、页面级有界缓存、in-flight 去重和首帧后调度避免阻塞 Tab；这不是待建设能力。当前缺口是该缓存仍属于结果页，`TaskDeliverableSource` 尚未成为结果卡片与 TTS 的共享 resolver，代码中也仍存在 `summary` / `shortSummary` fallback。Phase 2.6 负责完成运行期同源与 event-linked provenance；完整 payload 的 SQLite 持久化和跨重启恢复属于 Phase 3。
+
+所有阶段的架构迁移、替换和重大重构都由 [Armin 核心行为与性能基线](runtime/core-behavior-performance-baseline.md) 约束。新的主路径只有在状态、任务控制、结果/TTS、交互响应和持久化成本均满足基线后，才能替代并移除旧路径。
 
 ## 未来安全远端执行器
 

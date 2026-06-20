@@ -110,6 +110,10 @@ Survey / 社区验证方向：
 
 迁移执行步骤、半迁移态约束和验收标准统一维护在 [legacy-cleanup-checklist.md](runtime/legacy-cleanup-checklist.md)。Roadmap 只记录方向：RuntimeEventBus + WorkState 逐步成为状态、审批、结果和 TTS 的主路径；parser / tmux capture 在 Runtime 覆盖完整前仍保留为 observation input、自动 reconcile fallback 和审计恢复输入，而不是为了迁移被提前删除。deliverable 继续向 event-linked evidence → resolved summary 演进，任何迁移都不能牺牲任务完成后的自动状态刷新、Tab 切换、结果页首帧、手动朗读和自动 TTS。
 
+当前实现已经具备结果页后台 isolate、页面级有界缓存、in-flight 去重、首帧后调度，以及高频 `OUTPUT_UPDATED` memory-only 分发。Phase 2.6 不重复建设这些能力；剩余重点是让结果卡片、手动朗读和自动 TTS 复用同一个运行期 `ResolvedDeliverable` resolver/cache，移除 deliverable 场景的 legacy summary fallback，并补齐 Runtime/WorkState 与自动 reconcile 的一致性验收。完整 deliverable SQLite payload、跨重启恢复和 watcher event replay 归入 Phase 3。
+
+所有阶段的核心功能变更统一受 [Armin 核心行为与性能基线](runtime/core-behavior-performance-baseline.md) 约束。状态自动刷新、任务控制、审批、每 turn 结果、朗读同源、Tab 响应、高频输出成本和有界数据增长均属于不可因迁移、重构或架构升级而退化的能力；不满足基线的实现必须暂停并重新评估，而不是继续推进或清理旧路径。
+
 交互效率评估继续记录：
 
 - 记录轻量效率指标：用户输入长度、输出摘要长度、追加次数、审批次数、重试次数、用户等待时间和任务到可验收结果的耗时

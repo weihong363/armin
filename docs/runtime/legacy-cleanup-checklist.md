@@ -147,12 +147,12 @@ Step 9: ⑦ P2  UI 消费 TaskStatus → WorkState
 | 切片 | 当前状态 | 代码证据 | Phase 2.6 剩余工作 |
 |------|----------|----------|--------------------|
 | A0 增量证据保护 | 已完成 | attach/probe 使用新增证据、exit marker count 和基线保护 | 保持回归测试，不再扩张 |
-| A1 输出与播报同源 | **部分完成** | `TaskDeliverableSource` 已提供 candidate/evidence/resolve/provenance；结果页已有 `Isolate.run`、页面缓存和 in-flight 去重 | 结果页和 TTS 接入同一个 resolver/cache；移除 deliverable 场景的 `summary` / `shortSummary` fallback；发布 event-linked provenance |
+| A1 输出与播报同源 | **主路径已接入** | `TaskDeliverableResolver` 已被结果卡片、手动朗读和自动 TTS 共享；具备后台 isolate、有界缓存和 in-flight 去重 | 正常 deliverable 真机验收后移除 `summary` / `shortSummary` fallback；发布 event-linked provenance |
 | A2 Runtime issue 分类 | 已完成 | quota 前有 deliverable 与无 deliverable 已分流并有测试 | 补正常额度下真机用例，不调整分类语义 |
 | A3 审批/终端交互 | 已完成 | `NativeTerminalApproval` + `ApprovalState` 为生产模型 | 保持 safe/balanced/aggressive 回归 |
 | A4 Streaming 事件 | 已完成 | streaming 使用 `notifyOutputUpdated()`；`OUTPUT_UPDATED` 只走内存 EventBus，不写 SQLite | 保持高频事件 memory-only 回归 |
 | A5 状态 reducer | **部分完成** | 显式 Runtime API 和 WorkState 已存在，但 AppState 仍通过 `_taskWithExecutionUpdate()` / `_bridgeSyncStreamStatus()` 归约部分状态 | 先补齐 Runtime 事件覆盖和一致性测试；不得为了删除 AppState 判断破坏自动刷新 |
-| A6 Reconcile/Refresh | **部分完成** | exit marker count、probe baseline、fingerprint 类保护已存在；full capture 仍承担恢复输入 | 验证自动 reconcile 与手动刷新等价；watcher offset/event replay 完整化留到 Phase 3 |
+| A6 Reconcile/Refresh | **运行期恢复已补强** | 前台详情保持实时 observer；后台 auto-detach 前先同步；detached snapshot 首次/变化触发轻量 refresh；follow-up 前封存上一 Turn | 真机验证断线完成与多 Turn 隔离；watcher offset/event replay 完整化留到 Phase 3 |
 | A7 UI 状态消费 | 主 UI 已迁移，fallback 保留 | 首页、详情、历史卡片优先读取 WorkState，仍保留 TaskStatus 低层/兼容分支 | A5/A6 完整前不删除 fallback；只清理被证明无调用者的重复映射 |
 | E1 交互效率指标 | **未开始** | 目前只有通用 `MetricEvent` 和 bounded append | 增加 task/turn 级轻量字段与事件，不建设 workflow engine |
 
@@ -167,7 +167,7 @@ Step 9: ⑦ P2  UI 消费 TaskStatus → WorkState
 ### 修订后的执行顺序
 
 1. **P0 行为基线冻结**：以 [Armin 核心行为与性能基线](core-behavior-performance-baseline.md) 为门禁，保留状态自动刷新、follow-up observer 连续性、Tab 可切换和高频事件 memory-only 测试。
-2. **P1 A1 主路径接入**：让结果卡片、手动朗读和自动 TTS 复用同一个 `ResolvedDeliverable` resolver/cache；cache key 使用 turn id + evidence fingerprint + provider 配置。
+2. **P1 A1 主路径接入（已完成）**：结果卡片、手动朗读和自动 TTS 复用同一个 `ResolvedDeliverable` resolver/cache；cache key 使用 turn id、turn 状态、evidence fingerprint 和 provider 配置。
 3. **P2 移除 deliverable fallback**：只在新任务功能路径已稳定写入 turn/event evidence 后，移除结果/TTS 的 `task.summary` / `shortSummary` fallback；状态卡和时间线仍可使用状态摘要。
 4. **P3 event-linked provenance**：发布 `DELIVERABLE_UPDATED` 时关联 turn id、evidence fingerprint 和 resolved summary identity。Phase 2.6 只要求当前运行期同源；完整 SQLite payload、App 重启恢复和 event replay 归 Phase 3。
 5. **P4 A5/A6 一致性补齐**：按 safe → balanced → aggressive 验证 `TaskSession.status` 与 `WorkState.phase`；自动 reconcile 必须覆盖手动刷新可恢复的场景。
@@ -253,11 +253,11 @@ Step 9: ⑦ P2  UI 消费 TaskStatus → WorkState
 
 ### 当前实现状态
 
-- 已建立 `TaskDeliverableSource` 作为 evidence → resolved summary 的基础服务，但尚未成为结果页和 TTS 的共享主路径。
-- `TaskDetailScreen` 已具备后台 isolate、页面级有界缓存、in-flight 去重和首帧后调度；这些性能能力已经完成，不需要重建。
+- `TaskDeliverableResolver` 已成为结果卡片、手动朗读和自动 TTS 的共享运行期主路径，并以 turn evidence 与 provider 配置生成 cache key。
+- 规则摘要由共享 resolver 在后台 isolate 执行；`TaskDetailScreen` 保留首帧后调度和轻量页面缓存，不在 build / Tab 切换路径重解析。
 - `TaskDetailScreen` 仍保留 `_summaryOutputSource()`，相关 widget test 仍明确覆盖 task summary fallback。
-- `TaskSpeechPolicy` 仍独立执行 turn slicing / summary，并保留 `_summarySource()`；因此自动 TTS 尚未复用结果页的 resolved deliverable/cache。
-- `TaskDeliverableSource.resolve()` 已产出 turn id / turn index / evidence fingerprint provenance，但当前没有共享 cache，也没有 event-linked payload 持久化。
+- `TaskSpeechPolicy` 优先读取共享 resolved deliverable，并仅在当前 resolver 没有结果时保留旧 fallback；自动 TTS 已有缓存复用测试。
+- `TaskDeliverableSource.resolve()` 已产出 turn id / turn index / evidence fingerprint provenance，但当前还没有 event-linked payload identity 或持久化。
 - Phase 2.6 只完成当前运行期 UI/TTS 同源与 provenance；完整 SQLite payload 和跨重启恢复延后到 Phase 3。
 
 ### 风险与应对
@@ -275,7 +275,7 @@ Step 9: ⑦ P2  UI 消费 TaskStatus → WorkState
 - [x] resolved deliverable 请求时才做 turn output slicing。
 - [x] running / needAttention turn 不进入 deliverable candidate。
 - [ ] 结果页移除 deliverable 场景的 legacy summary fallback。
-- [ ] 自动 TTS、手动朗读和结果卡片接入同一个 resolved deliverable/cache。
+- [x] 自动 TTS、手动朗读和结果卡片接入同一个 resolved deliverable/cache。
 - [x] 结果页规则摘要使用后台 isolate，并具备页面级有界缓存与 in-flight 去重。
 - [x] 高频 `OUTPUT_UPDATED` 不写 SQLite，运行后 Tab 可切换的模拟器审批场景已验证。
 - [ ] 真机确认正常 deliverable 完成后不卡顿，Tab 可切换，结果页首帧不卡。

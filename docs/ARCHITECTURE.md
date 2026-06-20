@@ -195,6 +195,8 @@ none → pending → resolving → resolved
 - 运行中的语音追加与语音控制会追加脱敏后的 `VoiceInput`，使历史可区分用户实际说过的推进或终止语义。
 - 暂停/恢复与停止控制当前远端会话；对应的 `TASK_PAUSED` / `TASK_RESUMED` / `TASK_STOPPED` 事件通过 RuntimeEventBus 发布。
 - 断开监听只移除手机侧 observer（发布 `OBSERVER_DETACHED`），远端 session 可继续运行；重新连接会 attach 到同一 session（发布 `OBSERVER_ATTACHED`）。
+- 任务监督在终态前持续存在，但高频 SSH/tmux stream 可以降级：用户正在查看任务详情时保持实时 observer；后台达到资源阈值前先 capture 并归约最新证据，再转为低频 reconcile。detached snapshot 首次出现或发生变化时必须自动刷新，不得要求手动重连。
+- detached 状态下发送 follow-up 时，必须先同步并封存上一 Turn 的新增远端输出，再创建下一 Turn，避免 reconnect snapshot 将旧结果归入新 Turn。
 - SSH 传输中断或手机网络掉线发布 `CONNECTION_LOST`，进入可恢复的监听断开状态，不会自动判定远端任务失败或清理可能仍在运行的 session；恢复后发布 `CONNECTION_RESTORED`。
 - `turnIdle` 表示本轮在强信号下进入等待用户继续，用户可以继续追加或确认结束，不等于完成；它不应由短时间无输出或 pane 稳定直接产生。
 - 用户标记完成/失败或停止时，Armin 保存 final capture 后清理 tmux session。
@@ -226,9 +228,9 @@ Loop Engineering 在 Armin 中的边界是单任务闭环优化：更清楚地�
 | Resolved Summary Layer | 异步、可缓存 | 对 evidence 做过滤和摘要生成，产出 `displaySummary` / `speechSummary` / provenance | 不阻塞 build / Tab 切换 / 任务完成状态更新 |
 | Speech Source Layer | 异步优先，复用 resolved summary | 手动朗读和自动 TTS 复用 resolved `speechSummary`，缺失时读清洗后的 `displaySummary` | 不从 prompt、running snapshot、reconnect snapshot 或 legacy summary 推导 latest result |
 
-目标数据契约中，`rawOutput` / `cleanedOutput` 是 resolver evidence，不是产品层 deliverable；`task.summary` / `shortSummary` 不作为 deliverable 兜底，没有当前 turn / event evidence 时，UI 显示暂无结果或明确状态提示。当前调用者尚未全部迁移，后续应先完成运行期共享 resolver/cache，再将 provenance 从 turn id / evidence fingerprint 升级为 event-linked identity。
+目标数据契约中，`rawOutput` / `cleanedOutput` 是 resolver evidence，不是产品层 deliverable；`task.summary` / `shortSummary` 不作为 deliverable 兜底，没有当前 turn / event evidence 时，UI 显示暂无结果或明确状态提示。结果卡片、手动朗读和自动 TTS 已接入运行期共享 resolver/cache；后续在正常任务真机验收通过后移除 legacy summary fallback，并将 provenance 从 turn id / evidence fingerprint 升级为 event-linked identity。
 
-当前结果页已经通过后台 isolate、页面级有界缓存、in-flight 去重和首帧后调度避免阻塞 Tab；这不是待建设能力。当前缺口是该缓存仍属于结果页，`TaskDeliverableSource` 尚未成为结果卡片与 TTS 的共享 resolver，代码中也仍存在 `summary` / `shortSummary` fallback。Phase 2.6 负责完成运行期同源与 event-linked provenance；完整 payload 的 SQLite 持久化和跨重启恢复属于 Phase 3。
+当前 `TaskDeliverableResolver` 统一负责异步解析、有界缓存和 in-flight 去重，结果页继续通过首帧后调度与轻量页面缓存避免阻塞 Tab；结果卡片和 TTS 不再各自执行一套摘要解析。当前缺口是代码中仍存在 `summary` / `shortSummary` fallback，且 provenance 尚未关联 Runtime deliverable event identity。Phase 2.6 负责在行为与性能门禁通过后完成 fallback 移除和 event-linked provenance；完整 payload 的 SQLite 持久化和跨重启恢复属于 Phase 3。
 
 所有阶段的架构迁移、替换和重大重构都由 [Armin 核心行为与性能基线](runtime/core-behavior-performance-baseline.md) 约束。新的主路径只有在状态、任务控制、结果/TTS、交互响应和持久化成本均满足基线后，才能替代并移除旧路径。
 

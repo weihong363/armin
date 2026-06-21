@@ -352,6 +352,34 @@ Thinking...
     expect(summary.displaySummary, isNot(contains('检查项目结构')));
   });
 
+  test('rule provider ignores trailing thinking chrome after final answer',
+      () async {
+    const request = OutputSummaryRequest(
+      cleanedOutput: '''
+Thinking
+ │ File read successfully. No modifications needed.
+ ▪ ARMIN_VERIFY_BEGIN case_id=P26-D2 status=PASS next_action=COMPLETE ARMIN_VERIFY_END
+
+──────────────────────────────────────────────────────────────────────────
+ Auto Model · ctx ░░░░░░░░░░ 0% · ~/workspace/armin
+ ⠸ Thinking... (esc to cancel, 1m 2s)
+ YOLO Shift+Tab to Auto Mode
+''',
+      status: TaskStatus.turnIdle,
+      taskTitle: '读取 pubspec.yaml',
+      promptInputs: ['读取 pubspec.yaml'],
+    );
+
+    final summary =
+        await const RuleBasedOutputSummaryProvider().summarize(request);
+
+    expect(summary.displaySummary, contains('ARMIN_VERIFY_BEGIN'));
+    expect(summary.displaySummary, contains('status=PASS'));
+    expect(summary.displaySummary, isNot(contains('Thinking')));
+    expect(summary.displaySummary, isNot(contains('ctx')));
+    expect(summary.displaySummary, isNot(contains('YOLO')));
+  });
+
   test('rule provider removes meta narration prefixes before results',
       () async {
     const metaNarration = OutputSummaryRequest(

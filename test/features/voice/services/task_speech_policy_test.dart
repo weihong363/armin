@@ -3,7 +3,6 @@ import 'package:armin/features/hosts/models/host_config.dart';
 import 'package:armin/features/runtime/models/approval_state.dart';
 import 'package:armin/features/tasks/models/native_output_turn.dart';
 import 'package:armin/features/tasks/models/task_session.dart';
-import 'package:armin/features/tasks/services/output_summary_provider.dart';
 import 'package:armin/features/voice/services/task_speech_policy.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -15,7 +14,8 @@ void main() {
     final previous = _task(status: TaskStatus.running);
     final current = previous.copyWith(
       status: TaskStatus.completed,
-      summary: '''
+      turns: [
+        _turn(1).copyWith(rawOutput: '''
 已修复登录失败。
 
 ```dart
@@ -25,7 +25,8 @@ final token = await login();
 flutter test
 /Users/ironion/workspace/armin/lib/login.dart
 可以验证。
-''',
+''', cleanedOutput: '', deliverable: _deliverable('已修复登录失败。可以验证。')),
+      ],
     );
 
     final decision = await policy.decide(
@@ -47,7 +48,7 @@ flutter test
     final previous = _task(status: TaskStatus.running);
     final current = previous.copyWith(
       status: TaskStatus.turnIdle,
-      summary: '已完成第一轮检查。',
+      turns: [_turn(1).copyWith(rawOutput: '已完成第一轮检查。')],
     );
 
     final decision = await policy.decide(
@@ -66,7 +67,7 @@ flutter test
       summary: '输出 hello world\nhello',
       turns: [
         _turnWithInput(1, '检查当前项目'),
-        _turnWithInput(2, '输出 hello world'),
+        _turnWithInput(2, '输出 hello world').copyWith(clearDeliverable: true),
       ],
     );
 
@@ -76,7 +77,7 @@ flutter test
       settings: settings,
     );
 
-    expect(decision.shouldSpeak, isTrue);
+    expect(decision.shouldSpeak, isFalse);
   });
 
   test('turn idle speech uses the full current turn output', () async {
@@ -96,21 +97,17 @@ completion: tls handshake eof
 runbook-copilot 是面向工程团队的 RAG 事故排障助手，用于根据告警、服务名、日志和症状检索知识库并生成带引用的排障建议。
 可以继续查看引用和日志。
 ''',
+          deliverable: _deliverable(
+            'runbook-copilot 是面向工程团队的 RAG 事故排障助手。可以继续查看引用和日志。',
+          ),
         ),
       ],
-    );
-    final provider = _CapturingSummaryProvider(
-      const OutputSummary(
-        displaySummary: 'runbook-copilot 是面向工程团队的 RAG 事故排障助手。可以继续查看引用和日志。',
-        speechSummary: 'runbook-copilot 是面向工程团队的 RAG 事故排障助手。可以继续查看引用和日志。',
-      ),
     );
 
     final decision = await policy.decide(
       previous: previous,
       current: current,
       settings: settings,
-      outputSummaryProvider: provider,
     );
 
     expect(decision.shouldSpeak, isTrue);
@@ -126,21 +123,15 @@ runbook-copilot 是面向工程团队的 RAG 事故排障助手，用于根据�
         _turnWithInput(2, '继续').copyWith(
           cleanedOutput: 'hello world',
           rawOutput: 'hello world',
+          deliverable: _deliverable('hello world'),
         ),
       ],
-    );
-    final provider = _CapturingSummaryProvider(
-      const OutputSummary(
-        displaySummary: 'hello world',
-        speechSummary: 'hello world',
-      ),
     );
 
     final decision = await policy.decide(
       previous: previous,
       current: current,
       settings: settings,
-      outputSummaryProvider: provider,
     );
 
     expect(decision.shouldSpeak, isTrue);
@@ -166,29 +157,18 @@ Thinking
 ▪ GET /stats/{code} 已经实现了，3 个相关测试全部通过。
 ''',
           cleanedOutput: '这个已经在上一轮实现了。让我确认一下当前代码状态。',
+          deliverable: _deliverable('GET /stats/{code} 已经实现了，3 个相关测试全部通过。'),
         ),
       ],
-    );
-    final provider = _CapturingSummaryProvider(
-      const OutputSummary(
-        displaySummary: 'GET /stats/{code} 已经实现了，3 个相关测试全部通过。',
-        speechSummary: '',
-      ),
     );
 
     final decision = await policy.decide(
       previous: previous,
       current: current,
       settings: settings,
-      outputSummaryProvider: provider,
     );
 
     expect(decision.shouldSpeak, isTrue);
-    expect(provider.lastRequest?.cleanedOutput, contains('GET /stats/{code}'));
-    expect(
-      provider.lastRequest?.cleanedOutput,
-      isNot(contains('这个已经在上一轮实现了')),
-    );
     expect(decision.text, contains('GET /stats/{code}'));
   });
 
@@ -211,28 +191,21 @@ Thinking
         _turnWithInput(2, '继续').copyWith(
           cleanedOutput: '',
           rawOutput: '',
+          clearDeliverable: true,
         ),
       ],
-    );
-    final provider = _CapturingSummaryProvider(
-      const OutputSummary(
-        displaySummary: 'Turn 1 result',
-        speechSummary: 'Turn 1 result',
-      ),
     );
 
     final decision = await policy.decide(
       previous: previous,
       current: current,
       settings: settings,
-      outputSummaryProvider: provider,
     );
 
-    expect(decision.shouldSpeak, isTrue);
+    expect(decision.shouldSpeak, isFalse);
   });
 
-  test('auto speech can fallback to a new summary for the latest turn',
-      () async {
+  test('auto speech does not fallback to a new task summary', () async {
     final previous = _task(status: TaskStatus.turnIdle).copyWith(
       summary: '第一轮结果',
       turns: [_turnWithInput(1, '输出旧结果')],
@@ -245,28 +218,21 @@ Thinking
         _turnWithInput(2, '继续').copyWith(
           cleanedOutput: '',
           rawOutput: '',
+          clearDeliverable: true,
         ),
       ],
-    );
-    final provider = _CapturingSummaryProvider(
-      const OutputSummary(
-        displaySummary: '第二轮结果',
-        speechSummary: '第二轮结果',
-      ),
     );
 
     final decision = await policy.decide(
       previous: previous,
       current: current,
       settings: settings,
-      outputSummaryProvider: provider,
     );
 
-    expect(decision.shouldSpeak, isTrue);
+    expect(decision.shouldSpeak, isFalse);
   });
 
-  test('auto speech prefers display summary over provider speech summary',
-      () async {
+  test('auto speech uses persisted deliverable speech summary', () async {
     final previous = _task(status: TaskStatus.running);
     final current = previous.copyWith(
       status: TaskStatus.turnIdle,
@@ -275,21 +241,18 @@ Thinking
         _turnWithInput(2, '继续').copyWith(
           cleanedOutput: 'hello world',
           rawOutput: 'hello world',
+          deliverable: _deliverable(
+            '页面展示文本 hello world',
+            speech: '语音文本 hello world',
+          ),
         ),
       ],
-    );
-    final provider = _CapturingSummaryProvider(
-      const OutputSummary(
-        displaySummary: '页面展示文本 hello world',
-        speechSummary: '旧语音文本 should not win',
-      ),
     );
 
     final decision = await policy.decide(
       previous: previous,
       current: current,
       settings: settings,
-      outputSummaryProvider: provider,
     );
 
     expect(decision.shouldSpeak, isTrue);
@@ -304,29 +267,23 @@ Thinking
         _turnWithInput(1, '生成长结果').copyWith(
           cleanedOutput: 'long result',
           rawOutput: 'long result',
+          deliverable: _deliverable(
+            '第一段说明当前任务已经完成并保留了关键背景。第二段说明验证步骤已经执行并且结果正常。第三段说明后续建议是观察真实设备上的语音播报完整性。',
+          ),
         ),
       ],
-    );
-    final provider = _CapturingSummaryProvider(
-      const OutputSummary(
-        displaySummary:
-            '第一段说明当前任务已经完成并保留了关键背景。第二段说明验证步骤已经执行并且结果正常。第三段说明后续建议是观察真实设备上的语音播报完整性。',
-        speechSummary: '短摘要不应该被使用',
-      ),
     );
 
     final decision = await policy.decide(
       previous: previous,
       current: current,
       settings: settings,
-      outputSummaryProvider: provider,
     );
 
     expect(decision.shouldSpeak, isTrue);
   });
 
-  test('turn idle with prompt echo only speaks state rather than input',
-      () async {
+  test('turn idle with prompt echo only stays silent', () async {
     final previous = _task(status: TaskStatus.running);
     final current = previous.copyWith(
       status: TaskStatus.turnIdle,
@@ -335,6 +292,7 @@ Thinking
         _turnWithInput(1, '输出 hello world').copyWith(
           rawOutput: '',
           cleanedOutput: '',
+          clearDeliverable: true,
         ),
       ],
     );
@@ -345,7 +303,7 @@ Thinking
       settings: settings,
     );
 
-    expect(decision.shouldSpeak, isTrue);
+    expect(decision.shouldSpeak, isFalse);
   });
 
   test('need approval task speaks confirmation prompt without command detail',
@@ -360,6 +318,7 @@ Thinking
       previous: previous,
       current: current,
       settings: settings,
+      approval: current.nativeApproval,
     );
 
     expect(decision.shouldSpeak, isTrue);
@@ -381,21 +340,16 @@ Thinking
         _turnWithInput(2, '继续检查').copyWith(
           rawOutput: '',
           cleanedOutput: '',
+          clearDeliverable: true,
         ),
       ],
-    );
-    final provider = _CapturingSummaryProvider(
-      const OutputSummary(
-        displaySummary: 'provider should not be used',
-        speechSummary: 'provider should not be used',
-      ),
     );
 
     final decision = await policy.decide(
       previous: previous,
       current: current,
       settings: settings,
-      outputSummaryProvider: provider,
+      approval: current.nativeApproval,
     );
 
     expect(decision.shouldSpeak, isTrue);
@@ -464,6 +418,7 @@ Thinking
           rawOutput: '',
           cleanedOutput: '',
           status: NativeOutputTurnStatus.needAttention,
+          clearDeliverable: true,
         ),
       ],
     );
@@ -489,6 +444,7 @@ Thinking
       previous: previous,
       current: current,
       settings: settings,
+      approval: current.nativeApproval,
     );
 
     expect(decision.shouldSpeak, isTrue);
@@ -503,7 +459,14 @@ Thinking
     );
     final current = previous.copyWith(
       summary: 'hello',
-      turns: [_turn(1), _turn(2)],
+      turns: [
+        _turn(1),
+        _turn(2).copyWith(
+          rawOutput: '',
+          cleanedOutput: '',
+          clearDeliverable: true,
+        ),
+      ],
     );
 
     final first = await policy.decide(
@@ -518,32 +481,23 @@ Thinking
     );
 
     expect(first.shouldSpeak, isTrue);
-    expect(second.shouldSpeak, isTrue);
+    expect(second.shouldSpeak, isFalse);
   });
 
-  test('speech policy uses summary provider without raw log or status changes',
-      () async {
+  test('speech policy ignores task summary without turn evidence', () async {
     final previous = _task(status: TaskStatus.running);
     final current = previous.copyWith(
       status: TaskStatus.turnIdle,
       summary: '有用结果',
       rawLog: 'raw terminal log should not be summarized',
     );
-    final provider = _CapturingSummaryProvider(
-      const OutputSummary(
-        displaySummary: '有用结果',
-        speechSummary: '有用结果',
-      ),
-    );
-
     final decision = await policy.decide(
       previous: previous,
       current: current,
       settings: settings,
-      outputSummaryProvider: provider,
     );
 
-    expect(decision.shouldSpeak, isTrue);
+    expect(decision.shouldSpeak, isFalse);
   });
 }
 
@@ -607,6 +561,7 @@ NativeOutputTurn _turn(int index) {
     startedAt: now,
     lastOutputAt: now,
     status: NativeOutputTurnStatus.turnIdle,
+    deliverable: _deliverable('hello'),
   );
 }
 
@@ -615,15 +570,10 @@ NativeOutputTurn _turnWithInput(int index, String input) {
   return turn.copyWith(userInput: input);
 }
 
-class _CapturingSummaryProvider implements OutputSummaryProvider {
-  _CapturingSummaryProvider(this.summary);
-
-  final OutputSummary summary;
-  OutputSummaryRequest? lastRequest;
-
-  @override
-  Future<OutputSummary> summarize(OutputSummaryRequest request) async {
-    lastRequest = request;
-    return summary;
-  }
+TurnDeliverable _deliverable(String display, {String? speech}) {
+  return TurnDeliverable(
+    displaySummary: display,
+    speechSummary: speech ?? display,
+    evidenceFingerprint: display.hashCode.toString(),
+  );
 }

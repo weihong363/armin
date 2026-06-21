@@ -1,4 +1,5 @@
 import '../../../core/models/task_status.dart';
+import 'work_state.dart';
 
 enum RuntimeTaskStatus {
   pending,
@@ -22,6 +23,7 @@ class RuntimeTaskSnapshot {
     this.progress = 0,
     this.lastLogOffset = 0,
     this.checkpoint = '',
+    this.workState,
   });
 
   final String taskId;
@@ -35,6 +37,7 @@ class RuntimeTaskSnapshot {
   final int progress;
   final int lastLogOffset;
   final String checkpoint;
+  final WorkState? workState;
 
   factory RuntimeTaskSnapshot.fromTaskStatus({
     required String taskId,
@@ -66,6 +69,7 @@ class RuntimeTaskSnapshot {
     int? progress,
     int? lastLogOffset,
     String? checkpoint,
+    WorkState? workState,
   }) {
     return RuntimeTaskSnapshot(
       taskId: taskId,
@@ -79,6 +83,7 @@ class RuntimeTaskSnapshot {
       progress: progress ?? this.progress,
       lastLogOffset: lastLogOffset ?? this.lastLogOffset,
       checkpoint: checkpoint ?? this.checkpoint,
+      workState: workState ?? this.workState,
     );
   }
 
@@ -95,10 +100,12 @@ class RuntimeTaskSnapshot {
       'progress': progress,
       'last_log_offset': lastLogOffset,
       'checkpoint': checkpoint,
+      'work_state': workState?.toJson(),
     };
   }
 
   factory RuntimeTaskSnapshot.fromJson(Map<String, Object?> json) {
+    final workStateJson = json['work_state'];
     return RuntimeTaskSnapshot(
       taskId: json['task_id'] as String? ?? '',
       status: RuntimeTaskStatus.values.firstWhere(
@@ -116,6 +123,9 @@ class RuntimeTaskSnapshot {
       progress: json['progress'] as int? ?? 0,
       lastLogOffset: json['last_log_offset'] as int? ?? 0,
       checkpoint: json['checkpoint'] as String? ?? '',
+      workState: workStateJson is Map<String, Object?>
+          ? WorkState.fromJson(workStateJson)
+          : null,
     );
   }
 }

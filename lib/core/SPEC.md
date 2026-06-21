@@ -18,11 +18,11 @@
 ## 修改提示
 
 - 改任务生命周期：先看 `TaskStatusMachine`，再改 `ArminAppState`。
-- 改持久化 schema：同步更新 model `fromJson/toJson` 和 `test/storage/json_task_history_store_test.dart`。
+- 改持久化 schema：同步更新 SQLite schema 与对应 Runtime/Store 测试。
 - 改运行控制：检查 `AgentSessionService` 契约、history 详情页按钮、对应 app state 测试。
 
 ## 推荐测试
 
 - `flutter test test/core/armin_app_state_task_control_test.dart`
-- `flutter test test/storage/json_task_history_store_test.dart`
+- `flutter test test/runtime`
 - `flutter test test/tasks/task_status_machine_test.dart`

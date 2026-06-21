@@ -78,6 +78,8 @@ class RuntimeEvent {
     required this.createdAt,
     this.snapshot,
     this.message = '',
+    this.turnId,
+    this.evidenceFingerprint,
   });
 
   final RuntimeEventType type;
@@ -85,6 +87,8 @@ class RuntimeEvent {
   final DateTime createdAt;
   final RuntimeTaskSnapshot? snapshot;
   final String message;
+  final String? turnId;
+  final String? evidenceFingerprint;
 
   Map<String, Object?> toJson() {
     return {
@@ -93,6 +97,8 @@ class RuntimeEvent {
       'created_at': createdAt.toIso8601String(),
       'snapshot': snapshot?.toJson(),
       'message': message,
+      'turn_id': turnId,
+      'evidence_fingerprint': evidenceFingerprint,
     };
   }
 
@@ -109,6 +115,8 @@ class RuntimeEvent {
           ? RuntimeTaskSnapshot.fromJson(snapshotJson)
           : null,
       message: json['message'] as String? ?? '',
+      turnId: json['turn_id'] as String?,
+      evidenceFingerprint: json['evidence_fingerprint'] as String?,
     );
   }
 }

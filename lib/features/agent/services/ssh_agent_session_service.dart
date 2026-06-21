@@ -157,15 +157,27 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
           .cast<List<int>>()
           .transform(utf8.decoder)
           .listen((text) {
+        if (controller.isClosed) return;
         output.write(text);
-        controller.add(_buildStreamingUpdate(text, output, observer));
+        final update = _buildStreamingUpdate(text, output, observer);
+        controller.add(update);
+        if (update.done) {
+          session.close();
+          unawaited(controller.close());
+        }
       });
       stderrSub = session.stderr
           .cast<List<int>>()
           .transform(utf8.decoder)
           .listen((text) {
+        if (controller.isClosed) return;
         output.write(text);
-        controller.add(_buildStreamingUpdate(text, output, observer));
+        final update = _buildStreamingUpdate(text, output, observer);
+        controller.add(update);
+        if (update.done) {
+          session.close();
+          unawaited(controller.close());
+        }
       });
 
       unawaited(
@@ -286,7 +298,9 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
   ) {
     final rawOutput = output.rawOutputForLatestUpdate(fallback: chunk);
     final observedOutput = output.observedText;
-    final snapshot = observer.observe(observedOutput);
+    final snapshot = output.consumeSettledCandidate()
+        ? observer.observeSettled(observedOutput)
+        : observer.observe(observedOutput);
     final promptState = output.promptState(
       terminalPromptParser: _terminalPromptParser,
       candidateOutput: rawOutput,
@@ -299,6 +313,11 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
       runtimeLost: snapshot.runtimeLost,
       needsAttention: terminalPrompt != null || snapshot.needsAttention,
       nativeApproval: _nativeApprovalFromPrompt(terminalPrompt),
+      turnIdle: snapshot.turnIdle,
+      done: snapshot.turnIdle ||
+          snapshot.runtimeLost ||
+          snapshot.needsAttention ||
+          terminalPrompt != null,
     );
   }
 
@@ -716,6 +735,7 @@ $tmux send-keys -t "\$pane" C-m$clearHistory
     final staleExitPolls =
         (const Duration(seconds: 10).inMilliseconds + delayMs - 1) ~/ delayMs;
     final monitorStart = -runtimePolicy.monitorCaptureLines;
+    final allowInitialStable = request.attachOnly ? 1 : 0;
     final approvalPromptPattern = _approvalPromptPattern(profile);
     final sessionSetup = request.attachOnly
         ? '''
@@ -847,9 +867,10 @@ while [ "\$i" -lt $maxPolls ]; do
     fi
     break
   fi
-  if [ "\$changed_after_start" -eq 1 ] && [ "\$stable_count" -ge $stablePolls ]; then
+  if { [ "\$changed_after_start" -eq 1 ] || [ "$allowInitialStable" -eq 1 ]; } && [ "\$stable_count" -ge $stablePolls ]; then
     if [ "\$snapshot_emitted" -eq 0 ] && [ "\$current_hash" != "\$last_stable_emitted_hash" ]; then
       emit_armin_snapshot
+      printf "%s\\n" "${_ExecutionOutputState.settledCandidateForTest}"
       last_stable_emitted_hash="\$current_hash"
     fi
   fi
@@ -1058,6 +1079,21 @@ fi
   }
 
   @visibleForTesting
+  List<AgentExecutionUpdate> streamingUpdatesForChunksForTest(
+    List<String> chunks,
+  ) {
+    final output = _ExecutionOutputState();
+    final observer = NativeOutputObserver(
+      cleaner: _cleaner,
+      idleThreshold: const Duration(milliseconds: 1),
+    );
+    return chunks.map((chunk) {
+      output.write(chunk);
+      return _buildStreamingUpdate(chunk, output, observer);
+    }).toList(growable: false);
+  }
+
+  @visibleForTesting
   String buildRemoteTmuxCommand({
     required String command,
     String pathPrepend = '',
@@ -1192,6 +1228,7 @@ fi
 class _ExecutionOutputState {
   static const _snapshotBegin = '__ARMIN_SNAPSHOT_BEGIN__';
   static const _snapshotEnd = '__ARMIN_SNAPSHOT_END__';
+  static const _settledCandidate = '__ARMIN_SETTLED_CANDIDATE__';
   static const streamTextLimit = 256 * 1024;
 
   @visibleForTesting
@@ -1199,6 +1236,9 @@ class _ExecutionOutputState {
 
   @visibleForTesting
   static const snapshotEndForTest = _snapshotEnd;
+
+  @visibleForTesting
+  static const settledCandidateForTest = _settledCandidate;
 
   String _streamText = '';
   final StringBuffer _snapshot = StringBuffer();
@@ -1210,10 +1250,21 @@ class _ExecutionOutputState {
   bool _capturingSnapshot = false;
   int _snapshotBeginMatch = 0;
   int _snapshotEndMatch = 0;
+  int _settledCandidateCount = 0;
+  int _consumedSettledCandidateCount = 0;
 
   void write(String text) {
     _appendStreamText(text);
     _scanSnapshotMarkers(text);
+    _settledCandidateCount = _settledCandidate.allMatches(_streamText).length;
+  }
+
+  bool consumeSettledCandidate() {
+    if (_consumedSettledCandidateCount >= _settledCandidateCount) {
+      return false;
+    }
+    _consumedSettledCandidateCount = _settledCandidateCount;
+    return true;
   }
 
   String get streamText => _streamText;

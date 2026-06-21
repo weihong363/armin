@@ -152,14 +152,23 @@ class NativeOutputObserver {
 
   bool _containsActiveWork(List<String> lines) {
     return lines.any((line) {
+      // Terminal chrome lines (status bar with spinners, esc-to-cancel,
+      // YOLO/Shift+Tab hints, auto model context) are never genuine work output.
+      final lower = line.toLowerCase();
+      if (lower.contains('esc to cancel') ||
+          lower.contains('shift+tab to auto') ||
+          lower.contains('auto model')) {
+        return false;
+      }
       final normalized = _statusWord(line);
-      return normalized == 'working' ||
+      final active = normalized == 'working' ||
           normalized == 'thinking' ||
           normalized == 'running' ||
           normalized.contains('thinking') ||
           normalized.contains('yolo') ||
           normalized.contains('auto mode') ||
           normalized.contains('bash(');
+      return active;
     });
   }
 

@@ -82,41 +82,20 @@ class SQLiteRuntimePersistenceStore implements RuntimePersistenceStore {
 
   @override
   Future<void> saveWorkState(WorkState state) async {
-    final db = await _db();
-    await db.insert(
-      'runtime_work_states',
-      {
-        'task_id': state.taskId,
-        'updated_at': state.updatedAt?.toIso8601String(),
-        'payload': jsonEncode(state.toJson()),
-      },
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
+    final task = await loadTask(state.taskId);
+    if (task != null) await saveTask(task.copyWith(workState: state));
   }
 
   @override
   Future<WorkState?> loadWorkState(String taskId) async {
-    final rows = await _dbQuery(
-      'runtime_work_states',
-      where: 'task_id = ?',
-      whereArgs: [taskId],
-      limit: 1,
-    );
-    if (rows.isEmpty) {
-      return null;
-    }
-    return WorkState.fromJson(_decodePayload(rows.single));
+    return (await loadTask(taskId))?.workState;
   }
 
   @override
   Future<List<WorkState>> loadWorkStates() async {
-    final rows = await _dbQuery(
-      'runtime_work_states',
-      orderBy: 'updated_at DESC',
-    );
-    return rows
-        .map(_decodePayload)
-        .map(WorkState.fromJson)
+    return (await loadTasks())
+        .map((task) => task.workState)
+        .whereType<WorkState>()
         .toList(growable: false);
   }
 
@@ -148,13 +127,11 @@ class SQLiteRuntimePersistenceStore implements RuntimePersistenceStore {
     final separator = root.endsWith('/') ? '' : '/';
     _database = await openDatabase(
       '$root${separator}armin_runtime.db',
-      version: 1,
+      version: 4,
       onCreate: (db, _) async {
         await _createSchema(db);
       },
-      onUpgrade: (db, _, __) async {
-        await _createSchema(db);
-      },
+      onUpgrade: (db, _, __) => _resetSchema(db),
     );
     return _database!;
   }
@@ -176,14 +153,49 @@ CREATE TABLE IF NOT EXISTS runtime_events (
   payload TEXT NOT NULL
 )
 ''');
+    await _createHistoryTables(db);
+  }
+
+  Future<void> _resetSchema(Database db) async {
+    for (final table in [
+      'runtime_tasks',
+      'runtime_events',
+      'runtime_work_states',
+      'hosts',
+      'task_sessions',
+      'project_paths',
+    ]) {
+      await db.execute('DROP TABLE IF EXISTS $table');
+    }
+    await _createSchema(db);
+  }
+
+  Future<void> _createHistoryTables(Database db) async {
     await db.execute('''
-CREATE TABLE IF NOT EXISTS runtime_work_states (
+CREATE TABLE IF NOT EXISTS hosts (
+  host_id TEXT PRIMARY KEY,
+  updated_at TEXT NOT NULL,
+  payload TEXT NOT NULL
+)
+''');
+    await db.execute('''
+CREATE TABLE IF NOT EXISTS task_sessions (
   task_id TEXT PRIMARY KEY,
-  updated_at TEXT,
+  updated_at TEXT NOT NULL,
+  payload TEXT NOT NULL
+)
+''');
+    await db.execute('''
+CREATE TABLE IF NOT EXISTS project_paths (
+  project_path_id TEXT PRIMARY KEY,
+  updated_at TEXT NOT NULL,
   payload TEXT NOT NULL
 )
 ''');
   }
+
+  /// Exposed for composite stores sharing the same database.
+  Future<Database> sharedDb() => _db();
 
   Map<String, Object?> _decodePayload(Map<String, Object?> row) {
     final payload = row['payload'];

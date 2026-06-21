@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:isolate';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -21,7 +20,6 @@ import '../../tasks/models/native_output_turn.dart';
 import '../../tasks/models/task_session.dart';
 import '../../tasks/models/voice_input.dart';
 import '../../tasks/screens/task_draft_screen.dart';
-import '../../tasks/services/output_summary_provider.dart';
 import '../../tasks/services/semantic_snippet_builder.dart';
 import '../../tasks/services/turn_output_slicer.dart';
 import '../../tasks/services/voice_task_command_processor.dart';
@@ -37,28 +35,11 @@ enum _TaskDetailAction {
 }
 
 const _taskDetailTabScrollPhysics = ClampingScrollPhysics();
-const _summaryCacheLimit = 3;
 const _recentPreviewCacheLimit = 3;
 const _timelineCacheLimit = 12;
 
-final _outputSummaryCache = <String, List<_TurnOutputSummary>>{};
-final _outputSummaryInFlight = <String, Future<List<_TurnOutputSummary>>>{};
 final _recentPreviewCache = <String, String>{};
 final _timelineCache = <String, _TimelineViewModel>{};
-
-List<_TurnOutputSummary>? _cachedOutputSummary(String signature) {
-  return _outputSummaryCache[signature];
-}
-
-void _cacheOutputSummary(
-  String signature,
-  List<_TurnOutputSummary> summaries,
-) {
-  _outputSummaryCache[signature] = summaries;
-  while (_outputSummaryCache.length > _summaryCacheLimit) {
-    _outputSummaryCache.remove(_outputSummaryCache.keys.first);
-  }
-}
 
 String? _cachedRecentPreview(String signature) {
   return _recentPreviewCache[signature];
@@ -80,35 +61,6 @@ void _cacheTimeline(String signature, _TimelineViewModel model) {
   while (_timelineCache.length > _timelineCacheLimit) {
     _timelineCache.remove(_timelineCache.keys.first);
   }
-}
-
-Future<List<_TurnOutputSummary>> _cachedBackgroundOutputSummary(
-  String signature,
-  Map<String, Object?> job,
-) {
-  final cached = _cachedOutputSummary(signature);
-  if (cached != null) {
-    return Future.value(cached);
-  }
-  final running = _outputSummaryInFlight[signature];
-  if (running != null) {
-    return running;
-  }
-  late final Future<List<_TurnOutputSummary>> future;
-  future = Isolate.run(
-    () => _buildOutputSummariesInBackground(job),
-  ).then((payloads) {
-    final summaries =
-        payloads.map(_TurnOutputSummary.fromPayload).toList(growable: false);
-    _cacheOutputSummary(signature, summaries);
-    return summaries;
-  }).whenComplete(() {
-    if (identical(_outputSummaryInFlight[signature], future)) {
-      _outputSummaryInFlight.remove(signature);
-    }
-  });
-  _outputSummaryInFlight[signature] = future;
-  return future;
 }
 
 class TaskDetailScreen extends StatefulWidget {
@@ -135,7 +87,7 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
   String _handledAttentionRevealSignature = '';
 
   StreamSubscription<RuntimeEvent>? _eventSubscription;
-  int _resultVersion = 0;
+  final int _resultVersion = 0;
   final ValueNotifier<RuntimeTaskSnapshot?> _progressNotifier =
       ValueNotifier<RuntimeTaskSnapshot?>(null);
 
@@ -230,48 +182,17 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
     if (event.taskId != widget.taskId || !mounted) {
       return;
     }
-    switch (event.type) {
-      case RuntimeEventType.taskProgress:
-        if (event.snapshot != null) {
-          _progressNotifier.value = event.snapshot;
-        }
-        break;
-      case RuntimeEventType.taskCompleted:
-      case RuntimeEventType.taskFailed:
-      case RuntimeEventType.taskCancelled:
-      case RuntimeEventType.taskStopped:
-      case RuntimeEventType.taskWaitingUser:
-      case RuntimeEventType.taskPaused:
-        // Terminal / low-frequency: bump version so _ResultPanel does a full
-        // recomputation. Clear progress snapshot so UI switches to full
-        // TaskSession data.
-        _progressNotifier.value = null;
-        setState(() {
-          _resultVersion++;
-        });
-      case RuntimeEventType.taskCreated:
-      case RuntimeEventType.taskStarted:
-      case RuntimeEventType.taskResumed:
-      case RuntimeEventType.connectionRestored:
-        setState(() {
-          _resultVersion++;
-        });
-      case RuntimeEventType.outputUpdated:
-      case RuntimeEventType.deliverableUpdated:
-      case RuntimeEventType.approvalRequested:
-      case RuntimeEventType.approvalResolving:
-      case RuntimeEventType.approvalResolved:
-      case RuntimeEventType.approvalRejected:
-      case RuntimeEventType.approvalFailed:
-      case RuntimeEventType.observerAttached:
-      case RuntimeEventType.observerDetached:
-      case RuntimeEventType.connectionLost:
-      case RuntimeEventType.reviewSubmitted:
-      case RuntimeEventType.waitingForInstruction:
-      case RuntimeEventType.waitingForReview:
-      case RuntimeEventType.waitingForApproval:
-        // New event types: no special handling needed for detail screen yet.
-        break;
+    if (event.type == RuntimeEventType.taskProgress && event.snapshot != null) {
+      _progressNotifier.value = event.snapshot;
+      return;
+    }
+    if (event.type == RuntimeEventType.taskCompleted ||
+        event.type == RuntimeEventType.taskFailed ||
+        event.type == RuntimeEventType.taskCancelled ||
+        event.type == RuntimeEventType.taskStopped ||
+        event.type == RuntimeEventType.taskWaitingUser ||
+        event.type == RuntimeEventType.taskPaused) {
+      _progressNotifier.value = null;
     }
   }
 
@@ -550,11 +471,16 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
     return false;
   }
 
+  bool get _isTestEnvironment {
+    final bindingName = WidgetsBinding.instance.runtimeType.toString();
+    return bindingName.contains('Test') || bindingName.contains('Automated');
+  }
+
   void _maybeRevealAttentionAction(TaskSession task, WorkState? workState) {
-    if (!_isAttentionRequired(task.status, workState) || _isTestEnvironment) {
+    if (!_isAttentionRequired(workState) || _isTestEnvironment) {
       return;
     }
-    final signature = '${task.id}:${_workPhaseName(workState, task.status)}:'
+    final signature = '${task.id}:${_workPhaseName(workState)}:'
         '${task.updatedAt.microsecondsSinceEpoch}';
     if (_handledAttentionRevealSignature == signature) {
       return;
@@ -574,11 +500,6 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
         duration: const Duration(milliseconds: 220),
       );
     });
-  }
-
-  bool get _isTestEnvironment {
-    final bindingName = WidgetsBinding.instance.runtimeType.toString();
-    return bindingName.contains('Test') || bindingName.contains('Automated');
   }
 
   void _rerunTask(BuildContext context, TaskSession task) {
@@ -899,7 +820,7 @@ class _TaskHeaderState extends State<_TaskHeader> {
                   key: const Key('runtime-control-state-badge'),
                   label: _detailStatusLabel(task.status, widget.workState),
                   color: statusColor,
-                  animate: _workPhaseFor(widget.workState, task.status) ==
+                  animate: _workPhaseFor(widget.workState) ==
                       WorkPhase.working,
                 ),
                 _TaskTimingText(task: task),
@@ -1271,7 +1192,7 @@ class _CurrentSituationCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final text = progressSnapshot != null &&
-            _workPhaseFor(workState, task.status) == WorkPhase.working
+            _workPhaseFor(workState) == WorkPhase.working
         ? _progressSituationText(task, progressSnapshot!)
         : _currentSituationText(task, workState);
     return _InfoCard(
@@ -1664,9 +1585,7 @@ class _ResultPanel extends StatefulWidget {
 }
 
 class _ResultPanelState extends State<_ResultPanel> {
-  static const _turnOutputSlicer = TurnOutputSlicer();
   static const _foldLineLimit = 20;
-  static const _summaryOutputWindowChars = 40000;
   static const _recentOutputWindowChars = 12000;
   static const _recentOutputLineLimit = 80;
   static const _recentOutputPreviewLineLimit = 30;
@@ -1803,20 +1722,6 @@ class _ResultPanelState extends State<_ResultPanel> {
     TaskSession task,
     String signature,
   ) async {
-    final provider = AppStateScope.read(context).outputSummaryProvider;
-    if (_canUseBackgroundSummary(provider)) {
-      return _cachedBackgroundOutputSummary(
-        signature,
-        _summaryJobForTask(task),
-      );
-    }
-    return _outputSummariesWithProvider(task, provider);
-  }
-
-  Future<List<_TurnOutputSummary>> _outputSummariesWithProvider(
-    TaskSession task,
-    OutputSummaryProvider provider,
-  ) async {
     await Future<void>.delayed(Duration.zero);
     final summaries = <_TurnOutputSummary>[];
     final indexedTurns = _resultTurns(task, limit: _visibleSummaryCount);
@@ -1824,21 +1729,12 @@ class _ResultPanelState extends State<_ResultPanel> {
         visibleIndex < indexedTurns.length;
         visibleIndex += 1) {
       final indexedTurn = indexedTurns[visibleIndex];
-      final index = indexedTurn.index;
       final turn = indexedTurn.turn;
-      final cleanedOutput = _readableTurnOutput(task.turns, index);
-      final summary = await provider.summarize(
-        OutputSummaryRequest(
-          cleanedOutput: cleanedOutput,
-          status: task.status,
-          taskTitle: task.title,
-          promptInputs: [turn.userInput],
-          agentCommand: task.host.agentCommand,
-        ),
-      );
-      final text = summary.displaySummary.trim();
-      final speechText = summary.speechSummary.trim().isNotEmpty
-          ? summary.speechSummary.trim()
+      final deliverable = turn.deliverable;
+      if (deliverable == null) continue;
+      final text = deliverable.displaySummary.trim();
+      final speechText = deliverable.speechSummary.trim().isNotEmpty
+          ? deliverable.speechSummary.trim()
           : DeviceVoiceService.cleanSpeechText(text);
       if (text.isNotEmpty) {
         summaries.add(
@@ -1846,43 +1742,12 @@ class _ResultPanelState extends State<_ResultPanel> {
             title: _deliverableTitle(turn.turnIndex, visibleIndex == 0),
             text: text,
             speechText: speechText,
-            fullOutputForSpeech: text,
+            fullOutputForSpeech: speechText,
           ),
         );
       }
     }
-    if (summaries.isNotEmpty) {
-      return summaries;
-    }
-    final summarySource = _summaryOutputSource(task);
-    if (summarySource.isEmpty) {
-      return const [];
-    }
-    final fallback = await provider.summarize(
-      OutputSummaryRequest(
-        cleanedOutput: summarySource,
-        status: task.status,
-        taskTitle: task.title,
-        promptInputs: [
-          task.userText,
-          ...task.turns.map((turn) => turn.userInput),
-        ],
-        agentCommand: task.host.agentCommand,
-      ),
-    );
-    final text = fallback.displaySummary.trim();
-    return text.isEmpty
-        ? const []
-        : [
-            _TurnOutputSummary(
-              title: '结果',
-              text: text,
-              speechText: fallback.speechSummary.trim().isNotEmpty
-                  ? fallback.speechSummary.trim()
-                  : DeviceVoiceService.cleanSpeechText(text),
-              fullOutputForSpeech: text,
-            ),
-          ];
+    return summaries;
   }
 
   bool _isResultTurn(NativeOutputTurnStatus status) {
@@ -1903,7 +1768,7 @@ class _ResultPanelState extends State<_ResultPanel> {
   _IndexedTurn? _latestResultTurn(TaskSession task) {
     for (var index = task.turns.length - 1; index >= 0; index--) {
       final turn = task.turns[index];
-      if (_isResultTurn(turn.status)) {
+      if (_isResultTurn(turn.status) && turn.deliverable != null) {
         return _IndexedTurn(index: index, turn: turn);
       }
     }
@@ -1914,7 +1779,7 @@ class _ResultPanelState extends State<_ResultPanel> {
     final turns = <_IndexedTurn>[];
     for (var index = task.turns.length - 1; index >= 0; index--) {
       final turn = task.turns[index];
-      if (_isResultTurn(turn.status)) {
+      if (_isResultTurn(turn.status) && turn.deliverable != null) {
         turns.add(_IndexedTurn(index: index, turn: turn));
         if (turns.length >= limit) {
           break;
@@ -1925,23 +1790,9 @@ class _ResultPanelState extends State<_ResultPanel> {
   }
 
   int _resultTurnCount(TaskSession task) {
-    return task.turns.where((turn) => _isResultTurn(turn.status)).length;
-  }
-
-  String _readableTurnOutput(List<NativeOutputTurn> turns, int index) {
-    final rawOutput = _turnOutputSlicer.rawOutputForTurn(
-      turns,
-      index,
-      maxOutputChars: _summaryOutputWindowChars,
-    );
-    if (rawOutput.trim().isNotEmpty) {
-      return rawOutput;
-    }
-    return _turnOutputSlicer.outputForTurn(
-      turns,
-      index,
-      maxOutputChars: _summaryOutputWindowChars,
-    );
+    return task.turns
+        .where((turn) => _isResultTurn(turn.status) && turn.deliverable != null)
+        .length;
   }
 
   void _maybeRevealLatestTurn() {
@@ -1977,6 +1828,7 @@ class _ResultPanelState extends State<_ResultPanel> {
               t.cleanedOutput.length,
               t.rawOutput.length,
               t.lastOutputAt.microsecondsSinceEpoch,
+              t.deliverable?.evidenceFingerprint ?? '',
             ].join(':'))
         .join('|');
   }
@@ -1989,11 +1841,7 @@ class _ResultPanelState extends State<_ResultPanel> {
       if (force || _summarySignature != signature) {
         _summarySignature = signature;
         _summariesFuture = null;
-        final provider = AppStateScope.read(context).outputSummaryProvider;
-        if (!_canUseBackgroundSummary(provider) ||
-            _cachedOutputSummary(signature) == null) {
-          _scheduleSummaryBuild(signature);
-        }
+        _scheduleSummaryBuild(signature);
       }
       return;
     }
@@ -2011,13 +1859,6 @@ class _ResultPanelState extends State<_ResultPanel> {
   }
 
   Widget _buildResultSummary() {
-    final provider = AppStateScope.read(context).outputSummaryProvider;
-    final cached = _canUseBackgroundSummary(provider)
-        ? _cachedOutputSummary(_summarySignature)
-        : null;
-    if (cached != null) {
-      return _buildOutputSummaries(cached);
-    }
     final future = _summariesFuture;
     if (future == null) {
       return const Text('正在整理产出…');
@@ -2168,9 +2009,7 @@ class _ResultPanelState extends State<_ResultPanel> {
       if (resultTurn != null) ...[
         resultTurn.turn.id,
         resultTurn.turn.status.name,
-        resultTurn.turn.rawOutput.length,
-        resultTurn.turn.cleanedOutput.length,
-        resultTurn.turn.lastOutputAt.microsecondsSinceEpoch,
+        resultTurn.turn.deliverable?.evidenceFingerprint ?? '',
       ],
     ].join(':');
   }
@@ -2192,34 +2031,6 @@ class _ResultPanelState extends State<_ResultPanel> {
 
   bool _shouldBuildResultSummary(TaskSession task) {
     return !_usesRecentOutputPreview(task.status);
-  }
-
-  bool _canUseBackgroundSummary(OutputSummaryProvider provider) {
-    if (_isTestEnvironment) {
-      return false;
-    }
-    return provider is RuleBasedOutputSummaryProvider ||
-        (provider is SelectableOutputSummaryProvider &&
-            !provider.preferLocalModel);
-  }
-
-  bool get _isTestEnvironment {
-    final bindingName = WidgetsBinding.instance.runtimeType.toString();
-    return bindingName.contains('Test') || bindingName.contains('Automated');
-  }
-
-  Map<String, Object?> _summaryJobForTask(TaskSession task) {
-    return {
-      'taskTitle': task.title,
-      'status': task.status.name,
-      'userText': task.userText,
-      'summary': task.summary ?? '',
-      'shortSummary': task.shortSummary,
-      'agentCommand': task.host.agentCommand,
-      'maxOutputChars': _summaryOutputWindowChars,
-      'summaryLimit': _visibleSummaryCount,
-      'turns': task.turns.map((turn) => turn.toJson()).toList(growable: false),
-    };
   }
 
   Future<String> _recentOutputPreview(
@@ -2272,192 +2083,10 @@ class _TurnOutputSummary {
     required this.fullOutputForSpeech,
   });
 
-  factory _TurnOutputSummary.fromPayload(Map<String, Object?> payload) {
-    return _TurnOutputSummary(
-      title: payload['title'] as String? ?? '',
-      text: payload['text'] as String? ?? '',
-      speechText: payload['speechText'] as String? ?? '',
-      fullOutputForSpeech: payload['fullOutputForSpeech'] as String? ?? '',
-    );
-  }
-
   final String title;
   final String text;
   final String speechText;
   final String fullOutputForSpeech;
-
-  Map<String, Object?> toPayload() {
-    return {
-      'title': title,
-      'text': text,
-      'speechText': speechText,
-      'fullOutputForSpeech': fullOutputForSpeech,
-    };
-  }
-}
-
-Future<List<Map<String, Object?>>> _buildOutputSummariesInBackground(
-  Map<String, Object?> job,
-) async {
-  final status = _taskStatusFromName(job['status'] as String? ?? '');
-  final turns = ((job['turns'] as List<Object?>? ?? const [])
-      .whereType<Map<Object?, Object?>>()
-      .map((turn) => turn.map((key, value) => MapEntry('$key', value)))
-      .map(NativeOutputTurn.fromJson)
-      .toList(growable: false));
-  const provider = RuleBasedOutputSummaryProvider();
-  final summaries = <_TurnOutputSummary>[];
-  final summaryLimit = job['summaryLimit'] as int? ?? 3;
-  final indexedTurns = _resultTurnsFrom(turns, limit: summaryLimit);
-  final taskTitle = job['taskTitle'] as String? ?? '';
-  final agentCommand = job['agentCommand'] as String? ?? '';
-  final maxOutputChars = job['maxOutputChars'] as int? ?? 40000;
-
-  for (var visibleIndex = 0;
-      visibleIndex < indexedTurns.length;
-      visibleIndex += 1) {
-    final indexedTurn = indexedTurns[visibleIndex];
-    final turn = indexedTurn.turn;
-    final cleanedOutput = _readableTurnOutputFrom(
-      turns,
-      indexedTurn.index,
-      maxOutputChars,
-    );
-    final summary = await provider.summarize(
-      OutputSummaryRequest(
-        cleanedOutput: cleanedOutput,
-        status: status,
-        taskTitle: taskTitle,
-        promptInputs: [turn.userInput],
-        agentCommand: agentCommand,
-      ),
-    );
-    final text = summary.displaySummary.trim();
-    final speechText = summary.speechSummary.trim().isNotEmpty
-        ? summary.speechSummary.trim()
-        : DeviceVoiceService.cleanSpeechText(text);
-    if (text.isNotEmpty) {
-      summaries.add(
-        _TurnOutputSummary(
-          title: _deliverableTitle(turn.turnIndex, visibleIndex == 0),
-          text: text,
-          speechText: speechText,
-          fullOutputForSpeech: text,
-        ),
-      );
-    }
-  }
-  if (summaries.isNotEmpty) {
-    return summaries.map((summary) => summary.toPayload()).toList();
-  }
-
-  final summarySource = _summaryOutputSourceFrom(job, status);
-  if (summarySource.isEmpty) {
-    return const [];
-  }
-  final fallback = await provider.summarize(
-    OutputSummaryRequest(
-      cleanedOutput: summarySource,
-      status: status,
-      taskTitle: taskTitle,
-      promptInputs: [
-        job['userText'] as String? ?? '',
-        ...turns.map((turn) => turn.userInput),
-      ],
-      agentCommand: agentCommand,
-    ),
-  );
-  final text = fallback.displaySummary.trim();
-  if (text.isEmpty) {
-    return const [];
-  }
-  final speechText = fallback.speechSummary.trim().isNotEmpty
-      ? fallback.speechSummary.trim()
-      : DeviceVoiceService.cleanSpeechText(text);
-  return [
-    _TurnOutputSummary(
-      title: '结果',
-      text: text,
-      speechText: speechText,
-      fullOutputForSpeech: text,
-    ).toPayload(),
-  ];
-}
-
-TaskStatus _taskStatusFromName(String name) {
-  return TaskStatus.values.firstWhere(
-    (status) => status.name == name,
-    orElse: () => TaskStatus.completed,
-  );
-}
-
-List<_IndexedTurn> _resultTurnsFrom(
-  List<NativeOutputTurn> turns, {
-  required int limit,
-}) {
-  final result = <_IndexedTurn>[];
-  for (var index = turns.length - 1; index >= 0; index--) {
-    final turn = turns[index];
-    if (_isResultTurnStatus(turn.status)) {
-      result.add(_IndexedTurn(index: index, turn: turn));
-      if (result.length >= limit) {
-        break;
-      }
-    }
-  }
-  return result;
-}
-
-bool _isResultTurnStatus(NativeOutputTurnStatus status) {
-  return switch (status) {
-    NativeOutputTurnStatus.needAttention ||
-    NativeOutputTurnStatus.running =>
-      false,
-    NativeOutputTurnStatus.turnIdle ||
-    NativeOutputTurnStatus.runtimeLost ||
-    NativeOutputTurnStatus.failed ||
-    NativeOutputTurnStatus.completedByUser ||
-    NativeOutputTurnStatus.failedByUser ||
-    NativeOutputTurnStatus.stopped =>
-      true,
-  };
-}
-
-String _readableTurnOutputFrom(
-  List<NativeOutputTurn> turns,
-  int index,
-  int maxOutputChars,
-) {
-  const slicer = TurnOutputSlicer();
-  final rawOutput = slicer.rawOutputForTurn(
-    turns,
-    index,
-    maxOutputChars: maxOutputChars,
-  );
-  if (rawOutput.trim().isNotEmpty) {
-    return rawOutput;
-  }
-  return slicer.outputForTurn(
-    turns,
-    index,
-    maxOutputChars: maxOutputChars,
-  );
-}
-
-String _summaryOutputSourceFrom(Map<String, Object?> job, TaskStatus status) {
-  if (_usesRecentOutputPreview(status)) {
-    return '';
-  }
-  final candidates = [
-    job['summary'] as String? ?? '',
-    job['shortSummary'] as String? ?? '',
-  ];
-  for (final candidate in candidates) {
-    if (const AgentOutputCleaner().clean(candidate).trim().isNotEmpty) {
-      return candidate;
-    }
-  }
-  return '';
 }
 
 class _OutputSegmentCard extends StatefulWidget {
@@ -2648,7 +2277,6 @@ class _TaskNeedsPanel extends StatefulWidget {
 
 class _TaskNeedsPanelState extends State<_TaskNeedsPanel> {
   static const _voiceCommandProcessor = VoiceTaskCommandProcessor();
-  static const _turnOutputSlicer = TurnOutputSlicer();
 
   @override
   Widget build(BuildContext context) {
@@ -2683,9 +2311,9 @@ class _TaskNeedsPanelState extends State<_TaskNeedsPanel> {
             ],
           ),
           const SizedBox(height: 16),
-          if (_pendingApproval(task) != null) ...[
+          if (_pendingApproval() != null) ...[
             _ApprovalPromptCard(
-              approval: _pendingApproval(task)!,
+              approval: _pendingApproval()!,
               onApprove: () => _runControlAction(
                 context,
                 () => AppStateScope.read(context)
@@ -2704,8 +2332,8 @@ class _TaskNeedsPanelState extends State<_TaskNeedsPanel> {
               onVoice: () => _showFollowUpSheet(
                 context,
                 title: '审批处理',
-                hintText: _approvalVoiceHint(_pendingApproval(task)!),
-                approval: _pendingApproval(task),
+                hintText: _approvalVoiceHint(_pendingApproval()!),
+                approval: _pendingApproval(),
               ),
             ),
             const SizedBox(height: 12),
@@ -2765,6 +2393,7 @@ class _TaskNeedsPanelState extends State<_TaskNeedsPanel> {
         task,
         option,
         customResponse: customResponse ?? '',
+        approval: _pendingApproval(),
       ),
     );
   }
@@ -2832,17 +2461,9 @@ class _TaskNeedsPanelState extends State<_TaskNeedsPanel> {
     );
   }
 
-  NativeTerminalApproval? _pendingApproval(TaskSession task) {
-    if (task.nativeApproval != null &&
-        task.nativeApproval!.state == ApprovalState.pending) {
-      return task.nativeApproval;
-    }
-    for (final approval in task.nativeApprovalRequests.reversed) {
-      if (approval.state == ApprovalState.pending) {
-        return approval;
-      }
-    }
-    return null;
+  NativeTerminalApproval? _pendingApproval() {
+    final approval = widget.workState?.approval;
+    return approval?.state == ApprovalState.pending ? approval : null;
   }
 
   void _showFollowUpSheet(
@@ -2911,70 +2532,27 @@ class _TaskNeedsPanelState extends State<_TaskNeedsPanel> {
 
   Future<void> _speakLatestResult(BuildContext context) async {
     final state = AppStateScope.read(context);
-    final text = await _latestResultSpeechText(context, widget.task);
+    final text = await _latestResultSpeechText(widget.task);
     if (text.isEmpty) {
       throw const VoiceUnavailableException('没有可朗读的结果内容');
     }
     await state.voiceService.speakSummary(text);
   }
 
-  Future<String> _latestResultSpeechText(
-    BuildContext context,
-    TaskSession task,
-  ) async {
-    final provider = AppStateScope.of(context).outputSummaryProvider;
+  Future<String> _latestResultSpeechText(TaskSession task) async {
     final latestResult = _latestResultTurn(task);
-    if (latestResult != null) {
-      final latestIndex = latestResult.index;
-      final latestTurn = latestResult.turn;
-      final summary = await provider.summarize(
-        OutputSummaryRequest(
-          cleanedOutput: _readableResultOutput(task.turns, latestIndex),
-          status: task.status,
-          taskTitle: task.title,
-          promptInputs: [latestTurn.userInput],
-          agentCommand: task.host.agentCommand,
-        ),
-      );
-      final latestText = summary.displaySummary.trim();
-      if (latestText.isNotEmpty) {
-        final speechText = summary.speechSummary.trim();
-        return speechText.isNotEmpty
-            ? speechText
-            : DeviceVoiceService.cleanSpeechText(latestText);
-      }
-    }
-
-    final summarySource = _summaryOutputSource(task);
-    if (summarySource.isEmpty) {
-      return '';
-    }
-    final fallback = await provider.summarize(
-      OutputSummaryRequest(
-        cleanedOutput: summarySource,
-        status: task.status,
-        taskTitle: task.title,
-        promptInputs: [
-          task.userText,
-          ...task.turns.map((turn) => turn.userInput),
-        ],
-        agentCommand: task.host.agentCommand,
-      ),
-    );
-    final fallbackText = fallback.displaySummary.trim();
-    if (fallbackText.isEmpty) {
-      return '';
-    }
-    final speechText = fallback.speechSummary.trim();
+    final deliverable = latestResult?.turn.deliverable;
+    if (deliverable == null) return '';
+    final speechText = deliverable.speechSummary.trim();
     return speechText.isNotEmpty
         ? speechText
-        : DeviceVoiceService.cleanSpeechText(fallbackText);
+        : DeviceVoiceService.cleanSpeechText(deliverable.displaySummary);
   }
 
   _IndexedTurn? _latestResultTurn(TaskSession task) {
     for (var index = task.turns.length - 1; index >= 0; index--) {
       final turn = task.turns[index];
-      if (_isReadableResultTurn(turn.status)) {
+      if (_isReadableResultTurn(turn.status) && turn.deliverable != null) {
         return _IndexedTurn(index: index, turn: turn);
       }
     }
@@ -2994,22 +2572,6 @@ class _TaskNeedsPanelState extends State<_TaskNeedsPanel> {
       NativeOutputTurnStatus.stopped =>
         true,
     };
-  }
-
-  String _readableResultOutput(List<NativeOutputTurn> turns, int index) {
-    final rawOutput = _turnOutputSlicer.rawOutputForTurn(
-      turns,
-      index,
-      maxOutputChars: _ResultPanelState._summaryOutputWindowChars,
-    );
-    if (rawOutput.trim().isNotEmpty) {
-      return rawOutput;
-    }
-    return _turnOutputSlicer.outputForTurn(
-      turns,
-      index,
-      maxOutputChars: _ResultPanelState._summaryOutputWindowChars,
-    );
   }
 }
 
@@ -3084,22 +2646,6 @@ class _RecentOutputPreviewState extends State<_RecentOutputPreview> {
       ],
     );
   }
-}
-
-String _summaryOutputSource(TaskSession task) {
-  if (_usesRecentOutputPreview(task.status)) {
-    return '';
-  }
-  final candidates = [
-    task.summary ?? '',
-    task.shortSummary,
-  ];
-  for (final candidate in candidates) {
-    if (const AgentOutputCleaner().clean(candidate).trim().isNotEmpty) {
-      return candidate;
-    }
-  }
-  return '';
 }
 
 bool _usesRecentOutputPreview(TaskStatus status) {
@@ -3976,57 +3522,23 @@ class _NextAction {
   final Color color;
 }
 
-WorkPhase _workPhaseFor(WorkState? workState, TaskStatus fallbackStatus) {
-  if (workState != null) {
-    return workState.phase;
-  }
-  return switch (fallbackStatus) {
-    TaskStatus.draft || TaskStatus.pending => WorkPhase.idle,
-    TaskStatus.running => WorkPhase.working,
-    TaskStatus.paused => WorkPhase.quieting,
-    TaskStatus.needApproval => WorkPhase.needsApproval,
-    TaskStatus.turnIdle => WorkPhase.turnIdle,
-    TaskStatus.needAttention => WorkPhase.needsInstruction,
-    TaskStatus.observerDetached || TaskStatus.runtimeLost => WorkPhase.quieting,
-    TaskStatus.userCompleted || TaskStatus.completed => WorkPhase.completed,
-    TaskStatus.userFailed || TaskStatus.failed => WorkPhase.failed,
-    TaskStatus.stopped => WorkPhase.stopped,
-  };
+WorkPhase _workPhaseFor(WorkState? workState) {
+  return workState?.phase ?? WorkPhase.idle;
 }
 
 WorkState? _effectiveWorkStateFor(TaskSession task, WorkState? workState) {
-  if (workState == null) {
-    return null;
-  }
-  final phase = workState.phase;
-  if (phase == WorkPhase.idle &&
-      task.status != TaskStatus.draft &&
-      task.status != TaskStatus.pending) {
-    return null;
-  }
-  if (phase == WorkPhase.working &&
-      task.status != TaskStatus.running &&
-      task.status != TaskStatus.pending) {
-    return null;
-  }
-  if ((phase == WorkPhase.completed ||
-          phase == WorkPhase.failed ||
-          phase == WorkPhase.stopped) &&
-      !_isTaskTerminal(task.status)) {
-    return null;
-  }
   return workState;
 }
 
-String _workPhaseName(WorkState? workState, TaskStatus fallbackStatus) {
-  return _workPhaseFor(workState, fallbackStatus).name;
+String _workPhaseName(WorkState? workState) {
+  return _workPhaseFor(workState).name;
 }
 
 String _detailStatusLabel(TaskStatus status, [WorkState? workState]) {
   if (workState != null && workState.headline.trim().isNotEmpty) {
     return workState.headline.trim();
   }
-  switch (_workPhaseFor(workState, status)) {
+  switch (_workPhaseFor(workState)) {
     case WorkPhase.idle:
       return '等待开始';
     case WorkPhase.working:
@@ -4053,7 +3565,7 @@ String _detailStatusLabel(TaskStatus status, [WorkState? workState]) {
 }
 
 Color _detailStatusColor(TaskStatus status, [WorkState? workState]) {
-  return switch (_workPhaseFor(workState, status)) {
+  return switch (_workPhaseFor(workState)) {
     WorkPhase.needsApproval ||
     WorkPhase.needsDecision ||
     WorkPhase.needsReview ||
@@ -4110,35 +3622,11 @@ bool _isTaskLive(TaskStatus status) {
   };
 }
 
-bool _isTaskTerminal(TaskStatus status) {
-  return switch (status) {
-    TaskStatus.completed ||
-    TaskStatus.failed ||
-    TaskStatus.userCompleted ||
-    TaskStatus.userFailed ||
-    TaskStatus.stopped ||
-    TaskStatus.runtimeLost =>
-      true,
-    _ => false,
-  };
-}
-
-bool _isAttentionRequired(TaskStatus status, [WorkState? workState]) {
-  if (workState != null) {
-    return workState.needsAttention ||
-        workState.phase == WorkPhase.turnIdle ||
-        workState.phase == WorkPhase.failed;
-  }
-  return switch (status) {
-    TaskStatus.needApproval ||
-    TaskStatus.turnIdle ||
-    TaskStatus.needAttention ||
-    TaskStatus.paused ||
-    TaskStatus.failed ||
-    TaskStatus.userFailed =>
-      true,
-    _ => false,
-  };
+bool _isAttentionRequired(WorkState? workState) {
+  return workState != null &&
+      (workState.needsAttention ||
+          workState.phase == WorkPhase.turnIdle ||
+          workState.phase == WorkPhase.failed);
 }
 
 String _cleanSnippet(String value, {int maxChars = 160}) {
@@ -4153,51 +3641,24 @@ String _cleanSnippet(String value, {int maxChars = 160}) {
       .trim();
 }
 
-String _currentSituationText(TaskSession task, [WorkState? workState]) {
-  if (workState != null) {
-    final statusText = workState.statusText.trim();
-    if (statusText.isNotEmpty) {
-      return statusText;
-    }
+String _currentSituationText(TaskSession _, [WorkState? workState]) {
+  if (workState == null) {
+    return '正在同步任务状态。';
   }
-  final hasOutput = _hasMeaningfulOutput(task);
-  return switch (task.status) {
-    TaskStatus.turnIdle => hasOutput
-        ? '最新结果已就绪。\n'
-            '等待你的下一步指令。'
-        : '此任务正在等待你的下一步指令才能继续。',
-    TaskStatus.needAttention when task.nativeApproval != null => hasOutput
-        ? '最新结果已就绪。\n'
-            '从下方选项中选择如何继续。'
-        : '此任务正在等待你的选择才能继续。',
-    TaskStatus.needAttention => hasOutput
-        ? '最新结果已就绪。\n'
-            '给出你的下一步指令、约束或决定。'
-        : '此任务需要你的关注才能继续推进。',
-    TaskStatus.needApproval => hasOutput
-        ? '任务发现了需要你决定的事项。\n'
-            '批准或拒绝以继续。'
-        : '此任务正在等待你的决定才能继续。',
-    TaskStatus.failed || TaskStatus.userFailed => '此任务遇到了问题，需要查看后才能继续。',
-    TaskStatus.paused => '此任务已暂停。\n准备好后恢复它。',
-    TaskStatus.running || TaskStatus.pending => '此任务仍在工作中。\n当前不需要任何操作。',
-    TaskStatus.completed || TaskStatus.userCompleted => '最新结果已就绪，可供查看。',
-    TaskStatus.runtimeLost => '更新已暂停。\n如需继续观察此任务，请重新连接。',
-    TaskStatus.observerDetached => '更新已暂停。\n任务可能仍在远端运行。',
-    TaskStatus.stopped => '此任务已停止。\n查看输出，或根据需要启动新运行。',
-    TaskStatus.draft => '此任务尚未启动。',
+  final statusText = workState.statusText.trim();
+  if (statusText.isNotEmpty) return statusText;
+  return switch (workState.phase) {
+    WorkPhase.idle => '等待开始。',
+    WorkPhase.working => '此任务仍在工作中。',
+    WorkPhase.quieting => '更新已暂停。',
+    WorkPhase.turnIdle => '等待你的下一步指令。',
+    WorkPhase.needsApproval || WorkPhase.needsDecision => '等待你的决定。',
+    WorkPhase.needsReview => '最新结果等待查看。',
+    WorkPhase.needsInstruction => '等待你的下一步指令。',
+    WorkPhase.completed => '最新结果已就绪。',
+    WorkPhase.failed => '此任务遇到了问题。',
+    WorkPhase.stopped => '此任务已停止。',
   };
-}
-
-bool _hasMeaningfulOutput(TaskSession task) {
-  if (task.shortSummary.isNotEmpty &&
-      const AgentOutputCleaner().clean(task.shortSummary).trim().isNotEmpty) {
-    return true;
-  }
-  if (task.turns.isNotEmpty) {
-    return true;
-  }
-  return false;
 }
 
 String _progressSituationText(TaskSession task, RuntimeTaskSnapshot snapshot) {
@@ -4235,7 +3696,7 @@ String _progressActionText(String value) {
 }
 
 _NextAction _nextActionForTask(TaskStatus status, [WorkState? workState]) {
-  switch (_workPhaseFor(workState, status)) {
+  switch (_workPhaseFor(workState)) {
     case WorkPhase.needsApproval:
       return _NextAction(
         title: '需要你决定',
@@ -4304,7 +3765,7 @@ _PrimaryTaskAction? _primaryTaskActionFor(
   TaskStatus status, [
   WorkState? workState,
 ]) {
-  switch (_workPhaseFor(workState, status)) {
+  switch (_workPhaseFor(workState)) {
     case WorkPhase.needsApproval:
       return const _PrimaryTaskAction(
         label: '查看',

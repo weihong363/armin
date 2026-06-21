@@ -163,7 +163,7 @@ void main() {
       ),
     );
 
-    expect(find.textContaining('Allow execution of [ls]?'), findsOneWidget);
+    expect(find.textContaining('Allow execution of [ls]?'), findsWidgets);
     await tester.tap(find.text('Allow once'));
     await tester.pumpAndSettle();
 
@@ -242,10 +242,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('当前状况'), findsOneWidget);
-    expect(
-      find.text('此任务正在等待你的下一步指令才能继续。'),
-      findsAtLeastNWidgets(1),
-    );
+    expect(find.textContaining('等待你的指示'), findsAtLeastNWidgets(1));
     expect(find.text('这个任务需要什么'), findsOneWidget);
     expect(find.text('需要你的指令'), findsOneWidget);
     expect(find.text('继续'), findsOneWidget);
@@ -280,7 +277,12 @@ void main() {
       ),
     );
 
-    expect(find.textContaining('python -m pytest'), findsOneWidget);
+    expect(find.textContaining('python -m pytest'), findsWidgets);
+    await tester.drag(
+      find.byType(Scrollable).first,
+      const Offset(0, -120),
+    );
+    await tester.pumpAndSettle();
     await tester.tap(find.text('Reject and type something'));
     await tester.pumpAndSettle();
     await tester.enterText(
@@ -603,6 +605,7 @@ void main() {
           startedAt: now,
           lastOutputAt: now,
           status: NativeOutputTurnStatus.turnIdle,
+          deliverable: _deliverable('Taro 是一只小型宠物。'),
         ),
         NativeOutputTurn(
           id: 'turn-task-1-2',
@@ -619,6 +622,7 @@ Summer 是一个海滩风格宠物。
           startedAt: now,
           lastOutputAt: now,
           status: NativeOutputTurnStatus.turnIdle,
+          deliverable: _deliverable('Summer 是一个海滩风格宠物。'),
         ),
       ],
     );
@@ -670,6 +674,10 @@ Summer 是一个海滩风格宠物。
           startedAt: now,
           lastOutputAt: now,
           status: NativeOutputTurnStatus.turnIdle,
+          deliverable: _deliverable(
+            '页面展示文本 hello world',
+            speech: '页面展示文本 hello world',
+          ),
         ),
       ],
     );
@@ -791,6 +799,7 @@ Summer：一位迷人的美国沙滩女孩 Codex 宠物。
           startedAt: now,
           lastOutputAt: now,
           status: NativeOutputTurnStatus.turnIdle,
+          deliverable: _deliverable('实际宠物：momo、Summer。'),
         ),
         NativeOutputTurn(
           id: 'turn-task-1-2',
@@ -807,6 +816,7 @@ Summer：海滩风格 Codex 宠物。
           startedAt: now,
           lastOutputAt: now,
           status: NativeOutputTurnStatus.turnIdle,
+          deliverable: _deliverable('Summer：海滩风格 Codex 宠物。'),
         ),
         NativeOutputTurn(
           id: 'turn-task-1-3',
@@ -825,6 +835,7 @@ Summer：海滩风格 Codex 宠物。
           startedAt: now,
           lastOutputAt: now,
           status: NativeOutputTurnStatus.turnIdle,
+          deliverable: _deliverable('精灵图集尺寸为 1536 x 1872。'),
         ),
       ],
     );
@@ -874,6 +885,7 @@ Summer：海滩风格 Codex 宠物。
             startedAt: now.add(Duration(seconds: index)),
             lastOutputAt: now.add(Duration(seconds: index)),
             status: NativeOutputTurnStatus.turnIdle,
+            deliverable: _deliverable('第 $index 段结果已经完成。'),
           ),
       ],
     );
@@ -936,6 +948,7 @@ Summer：海滩风格 Codex 宠物。
           startedAt: now,
           lastOutputAt: now,
           status: NativeOutputTurnStatus.turnIdle,
+          deliverable: _deliverable('旧结果'),
         ),
         NativeOutputTurn(
           id: 'turn-task-1-2',
@@ -953,6 +966,7 @@ Thinking
           startedAt: now,
           lastOutputAt: now,
           status: NativeOutputTurnStatus.turnIdle,
+          deliverable: _deliverable('GET /stats/{code} 已经实现了，3 个相关测试全部通过。'),
         ),
       ],
     );
@@ -1031,7 +1045,8 @@ Allow this command to run? Redirection detected.
     expect(find.textContaining('正式结果会在任务完成'), findsOneWidget);
   });
 
-  testWidgets('result panel uses task summary fallback', (tester) async {
+  testWidgets('result panel ignores task summary without turn evidence',
+      (tester) async {
     final task = _task().copyWith(
       status: TaskStatus.turnIdle,
       summary: '任务摘要已生成。',
@@ -1052,7 +1067,7 @@ Allow this command to run? Redirection detected.
     );
     await _tapDetailTab(tester, '结果');
 
-    expect(find.textContaining('任务摘要已生成'), findsWidgets);
+    expect(find.textContaining('任务摘要已生成'), findsNothing);
     expect(
         find.textContaining('SHORT_SUMMARY_SHOULD_NOT_RENDER'), findsNothing);
   });
@@ -1086,6 +1101,9 @@ README.md 已写入，包含三种模式的完整使用示例、公共参数表�
           startedAt: DateTime(2026, 5, 18),
           lastOutputAt: DateTime(2026, 5, 18),
           status: NativeOutputTurnStatus.turnIdle,
+          deliverable: _deliverable(
+            'README.md 已写入，包含三种模式的完整使用示例、公共参数表和安全机制说明。',
+          ),
         ),
       ],
     );
@@ -1129,6 +1147,7 @@ README.md 已写入，包含三种模式的完整使用示例、公共参数表�
           startedAt: now,
           lastOutputAt: now,
           status: NativeOutputTurnStatus.turnIdle,
+          deliverable: _deliverable('hello'),
         ),
       ],
     );
@@ -1167,6 +1186,7 @@ README.md 已写入，包含三种模式的完整使用示例、公共参数表�
           startedAt: now.add(const Duration(seconds: 10)),
           lastOutputAt: now.add(const Duration(seconds: 10)),
           status: NativeOutputTurnStatus.turnIdle,
+          deliverable: _deliverable('world'),
         ),
       ],
     );
@@ -1828,6 +1848,14 @@ NativeTerminalApproval _nativeApproval({
     selectedOptionKey: selectedOptionKey,
     createdAt: DateTime(2026, 5, 18),
     stateChangedAt: stateChangedAt,
+  );
+}
+
+TurnDeliverable _deliverable(String display, {String? speech}) {
+  return TurnDeliverable(
+    displaySummary: display,
+    speechSummary: speech ?? display,
+    evidenceFingerprint: display.hashCode.toString(),
   );
 }
 

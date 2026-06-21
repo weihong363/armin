@@ -729,7 +729,7 @@ Thinking
     expect(agent.lastExecuteRequest?.attachOnly, isTrue);
   });
 
-  test('selectTerminalOption accepts options from pending approval history',
+  test('selectTerminalOption rejects archived approval without current state',
       () async {
     const option = NativeApprovalOption(
       key: '2',
@@ -756,21 +756,11 @@ Thinking
     );
     await state.load();
 
-    await state.selectTerminalOption(task, option);
-    await Future<void>.delayed(Duration.zero);
-
-    expect(agent.selectedTerminalOption, '2');
-    expect(store.task!.status, TaskStatus.running);
-    expect(store.task!.nativeApproval, isNull);
-    expect(
-      store.task!.nativeApprovalRequests.single.state,
-      ApprovalState.resolved,
+    await expectLater(
+      state.selectTerminalOption(task, option),
+      throwsA(isA<StateError>()),
     );
-    expect(
-      store.task!.nativeApprovalRequests.single.selectedOptionKey,
-      '2',
-    );
-    expect(agent.lastExecuteRequest?.attachOnly, isTrue);
+    expect(agent.selectedTerminalOption, isNull);
   });
 
   test('selectTerminalOption resolves stale pending approval with new id',
@@ -1884,7 +1874,7 @@ Thinking
     expect(store.task!.turns.single.status, NativeOutputTurnStatus.failed);
   });
 
-  test('failed execution speaks failure summary', () async {
+  test('failed execution without turn deliverable stays silent', () async {
     final task = _task(status: TaskStatus.running);
     final store = _TaskStore(task);
     final voice = _CapturingVoiceService();
@@ -1903,9 +1893,8 @@ Thinking
     await Future<void>.delayed(Duration.zero);
 
     expect(store.task!.status, TaskStatus.failed);
-    await _waitUntil(() => voice.spokenSummaries.isNotEmpty);
-    expect(voice.spokenSummaries.single, contains('任务失败'));
-    expect(voice.spokenSummaries.single, contains('建议先查看失败原因'));
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    expect(voice.spokenSummaries, isEmpty);
   });
 
   test('socket interruption detaches observer without killing tmux session',

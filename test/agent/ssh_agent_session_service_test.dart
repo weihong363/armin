@@ -1,5 +1,6 @@
 import 'package:armin/features/agent/models/agent_approval_config.dart';
 import 'package:armin/features/agent/services/agent_session_service.dart';
+import 'package:armin/features/agent/services/native_output_observer.dart';
 import 'package:armin/features/agent/services/runtime_policy.dart';
 import 'package:armin/features/agent/services/ssh_agent_session_service.dart';
 import 'package:armin/features/hosts/models/host_config.dart';
@@ -118,6 +119,7 @@ void main() {
     expect(command, contains('send-keys -t'));
     expect(command, contains('Enter'));
     expect(command, contains('stable_count'));
+    expect(command, contains('__ARMIN_SETTLED_CANDIDATE__'));
     expect(command, contains('stable_count" -ge 4'));
     expect(command, contains('last_stable_emitted_hash'));
     expect(command, contains('Allow execution of|Allow command execution'));
@@ -274,6 +276,7 @@ void main() {
     expect(command, contains('stable_count'));
     expect(command, contains('stable_count" -ge 4'));
     expect(command, contains('last_stable_emitted_hash'));
+    expect(command, contains('[ "1" -eq 1 ]'));
     expect(command, contains('initial_exit_marker_count'));
     expect(command, contains('exit_marker_count'));
     expect(command,
@@ -525,6 +528,68 @@ Apply this change?
     expect(outputs.last, contains('first line'));
     expect(outputs.last, contains('second line'));
     expect(outputs.last, isNot(contains('noise')));
+  });
+
+  test('settled candidate turns stable qoder deliverable into turn idle', () {
+    final service = SSHAgentSessionService();
+    final updates = service.streamingUpdatesForChunksForTest([
+      '''
+__ARMIN_SNAPSHOT_BEGIN__
+▪ ARMIN_VERIFY_BEGIN case_id=P26-D1 status=PASS ARMIN_VERIFY_END
+Credits exhausted. Use /usage for details or /upgrade for more.
+__ARMIN_SNAPSHOT_END__
+''',
+      '__ARMIN_SETTLED_CANDIDATE__\n',
+    ]);
+
+    expect(updates.last.turnIdle, isTrue);
+    expect(updates.last.done, isTrue);
+    expect(updates.last.runtimeLost, isFalse);
+  });
+
+  test('settled candidate ignores stale thinking chrome after final answer', () {
+    final service = SSHAgentSessionService();
+    final updates = service.streamingUpdatesForChunksForTest([
+      '''
+__ARMIN_SNAPSHOT_BEGIN__
+Thinking
+ │ File read successfully. No modifications needed.
+ ▪ ARMIN_VERIFY_BEGIN case_id=P26-D2 status=PASS next_action=COMPLETE ARMIN_VERIFY_END
+
+──────────────────────────────────────────────────────────────────────────
+ Auto Model · ctx ░░░░░░░░░░ 0% · ~/workspace/armin
+ ⠦ Thinking... (esc to cancel, 0s)
+ YOLO Shift+Tab to Auto Mode
+__ARMIN_SNAPSHOT_END__
+''',
+      '__ARMIN_SETTLED_CANDIDATE__\n',
+    ]);
+
+    expect(updates.last.turnIdle, isTrue);
+    expect(updates.last.done, isTrue);
+    expect(updates.last.observerState, NativeOutputObserverState.turnIdle);
+    expect(updates.last.cleanedOutput, contains('ARMIN_VERIFY_BEGIN'));
+  });
+
+  test('settled candidate keeps in-progress tool work running', () {
+    final service = SSHAgentSessionService();
+    final updates = service.streamingUpdatesForChunksForTest([
+      '''
+__ARMIN_SNAPSHOT_BEGIN__
+▪ 测试文件已创建，运行 pytest。
+
+▫ Bash(cd /Users/ironion/workspace/armin-test/file-renamer && python -m pytest test_renamer.py -v 2>&1)
+
+⠸ Thinking... (esc to cancel, 1m 2s)
+ YOLO Shift+Tab to Auto Mode
+__ARMIN_SNAPSHOT_END__
+''',
+      '__ARMIN_SETTLED_CANDIDATE__\n',
+    ]);
+
+    expect(updates.last.turnIdle, isFalse);
+    expect(updates.last.done, isFalse);
+    expect(updates.last.observerState, NativeOutputObserverState.running);
   });
 
   test('stream buffer keeps only a bounded tail window', () {

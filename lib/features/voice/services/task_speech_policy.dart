@@ -1,8 +1,6 @@
 import '../../../core/models/task_status.dart';
 import '../../runtime/models/approval_state.dart';
 import '../../tasks/models/task_session.dart';
-import '../../tasks/services/output_summary_provider.dart';
-import '../../tasks/services/turn_output_slicer.dart';
 import 'device_voice_service.dart';
 
 enum TaskSpeechKind {
@@ -78,14 +76,11 @@ class TaskSpeechDecision {
 class TaskSpeechPolicy {
   const TaskSpeechPolicy();
 
-  static const TurnOutputSlicer _turnOutputSlicer = TurnOutputSlicer();
-
   Future<TaskSpeechDecision> decide({
     required TaskSession previous,
     required TaskSession current,
     required TaskSpeechSettings settings,
-    OutputSummaryProvider outputSummaryProvider =
-        const RuleBasedOutputSummaryProvider(),
+    NativeTerminalApproval? approval,
   }) async {
     if (!settings.enabled) {
       return const TaskSpeechDecision.skip();
@@ -94,19 +89,16 @@ class TaskSpeechPolicy {
     if (kind == null || !_isKindEnabled(kind, settings)) {
       return const TaskSpeechDecision.skip();
     }
-    final speechText = await _speechTextFor(
-      current,
-      previous: previous,
-      outputSummaryProvider: outputSummaryProvider,
-    );
+    final speechText = _speechTextFor(current, approval);
     if (speechText.isEmpty) {
       return const TaskSpeechDecision.skip();
     }
     return TaskSpeechDecision(
       shouldSpeak: true,
       text: speechText,
-      hash:
-          '${current.status.name}:${current.turns.isEmpty ? 'noturn' : current.turns.last.id}',
+      hash: '${current.status.name}:'
+          '${current.turns.isEmpty ? 'noturn' : current.turns.last.id}:'
+          '${current.turns.isEmpty ? '' : current.turns.last.deliverable?.evidenceFingerprint ?? ''}',
       kind: kind,
       turnId: current.turns.isEmpty ? null : current.turns.last.id,
       turnIndex: current.turns.isEmpty ? null : _latestTurnIndex(current),
@@ -115,19 +107,13 @@ class TaskSpeechPolicy {
 
   Future<String> buildSpeechText(
     TaskSession task, {
-    OutputSummaryProvider outputSummaryProvider =
-        const RuleBasedOutputSummaryProvider(),
-  }) {
-    return _speechTextFor(task, outputSummaryProvider: outputSummaryProvider);
-  }
+    NativeTerminalApproval? approval,
+  }) async =>
+      _speechTextFor(task, approval);
 
-  Future<String> _speechTextFor(
-    TaskSession task, {
-    TaskSession? previous,
-    required OutputSummaryProvider outputSummaryProvider,
-  }) async {
+  String _speechTextFor(TaskSession task, NativeTerminalApproval? approval) {
     if (task.status == TaskStatus.needApproval) {
-      final approvalText = _approvalSpeechSource(task);
+      final approvalText = approval?.question.trim() ?? '';
       return _decorate(task.status, approvalText).trim();
     }
 
@@ -137,139 +123,32 @@ class TaskSpeechPolicy {
     }
 
     if (task.status == TaskStatus.needAttention) {
-      final promptText = task.nativeApproval?.question.trim() ?? '';
+      final promptText = approval?.question.trim() ?? '';
       if (promptText.isNotEmpty) {
         return _decorate(task.status, promptText).trim();
       }
-      final latestTurnText = await _latestTurnSpeechText(
-        task,
-        outputSummaryProvider: outputSummaryProvider,
-      );
+      final latestTurnText = _latestTurnSpeechText(task);
       return latestTurnText.isEmpty
           ? ''
           : _decorate(task.status, latestTurnText).trim();
     }
 
-    final latestTurnText = await _latestTurnSpeechText(
-      task,
-      outputSummaryProvider: outputSummaryProvider,
-    );
+    final latestTurnText = _latestTurnSpeechText(task);
     if (latestTurnText.isNotEmpty) {
       return _decorate(task.status, latestTurnText).trim();
     }
-
-    final source = _summarySource(task);
-    if (_isStaleSummaryFallback(task, previous, source)) {
-      return _decorate(task.status, '').trim();
-    }
-    final summary = await outputSummaryProvider.summarize(
-      OutputSummaryRequest(
-        cleanedOutput: source,
-        status: task.status,
-        taskTitle: task.title,
-        promptInputs: [
-          task.userText,
-          ...task.turns.map((turn) => turn.userInput),
-        ],
-        agentCommand: task.host.agentCommand,
-      ),
-    );
-    final cleaned = _speechTextFromDisplaySummary(summary);
-    return _decorate(task.status, cleaned).trim();
+    return '';
   }
 
-  Future<String> _latestTurnSpeechText(
-    TaskSession task, {
-    required OutputSummaryProvider outputSummaryProvider,
-  }) async {
+  String _latestTurnSpeechText(TaskSession task) {
     if (task.turns.isEmpty) {
       return '';
     }
-    final current = task.turns.last;
-    final source = _latestTurnOutputSource(task);
-    if (source.trim().isEmpty) {
-      return '';
-    }
-    final summary = await outputSummaryProvider.summarize(
-      OutputSummaryRequest(
-        cleanedOutput: source,
-        status: task.status,
-        taskTitle: task.title,
-        promptInputs: [current.userInput],
-        agentCommand: task.host.agentCommand,
-      ),
-    );
-    return _speechTextFromDisplaySummary(summary);
-  }
-
-  String _latestTurnOutputSource(TaskSession task) {
-    final index = task.turns.length - 1;
-    final rawOutput = _turnOutputSlicer.rawOutputForTurn(task.turns, index);
-    if (rawOutput.trim().isNotEmpty) {
-      return rawOutput;
-    }
-    return _turnOutputSlicer.outputForTurn(task.turns, index);
-  }
-
-  String _speechTextFromDisplaySummary(OutputSummary summary) {
-    final display = summary.displaySummary.trim();
-    if (display.isNotEmpty) {
-      // TODO: Replace full-text result speech with a dedicated summarizer
-      // only after card-copy quality is stable enough to avoid omissions.
-      return DeviceVoiceService.cleanSpeechText(display);
-    }
-    return DeviceVoiceService.cleanSpeechText(summary.speechSummary);
-  }
-
-  String _summarySource(TaskSession task) {
-    final summary = task.summary?.trim() ?? '';
-    if (summary.isNotEmpty) {
-      return summary;
-    }
-    final shortSummary = task.shortSummary.trim();
-    if (shortSummary.isNotEmpty) {
-      return shortSummary;
-    }
-    return task.nativeApproval?.question.trim().isNotEmpty == true
-        ? task.nativeApproval!.question.trim()
-        : '';
-  }
-
-  bool _isStaleSummaryFallback(
-    TaskSession current,
-    TaskSession? previous,
-    String source,
-  ) {
-    if (previous == null ||
-        source.trim().isEmpty ||
-        current.turns.isEmpty ||
-        previous.turns.isEmpty ||
-        _latestTurnIndex(current) <= _latestTurnIndex(previous)) {
-      return false;
-    }
-    final normalizedSource = _normalize(source);
-    if (normalizedSource == _normalize(_summarySource(previous))) {
-      return true;
-    }
-    return previous.turns.any((turn) {
-      return normalizedSource == _normalize(turn.cleanedOutput) ||
-          normalizedSource == _normalize(turn.rawOutput);
-    });
-  }
-
-  String _approvalSpeechSource(TaskSession task) {
-    final currentNativeApproval = task.nativeApproval;
-    if (currentNativeApproval != null &&
-        currentNativeApproval.question.trim().isNotEmpty) {
-      return currentNativeApproval.question.trim();
-    }
-    for (final approval in task.nativeApprovalRequests.reversed) {
-      if (approval.state == ApprovalState.pending &&
-          approval.question.trim().isNotEmpty) {
-        return approval.question.trim();
-      }
-    }
-    return '';
+    final deliverable = task.turns.last.deliverable;
+    if (deliverable == null) return '';
+    final speech = deliverable.speechSummary.trim();
+    final source = speech.isEmpty ? deliverable.displaySummary : speech;
+    return DeviceVoiceService.cleanSpeechText(source);
   }
 
   String _decorate(TaskStatus status, String text) {
@@ -317,10 +196,6 @@ class TaskSpeechPolicy {
       TaskSpeechKind.attention => settings.speakAttention,
       TaskSpeechKind.approval => settings.speakApprovalRequests,
     };
-  }
-
-  String _normalize(String text) {
-    return text.replaceAll(RegExp(r'\s+'), ' ').trim().toLowerCase();
   }
 
   int _latestTurnIndex(TaskSession task) {

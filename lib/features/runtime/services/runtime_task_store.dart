@@ -25,7 +25,6 @@ abstract class RuntimePersistenceStore implements RuntimeTaskStore {
 class InMemoryRuntimeTaskStore implements RuntimePersistenceStore {
   final Map<String, RuntimeTaskSnapshot> _tasks = {};
   final List<RuntimeEvent> _events = [];
-  final Map<String, WorkState> _workStates = {};
 
   @override
   Future<RuntimeTaskSnapshot?> loadTask(String taskId) async {
@@ -63,17 +62,23 @@ class InMemoryRuntimeTaskStore implements RuntimePersistenceStore {
 
   @override
   Future<void> saveWorkState(WorkState state) async {
-    _workStates[state.taskId] = state;
+    final task = _tasks[state.taskId];
+    if (task != null) {
+      _tasks[state.taskId] = task.copyWith(workState: state);
+    }
   }
 
   @override
   Future<WorkState?> loadWorkState(String taskId) async {
-    return _workStates[taskId];
+    return _tasks[taskId]?.workState;
   }
 
   @override
   Future<List<WorkState>> loadWorkStates() async {
-    return _workStates.values.toList(growable: false)
+    return _tasks.values
+        .map((task) => task.workState)
+        .whereType<WorkState>()
+        .toList(growable: false)
       ..sort((a, b) {
         final left = a.updatedAt ?? DateTime.fromMillisecondsSinceEpoch(0);
         final right = b.updatedAt ?? DateTime.fromMillisecondsSinceEpoch(0);

@@ -223,7 +223,12 @@ class AgentOutputCleaner {
         )
         .replaceAll(RegExp(r'\bAuto Model\b.*', caseSensitive: false), '')
         .replaceAll(
-          RegExp(r'\bShift\+Tab to Auto-accept Edits\b.*',
+          RegExp(r'(?:YOLO\s+)?\bShift\+Tab to Auto\b.*',
+              caseSensitive: false),
+          '',
+        )
+        .replaceAll(
+          RegExp(r'.*\besc to cancel\b.*',
               caseSensitive: false),
           '',
         )

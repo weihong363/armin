@@ -656,7 +656,7 @@ _AttentionEvent? _attentionEventFor(TaskSession task, [WorkState? workState]) {
       ),
     WorkPhase.needsReview => _AttentionEvent(
         task: task,
-        reason: _workStateReason(workState, _needAttentionReason(task)),
+        reason: _workStateReason(workState, _needAttentionReason(workState)),
         primaryAction: '查看',
         priority: 1,
       ),
@@ -676,8 +676,8 @@ _AttentionEvent? _attentionEventFor(TaskSession task, [WorkState? workState]) {
   };
 }
 
-String _needAttentionReason(TaskSession task) {
-  if (task.nativeApproval != null) {
+String _needAttentionReason(WorkState? workState) {
+  if (workState?.approval != null) {
     return '等待你的选择';
   }
   return '这个任务需要你关注';
@@ -1413,59 +1413,12 @@ class _ActivityFeedItem extends StatelessWidget {
   }
 }
 
-WorkPhase _workPhaseFor(WorkState? workState, TaskStatus fallbackStatus) {
-  if (workState != null) {
-    return workState.phase;
-  }
-  return switch (fallbackStatus) {
-    TaskStatus.draft || TaskStatus.pending => WorkPhase.idle,
-    TaskStatus.running => WorkPhase.working,
-    TaskStatus.paused => WorkPhase.quieting,
-    TaskStatus.needApproval => WorkPhase.needsApproval,
-    TaskStatus.turnIdle => WorkPhase.turnIdle,
-    TaskStatus.needAttention => WorkPhase.needsInstruction,
-    TaskStatus.observerDetached || TaskStatus.runtimeLost => WorkPhase.quieting,
-    TaskStatus.userCompleted || TaskStatus.completed => WorkPhase.completed,
-    TaskStatus.userFailed || TaskStatus.failed => WorkPhase.failed,
-    TaskStatus.stopped => WorkPhase.stopped,
-  };
+WorkPhase _workPhaseFor(WorkState? workState, TaskStatus _) {
+  return workState?.phase ?? WorkPhase.idle;
 }
 
 WorkState? _effectiveWorkStateFor(TaskSession task, WorkState? workState) {
-  if (workState == null) {
-    return null;
-  }
-  final phase = workState.phase;
-  if (phase == WorkPhase.idle &&
-      task.status != TaskStatus.draft &&
-      task.status != TaskStatus.pending) {
-    return null;
-  }
-  if (phase == WorkPhase.working &&
-      task.status != TaskStatus.running &&
-      task.status != TaskStatus.pending) {
-    return null;
-  }
-  if ((phase == WorkPhase.completed ||
-          phase == WorkPhase.failed ||
-          phase == WorkPhase.stopped) &&
-      !_isTaskTerminal(task.status)) {
-    return null;
-  }
   return workState;
-}
-
-bool _isTaskTerminal(TaskStatus status) {
-  return switch (status) {
-    TaskStatus.completed ||
-    TaskStatus.userCompleted ||
-    TaskStatus.failed ||
-    TaskStatus.userFailed ||
-    TaskStatus.stopped ||
-    TaskStatus.runtimeLost =>
-      true,
-    _ => false,
-  };
 }
 
 String _workStateReason(WorkState? workState, String fallback) {

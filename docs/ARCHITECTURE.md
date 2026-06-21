@@ -13,7 +13,7 @@ Session Manager Daemon 是向远端 Runtime daemon 架构演进的第一步，�
 ## 层级结构
 
 - `core/models`: 共享状态和跨功能值类型
-- `core/storage`: 历史存储抽象、内存实现和 JSON 文件持久化实现
+- `core/storage`: 历史存储抽象、内存测试实现和 SQLite 持久化实现
 - `features/voice`: STT/TTS 抽象、模拟语音服务和设备语音服务
 - `features/tasks`: 草稿模型、提示构建器、秘密信息脱敏、约束提取、状态流转和任务 UI
 - `features/agent`: 代理会话抽象、测试 mock、SSH/tmux 服务、原生输出清洗/观察与 legacy 解析器
@@ -23,7 +23,7 @@ Session Manager Daemon 是向远端 Runtime daemon 架构演进的第一步，�
 
 ## 本地存储
 
-测试可注入 `InMemoryTaskHistoryStore` 和 mock 服务。应用运行时通过 `ArminAppState.run()` 使用 `JsonTaskHistoryStore`、`DeviceVoiceService` 与 `SSHAgentSessionService`，并通过 `path_provider` 将 host、project path 和 task history 写入应用文档目录下的 `armin_history.json`。
+测试可注入 `InMemoryTaskHistoryStore` 和 mock 服务。应用运行时通过 `ArminAppState.run()` 使用 `SQLiteTaskHistoryStore`、`DeviceVoiceService` 与 `SSHAgentSessionService`。Host、project path、task history、Runtime 聚合和事件统一写入 `armin_runtime.db`；生产路径不存在 JSON Store。
 
 正常任务历史绝不能存储明文敏感值。Phase 2 只支持 SSH password 认证；`HostConfig.toJson()` 排除 password，`SecurePasswordStore` 通过 `flutter_secure_storage` 将密码存入平台安全存储，加载后仅在运行内存中传递给 SSH 请求。`privateKeyPath` 是兼容字段，不是默认执行路径。
 
@@ -49,8 +49,8 @@ AgentExecutionUpdate(
 2. 为新任务使用短且独立的 tmux session，例如 `armin-2800`。
 3. 在任务选择的 project path 中启动配置的 Agent：Codex 使用 `-C`，Qoder 使用 `-w`。
 4. 发送经 `PromptGovernor` 处理的用户提示。
-5. 按 `RuntimePolicy` 轮询有限范围的 `tmux capture-pane`，将收到的 raw output 写入历史；终态另取更完整的 final capture。
-6. 用 `AgentOutputCleaner` 生成展示/观察用输出，并由 `NativeOutputObserver` 判断 `outputQuieting`、`needAttention` 或 `runtimeLost`。
+5. 按 `RuntimePolicy` 轮询有限范围的 `tmux capture-pane`；稳定窗口发布 settled-candidate，attach-only 也检查当前静止快照。
+6. 用 `AgentOutputCleaner` 生成展示/观察用输出，并由 `NativeOutputObserver` 复核 settled-candidate，产生 `turnIdle`、`needAttention` 或 `runtimeLost` observation。
 7. `turnIdle` 保留 session 等待用户继续；暂停会停止手机端 observer 而保留 session，恢复会重新监听同一 session；用户标记完成、失败、停止或达到最长运行时限时，先 capture 最终日志，再 cleanup session。
 
 Armin 不负责代理的推理、规划、代码合并或调度。它仅管理 shell 级别的通信和可审计性。
@@ -91,7 +91,7 @@ Adapter 可以解析文本中的审批、等待输入、进度、交付结果和
 - `ConstraintExtractor`
 - `OutputSummaryProvider`
 
-旧的 `TaskResultParser` / `TASK_RESULT_*` 协议解析外壳已移除。产出摘要来自当前 turn 的原始/清洗输出和 `OutputSummaryProvider`，审批终端提示直接映射为 `NativeTerminalApproval`。测试覆盖 ANSI/TUI 清洗、turn idle/runtime lost、敏感信息脱敏、上下文治理、语音草稿和规则摘要。
+旧的 `TaskResultParser` / `TASK_RESULT_*` 协议解析外壳已移除。Runtime 对 current-turn evidence 调用一次 `OutputSummaryProvider`，将 display/speech summary 与 fingerprint 持久化为 `TurnDeliverable`；结果卡、手动朗读和自动 TTS 只读取该对象。审批终端提示直接映射为当前 `WorkState.approval`，TaskSession 审批列表只保留审计历史。
 
 ## 指标/事件层
 
@@ -103,7 +103,7 @@ Armin 适合采用轻量 Loop Engineering 视角：Plan → Execute → Observe 
 
 ### RuntimeEventBus（Phase 2.5）
 
-`RuntimeEventBus` 是 Bridge Runtime 的结构化事件流，承载 25 种事件类型，作为 UI 消费任务状态的主通道：
+`RuntimeEventBus` 是 Bridge Runtime 提交后的结构化通知流，承载 25 种事件类型。SQLite 中的 Runtime 聚合才是可恢复的状态真相源；EventBus 不承担持久化或冷启动恢复：
 
 - **任务生命周期**：`TASK_CREATED`、`TASK_STARTED`、`TASK_PROGRESS`、`TASK_WAITING_USER`、`TASK_COMPLETED`、`TASK_FAILED`、`TASK_CANCELLED`
 - **运行时控制**：`TASK_PAUSED`、`TASK_RESUMED`、`TASK_STOPPED`
@@ -112,7 +112,7 @@ Armin 适合采用轻量 Loop Engineering 视角：Plan → Execute → Observe 
 - **观察者与连接**：`OBSERVER_ATTACHED`、`OBSERVER_DETACHED`、`CONNECTION_LOST`、`CONNECTION_RESTORED`
 - **审查与等待**：`REVIEW_SUBMITTED`、`WAITING_FOR_INSTRUCTION`、`WAITING_FOR_REVIEW`、`WAITING_FOR_APPROVAL`
 
-事件流通过 `BridgeRuntime` 的 `_publish()` / `_publishDirect()` 写入，UI 通过 `ArminAppState.runtimeEvents` 流订阅。`TaskWatcher` 的字符串匹配状态推断降级为 fallback，不再作为状态权威。
+事件流通过 `BridgeRuntime` 的 `_publish()` / `_publishDirect()` 在状态提交后发出。首页和详情状态读取 snapshot；详情只用 Runtime 事件更新独立 progress 区域。`TaskWatcher` 只产出 observation，不作为状态权威。
 
 ## UI 结构
 
@@ -146,7 +146,7 @@ Armin 适合采用轻量 Loop Engineering 视角：Plan → Execute → Observe 
 
 ## Bridge Runtime（Phase 2.5）
 
-`BridgeRuntime` 是 Flutter 进程内的过渡 Runtime 实现，是任务状态收敛的主路径，但在 Phase 2.6 不能被视为已经覆盖所有旧能力的唯一写入源。它消费 SSH/tmux 输出流，通过 `TaskWatcher` 解析增量输出，经由 `RuntimeEventBus` 分发结构化事件，并派生 `WorkState` 和 `ApprovalState` 供 UI 消费。直到自动完成、自动等待用户、断线恢复和手动刷新等旧能力都有等价 Runtime 覆盖前，AppState 仍保留桥接和自动校准职责。长期方向是将持久化边界迁移至 SQLite，再逐步迁移至远端 Runtime daemon。
+`BridgeRuntime` 是 Flutter 进程内的 Runtime 状态归约与事件发布边界。AppState 将状态变化写入按 task 串行的 Runtime 队列；`TaskWatcher` 只解析当前增量证据，`RuntimeEventBus` 分发提交后的结构化通知，`WorkState` 和 `ApprovalState` 是当前 UI 语义来源。`WorkState` 嵌入 `runtime_tasks` 聚合记录，不再独立持久化；任务历史、Runtime 聚合和事件共享 `armin_runtime.db`。
 
 ### 核心组件
 
@@ -155,8 +155,8 @@ Armin 适合采用轻量 Loop Engineering 视角：Plan → Execute → Observe 
 | `BridgeRuntime` | 任务快照管理、状态转换、事件发布、reconcile 探测 |
 | `RuntimeEventBus` | 广播式事件流，25 种事件类型 |
 | `RuntimeSessionManager` | Session 创建/恢复、task-to-session 映射、状态生命周期（active → detached → destroyed） |
-| `TaskWatcher` | 增量输出解析、偏移量追踪、进度/动作/检查点提取、兼容性 fallback |
-| `RuntimeTaskStore` | 任务快照持久化接口（当前内存实现，SQLite 接口已预留） |
+| `TaskWatcher` | 增量输出解析、偏移量追踪、进度/动作/检查点提取 |
+| `RuntimeTaskStore` | SQLite Runtime 聚合与 event 持久化；WorkState 嵌入聚合 |
 
 ### WorkState 与 ApprovalState
 
@@ -220,7 +220,7 @@ Loop Engineering 在 Armin 中的边界是单任务闭环优化：更清楚地�
 
 ## Phase 2.6 结果迁移架构
 
-结果、TTS 和诊断应逐步迁移到同一套 deliverable 数据契约，但不能让 UI 同步路径承担重解析工作。迁移执行顺序和验收标准统一维护在 [legacy-cleanup-checklist.md](runtime/legacy-cleanup-checklist.md)。架构上只保留三层边界：
+结果、TTS 和诊断使用同一套 deliverable 数据契约，UI 同步路径不承担重解析工作。迁移执行和验收标准统一维护在 [legacy-cleanup-checklist.md](runtime/legacy-cleanup-checklist.md)。架构只保留三层边界：
 
 | 层 | 同步性 | 职责 | 禁止事项 |
 |----|--------|------|----------|
@@ -228,9 +228,7 @@ Loop Engineering 在 Armin 中的边界是单任务闭环优化：更清楚地�
 | Resolved Summary Layer | 异步、可缓存 | 对 evidence 做过滤和摘要生成，产出 `displaySummary` / `speechSummary` / provenance | 不阻塞 build / Tab 切换 / 任务完成状态更新 |
 | Speech Source Layer | 异步优先，复用 resolved summary | 手动朗读和自动 TTS 复用 resolved `speechSummary`，缺失时读清洗后的 `displaySummary` | 不从 prompt、running snapshot、reconnect snapshot 或 legacy summary 推导 latest result |
 
-目标数据契约中，`rawOutput` / `cleanedOutput` 是 resolver evidence，不是产品层 deliverable；`task.summary` / `shortSummary` 不作为 deliverable 兜底，没有当前 turn / event evidence 时，UI 显示暂无结果或明确状态提示。结果卡片、手动朗读和自动 TTS 已接入运行期共享 resolver/cache；后续在正常任务真机验收通过后移除 legacy summary fallback，并将 provenance 从 turn id / evidence fingerprint 升级为 event-linked identity。
-
-当前 `TaskDeliverableResolver` 统一负责异步解析、有界缓存和 in-flight 去重，结果页继续通过首帧后调度与轻量页面缓存避免阻塞 Tab；结果卡片和 TTS 不再各自执行一套摘要解析。当前缺口是代码中仍存在 `summary` / `shortSummary` fallback，且 provenance 尚未关联 Runtime deliverable event identity。Phase 2.6 负责在行为与性能门禁通过后完成 fallback 移除和 event-linked provenance；完整 payload 的 SQLite 持久化和跨重启恢复属于 Phase 3。
+`rawOutput` / `cleanedOutput` 是 resolver evidence，不是产品层 deliverable；`task.summary` / `shortSummary` 不作为 deliverable 兜底。解析结果先作为 `TurnDeliverable` 持久化，再发布关联 turn id 和 evidence fingerprint 的 `DELIVERABLE_UPDATED`；结果卡片、手动朗读和自动 TTS 读取同一个 display/speech payload。
 
 所有阶段的架构迁移、替换和重大重构都由 [Armin 核心行为与性能基线](runtime/core-behavior-performance-baseline.md) 约束。新的主路径只有在状态、任务控制、结果/TTS、交互响应和持久化成本均满足基线后，才能替代并移除旧路径。
 

@@ -36,7 +36,7 @@ Phase 2 必须跑通一个真实且可持续交互的循环：
 -> 完整的本地历史
 ```
 
-第一阶段的 mock 服务仅用于测试与早期验证。应用现在默认使用 `DeviceVoiceService`、`SSHAgentSessionService` 和 `JsonTaskHistoryStore` 的真实链路。
+第一阶段的 mock 服务仅用于测试与早期验证。应用现在默认使用 `DeviceVoiceService`、`SSHAgentSessionService` 和 `SQLiteTaskHistoryStore` 的真实链路。
 
 ## 非目标
 
@@ -94,7 +94,7 @@ Phase 2 必须跑通一个真实且可持续交互的循环：
 - `usage`（用途）
 - `scope: current_task_only`（范围：仅限当前任务）
 
-历史仅存储名称、用途、范围和 `[REDACTED]`。提示预览仅显示占位符。Host SSH password 不写入普通 JSON 历史，通过 `flutter_secure_storage` 使用平台安全存储保存，并仅在运行时加载到内存。
+历史仅存储名称、用途、范围和 `[REDACTED]`。提示预览仅显示占位符。Host SSH password 不写入 SQLite 任务 payload，通过 `flutter_secure_storage` 使用平台安全存储保存，并仅在运行时加载到内存。
 
 脱敏器必须检测令牌、密码、私钥、cookie、API 密钥、访问密钥和秘密模式。
 
@@ -114,7 +114,7 @@ Armin 拥有 shell 级别的会话抽象，而不是代理运行时：
 
 长期 Runtime 方向中，`tmux capture-pane` 只能作为观察输入，不能作为状态权威。短时间无新增输出或 pane 稳定只能表示 `outputQuieting` / `no visible update`；`turnIdle`、结果卡片和 TTS 播报应由 Runtime Event、SQLite 中的 durable state、明确等待用户输入、审批状态或 adapter 识别的强完成信号驱动。
 
-Codex / Qoder 是 TUI 程序，因此文本解析不可避免。规范要求解析边界集中在 Runtime Watcher / Agent Adapter：Adapter 只解析当前观察基线之后的新增文本，产出 `ApprovalRequested`、`TurnWaitingUser`、`DeliverableUpdated`、`ProcessExited` 等候选事件；Runtime reducer 再基于新增事件和持久化状态归约任务状态。长期上，完整 pane capture 不应直接产生状态变更事件；Phase 2.6 过渡期内，它仍可作为自动 reconcile 输入，但必须先经过增量证据、marker count、fingerprint 或 event id 去重，再由统一状态归约路径更新 `TaskSession.status` / `WorkState`。
+Codex / Qoder 是 TUI 程序，因此文本解析不可避免。解析边界集中在 Runtime Watcher / Agent Adapter：Adapter 只解析当前观察基线之后的新增文本，产出候选事件；Runtime reducer 再基于新增事件和持久化状态归约任务状态。完整 pane capture 只能作为 reconcile observation，必须经过 offset、marker count、fingerprint 或 event id 去重后进入同一状态队列。
 
 状态触发型事件必须具备“当前观察窗口的新证据”。旧 pane 中残留的 exit marker、approval prompt、terminal option prompt、thinking 文本、旧结果或 prompt echo 不能重新进入 reducer，不能触发 `needAttention`、`turnIdle`、结果卡片或自动 TTS。若需要从完整 capture 恢复状态，必须通过 offset、marker count、event id 或内容 fingerprint 做去重。
 
@@ -200,14 +200,14 @@ Armin 的 Loop Engineering 边界是单任务循环：Plan → Execute → Obser
 
 - UI 同步路径不得做大字符串切片、summary、TTS 清洗、raw log 扫描或 prompt echo 判断。
 - 任务完成、等待用户、运行时中断等状态必须能自动刷新；不能要求用户手动刷新才能从 `running` / `Agent started` 进入可验收状态。
-- RuntimeEventBus / WorkState 尚未覆盖完整前，parser / tmux capture 仍可作为自动 reconcile 输入，但必须遵守增量证据、marker count、fingerprint 或 event id 去重。
-- WorkState 是 UI 语义增强，不得长期掩盖与 `TaskSession.status` 冲突的真实可操作状态。
+- parser / tmux capture 只作为自动 reconcile observation，并遵守增量证据、marker count、fingerprint 或 event id 去重。
+- WorkState 是当前 UI 状态和审批语义来源；状态提交必须按 task 串行，不能由 UI fallback 修正竞态。
 - 没有当前 turn / event evidence 时，结果页不伪造 deliverable；`task.summary` / `shortSummary` 不能作为结果兜底。
 - latest turn deliverable 不得来自 prompt echo、thinking、旧 turn、running snapshot、reconnect snapshot 或 legacy summary。
 - `rawOutput` / `cleanedOutput` 只能作为 resolver evidence，最终展示和 TTS 应消费 resolved `displaySummary` / `speechSummary`。
-- 手动朗读和自动 TTS 的迁移必须以真机验证为门槛，不能为了同源牺牲旧有可用性和性能。
+- 手动朗读和自动 TTS 必须通过相同基线验证，不能为了同源牺牲可用性和性能。
 
-当前实现状态：结果卡片、手动朗读和自动 TTS 已复用同一个运行期 `ResolvedDeliverable` resolver/cache；规则摘要在后台 isolate 中执行，并具有有界缓存、in-flight 去重和结果页首帧后调度，高频输出事件也不触发持久化或全局重建。尚未完成的是 deliverable 场景中 `summary` / `shortSummary` fallback 的移除和 event-linked provenance；前者必须等待正常 deliverable 真机链路验证通过。完整 resolved payload 的 SQLite 持久化与跨重启恢复不属于 Phase 2.6，延后到 Phase 3。
+当前实现状态：Runtime 在 current-turn evidence 确认后异步解析一次并持久化 `TurnDeliverable`；结果卡片、手动朗读和自动 TTS 只消费该对象，`summary` / `shortSummary` fallback 已移除。`DELIVERABLE_UPDATED` 在持久化后携带 turn id 与 evidence fingerprint 发布，高频输出事件不持久化也不重建首页。
 
 所有阶段中，任何 Runtime、状态、结果、TTS、observer、reconcile、持久化或 UI 核心变更都必须满足 [Armin 核心行为与性能基线](runtime/core-behavior-performance-baseline.md)。基线失败表示方案尚未达到功能等价或性能等价，不能以架构收口、技术升级或进入新阶段为理由接受回归，也不能通过降低基线完成迁移。
 

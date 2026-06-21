@@ -87,6 +87,32 @@ Credits exhausted. Use /usage for details or /upgrade for more.
     expect(snapshot.turnIdle, isTrue);
   });
 
+  test('settled final answer is not kept running by trailing thinking chrome',
+      () {
+    final observer = NativeOutputObserver(
+      idleThreshold: const Duration(seconds: 1),
+    );
+    const output = '''
+Thinking
+ │ File read successfully. No modifications needed.
+ ▪ ARMIN_VERIFY_BEGIN case_id=P26-D2 status=PASS next_action=COMPLETE ARMIN_VERIFY_END
+
+──────────────────────────────────────────────────────────────────────────
+ Auto Model · ctx ░░░░░░░░░░ 0% · ~/workspace/armin
+ ⠸ Thinking... (esc to cancel, 1m 2s)
+ YOLO Shift+Tab to Auto Mode
+''';
+
+    final snapshot = observer.observeSettled(
+      output,
+      now: DateTime(2026, 5, 23, 12),
+    );
+
+    expect(snapshot.state, NativeOutputObserverState.turnIdle);
+    expect(snapshot.needsAttention, isFalse);
+    expect(snapshot.turnIdle, isTrue);
+  });
+
   test('credits exhausted is not hidden by trailing yolo status chrome', () {
     final observer = NativeOutputObserver(
       idleThreshold: const Duration(seconds: 1),

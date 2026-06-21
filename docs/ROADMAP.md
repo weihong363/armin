@@ -17,7 +17,7 @@
 
 - 真实 SSH/password 与 tmux 会话实现
 - 真实 STT/TTS 集成和按住说话
-- Host、project path 与 JSON 历史存储；password 使用平台安全存储
+- Host、project path 与 SQLite 任务历史；password 使用平台安全存储
 - Codex CLI / Qoder CLI 的可配置真实执行
 - 每任务短 tmux session、原生输出清洗观察与 `turnIdle` 状态
 - legacy 结构化结果仅保留为摘要输入，不再自动完成任务或清理 session
@@ -106,11 +106,11 @@ Survey / 社区验证方向：
 
 ### Phase 2.6：Runtime 收口与交互效率评估
 
-不新增复杂工作流，也不引入多 Agent 编排。Phase 2.6 的收口目标不是“为了合并而合并”，而是在不破坏现有交互体验的前提下，把 Phase 2.5 的任务执行主链路逐步迁移为可度量、可复盘的单任务循环。
+不新增复杂工作流，也不引入多 Agent 编排。Phase 2.6 直接把 Phase 2.5 的任务执行主链路收口为可度量、可复盘的单任务循环；功能和性能由全阶段基线保证，出现回归时回滚版本，不并行维护旧实现。
 
-迁移执行步骤、半迁移态约束和验收标准统一维护在 [legacy-cleanup-checklist.md](runtime/legacy-cleanup-checklist.md)。Roadmap 只记录方向：RuntimeEventBus + WorkState 逐步成为状态、审批、结果和 TTS 的主路径；parser / tmux capture 在 Runtime 覆盖完整前仍保留为 observation input、自动 reconcile fallback 和审计恢复输入，而不是为了迁移被提前删除。deliverable 继续向 event-linked evidence → resolved summary 演进，任何迁移都不能牺牲任务完成后的自动状态刷新、Tab 切换、结果页首帧、手动朗读和自动 TTS。
+迁移执行步骤和验收标准统一维护在 [legacy-cleanup-checklist.md](runtime/legacy-cleanup-checklist.md)。RuntimeEventBus + WorkState 是状态、审批和结果事件的主路径；parser / tmux capture 只提供当前观察窗口的新证据和 reconcile 输入，不形成第二套状态或结果路径。
 
-当前实现已经具备共享的运行期 `ResolvedDeliverable` resolver/cache：结果卡片、手动朗读和自动 TTS 复用同一来源，规则摘要在后台 isolate 执行，并保留页面级有界缓存、in-flight 去重、首帧后调度和高频 `OUTPUT_UPDATED` memory-only 分发。Phase 2.6 不重复建设这些能力；下一步只在正常 deliverable 真机链路稳定后移除 legacy summary fallback，再补齐 event-linked provenance、Runtime/WorkState 与自动 reconcile 的一致性验收。完整 deliverable SQLite payload、跨重启恢复和 watcher event replay 归入 Phase 3。
+当前结果卡片、手动朗读和自动 TTS 只使用持久化的 current-turn `TurnDeliverable`；没有 evidence 时不从 `summary` / `shortSummary` 补造结果。`DELIVERABLE_UPDATED` 在结果持久化后发布并携带 turn id 与 evidence fingerprint，高频 `OUTPUT_UPDATED` 经过节流且只在内存分发。Watcher event replay 归入 Phase 3。
 
 所有阶段的核心功能变更统一受 [Armin 核心行为与性能基线](runtime/core-behavior-performance-baseline.md) 约束。状态自动刷新、任务控制、审批、每 turn 结果、朗读同源、Tab 响应、高频输出成本和有界数据增长均属于不可因迁移、重构或架构升级而退化的能力；不满足基线的实现必须暂停并重新评估，而不是继续推进或清理旧路径。
 

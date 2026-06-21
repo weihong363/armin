@@ -9,6 +9,34 @@ enum NativeOutputTurnStatus {
   stopped,
 }
 
+class TurnDeliverable {
+  const TurnDeliverable({
+    required this.displaySummary,
+    required this.speechSummary,
+    required this.evidenceFingerprint,
+  });
+
+  final String displaySummary;
+  final String speechSummary;
+  final String evidenceFingerprint;
+
+  factory TurnDeliverable.fromJson(Map<String, Object?> json) {
+    return TurnDeliverable(
+      displaySummary: json['displaySummary'] as String? ?? '',
+      speechSummary: json['speechSummary'] as String? ?? '',
+      evidenceFingerprint: json['evidenceFingerprint'] as String? ?? '',
+    );
+  }
+
+  Map<String, Object?> toJson() {
+    return {
+      'displaySummary': displaySummary,
+      'speechSummary': speechSummary,
+      'evidenceFingerprint': evidenceFingerprint,
+    };
+  }
+}
+
 class NativeOutputTurn {
   const NativeOutputTurn({
     required this.id,
@@ -22,6 +50,7 @@ class NativeOutputTurn {
     required this.status,
     this.idleDetectedAt,
     this.userDecision,
+    this.deliverable,
   });
 
   final String id;
@@ -35,6 +64,7 @@ class NativeOutputTurn {
   final DateTime? idleDetectedAt;
   final NativeOutputTurnStatus status;
   final String? userDecision;
+  final TurnDeliverable? deliverable;
 
   factory NativeOutputTurn.fromJson(Map<String, Object?> json) {
     return NativeOutputTurn(
@@ -49,6 +79,7 @@ class NativeOutputTurn {
       idleDetectedAt: _nullableDate(json['idleDetectedAt']),
       status: _statusFromJson(json['status']),
       userDecision: json['userDecision'] as String?,
+      deliverable: _deliverableFromJson(json['deliverable']),
     );
   }
 
@@ -64,6 +95,8 @@ class NativeOutputTurn {
     DateTime? idleDetectedAt,
     NativeOutputTurnStatus? status,
     String? userDecision,
+    TurnDeliverable? deliverable,
+    bool clearDeliverable = false,
   }) {
     return NativeOutputTurn(
       id: id ?? this.id,
@@ -77,6 +110,7 @@ class NativeOutputTurn {
       idleDetectedAt: idleDetectedAt ?? this.idleDetectedAt,
       status: status ?? this.status,
       userDecision: userDecision ?? this.userDecision,
+      deliverable: clearDeliverable ? null : deliverable ?? this.deliverable,
     );
   }
 
@@ -93,8 +127,16 @@ class NativeOutputTurn {
       'idleDetectedAt': idleDetectedAt?.toIso8601String(),
       'status': status.name,
       'userDecision': userDecision,
+      'deliverable': deliverable?.toJson(),
     };
   }
+}
+
+TurnDeliverable? _deliverableFromJson(Object? value) {
+  if (value is! Map) return null;
+  return TurnDeliverable.fromJson(
+    value.map((key, item) => MapEntry(key.toString(), item)),
+  );
 }
 
 DateTime _date(Object? value) {

@@ -202,6 +202,14 @@ void main() {
     final subscription = eventBus.events.listen(events.add);
     final now = DateTime(2026, 6, 7, 10);
 
+    await store.saveTask(
+      RuntimeTaskSnapshot(
+        taskId: 'task-1',
+        status: RuntimeTaskStatus.running,
+        createdAt: now,
+        updatedAt: now,
+      ),
+    );
     runtime.notifyOutputUpdated('task-1', now: now);
     await Future<void>.delayed(Duration.zero);
 
@@ -218,12 +226,19 @@ void main() {
     );
     expect(await store.loadEvents(taskId: 'task-1'), isEmpty);
 
-    runtime.notifyDeliverableUpdated('task-1', now: now);
-    await Future<void>.delayed(Duration.zero);
+    await runtime.notifyDeliverableUpdated(
+      'task-1',
+      now: now,
+      deliverableSummary: 'Done',
+      turnId: 'turn-1',
+      evidenceFingerprint: 'abc123',
+    );
 
     final persisted = await store.loadEvents(taskId: 'task-1');
     expect(persisted, hasLength(1));
     expect(persisted.single.type, RuntimeEventType.deliverableUpdated);
+    expect(persisted.single.turnId, 'turn-1');
+    expect(persisted.single.evidenceFingerprint, 'abc123');
 
     await subscription.cancel();
     await eventBus.dispose();

@@ -7,7 +7,10 @@ import 'package:armin/features/hosts/models/host_config.dart';
 import 'package:armin/features/projects/models/project_path_config.dart';
 import 'package:armin/features/runtime/models/approval_state.dart';
 import 'package:armin/features/runtime/models/work_state.dart';
+import 'package:armin/features/tasks/models/metric_event.dart';
+import 'package:armin/features/tasks/models/native_output_turn.dart';
 import 'package:armin/features/tasks/models/task_session.dart';
+import 'package:armin/features/voice/services/voice_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 
@@ -34,8 +37,8 @@ void main() {
   final taskIds = <String>[];
 
   Future<void> pumpApp(WidgetTester tester) async {
-    state = ArminAppState.run();
-    addTearDown(() => state.dispose());
+    // Inject silent voice service so non-B07 gates never trigger real TTS.
+    state = ArminAppState.run(voiceService: const _SilentVoiceService());
     await tester.pumpWidget(ArminApp(state: state));
     await waitUntil(
       tester,
@@ -80,10 +83,30 @@ void main() {
   }
 
   tearDown(() async {
+    // 1. Stop observers and clean up remote tmux sessions.
     for (final taskId in taskIds.reversed) {
-      await cleanupTask(state, taskId);
+      final task =
+          state.tasks.where((item) => item.id == taskId).firstOrNull;
+      if (task == null) continue;
+      try {
+        await state.agentSessionService.cleanup(controlRequest(state, task));
+      } catch (_) {
+        // Best-effort cleanup; preserve the original gate failure.
+      }
+      final latest =
+          state.tasks.where((item) => item.id == taskId).firstOrNull;
+      if (latest != null && !_isTerminal(latest.status)) {
+        await state.updateTaskStatus(latest, TaskStatus.stopped);
+      }
     }
     taskIds.clear();
+
+    // 2. Drain pending observer subscriptions and Runtime sync chains
+    //    so no async callback fires after dispose.
+    await state.drainForTest();
+
+    // 3. Dispose last.
+    state.dispose();
   });
 
   group('B01 - automatic state convergence', () {
@@ -403,7 +426,7 @@ TaskSession buildTask({
     id: taskId,
     host: host,
     title: marker,
-    status: TaskStatus.pending,
+    status: TaskStatus.running,
     createdAt: now,
     updatedAt: now,
     startedAt: now,
@@ -416,6 +439,33 @@ TaskSession buildTask({
     secretRecords: const [],
     rawLog: '',
     approvalMode: approvalMode,
+    turns: [
+      NativeOutputTurn(
+        id: 'turn-$taskId-1',
+        taskId: taskId,
+        turnIndex: 1,
+        userInput: prompt,
+        rawOutput: '',
+        cleanedOutput: '',
+        startedAt: now,
+        lastOutputAt: now,
+        status: NativeOutputTurnStatus.running,
+      ),
+    ],
+    metricEvents: [
+      MetricEvent.create(
+        taskId: taskId,
+        eventType: 'task_created',
+        payloadJson: '{"source":"gate_test"}',
+        now: now,
+      ),
+      MetricEvent.create(
+        taskId: taskId,
+        eventType: 'task_started',
+        payloadJson: '{"agent_command":"${host.agentCommand}"}',
+        now: now,
+      ),
+    ],
   );
 }
 
@@ -568,20 +618,6 @@ Future<RemoteTaskProbe> waitForRemoteMarker(
   throw TestFailure('Timed out waiting for remote marker $marker.');
 }
 
-Future<void> cleanupTask(ArminAppState state, String taskId) async {
-  final task = state.tasks.where((item) => item.id == taskId).firstOrNull;
-  if (task == null) return;
-  try {
-    await state.agentSessionService.cleanup(controlRequest(state, task));
-  } catch (_) {
-    // Preserve the original gate failure; cleanup is best effort.
-  }
-  final latest = state.tasks.where((item) => item.id == taskId).firstOrNull;
-  if (latest != null && !_isTerminal(latest.status)) {
-    await state.updateTaskStatus(latest, TaskStatus.stopped);
-  }
-}
-
 bool _isTerminal(TaskStatus status) {
   return switch (status) {
     TaskStatus.completed ||
@@ -618,4 +654,32 @@ Future<void> expectResponsiveTab(
     lessThan(const Duration(seconds: 1)),
     reason: '$tabLabel did not respond within one second',
   );
+}
+
+// ── Silent voice service (no-op) for non-B07 gate tests ────────────
+
+class _SilentVoiceService implements VoiceService {
+  const _SilentVoiceService();
+
+  @override
+  bool get isAvailable => true;
+
+  @override
+  Future<String> listenOnce() async => '';
+
+  @override
+  Future<void> speakSummary(String summary) async {}
+
+  @override
+  Future<void> pauseSpeaking() async {}
+
+  @override
+  Future<void> stopSpeaking() async {}
+
+  @override
+  Future<void> startListening(
+      {void Function(String partial)? onPartial}) async {}
+
+  @override
+  Future<String> stopListening() async => '';
 }

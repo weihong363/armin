@@ -215,6 +215,30 @@ class ArminAppState extends ChangeNotifier {
     super.dispose();
   }
 
+  /// Wait for in-flight observer subscriptions and Runtime sync chains to
+  /// settle so that no async callback can fire after dispose.
+  ///
+  /// Only intended for integration test teardown; not part of the
+  /// production lifecycle.
+  Future<void> drainForTest() async {
+    // 1. Cancel and wait for all observer subscriptions.
+    final subscriptions = Map<String, StreamSubscription<AgentExecutionUpdate>>.of(_runningExecutions);
+    for (final entry in subscriptions.entries) {
+      await entry.value.cancel();
+      _runningExecutions.remove(entry.key);
+    }
+    _autoDetachTimers.values.toList(growable: false).forEach((t) => t.cancel());
+    _autoDetachTimers.clear();
+
+    // 2. Wait for per-task Runtime sync chains to drain.
+    if (_runtimeSyncChains.isNotEmpty) {
+      await Future.wait(_runtimeSyncChains.values.toList(growable: false));
+    }
+
+    // 3. Allow a microtask tick for any remaining callbacks to flush.
+    await Future<void>.delayed(Duration.zero);
+  }
+
   Future<void> saveHost(HostConfig host) async {
     final blockingIds = activeTasks
         .where((t) => t.host.id == host.id)

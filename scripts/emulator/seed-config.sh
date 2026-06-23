@@ -146,6 +146,7 @@ info "seed complete — hosts and projects written to ${DB_FILE}"
 # To store a password: ./scripts/emulator/store-host-password.sh
 
 SEED_PW_FILE="/data/local/tmp/armin_seed_passwords.json"
+APP_PW_FILE="/data/data/${APP_ID}/files/armin_seed_passwords.json"
 SEED_PW_TMP="/tmp/armin_seed_pw.json"
 rm -f "${SEED_PW_TMP}"
 
@@ -185,6 +186,11 @@ else:
 if [[ -f "${SEED_PW_TMP}" ]]; then
   info "pushing password seed to ${DEVICE_ID}..."
   "${ADB}" -s "${DEVICE_ID}" push "${SEED_PW_TMP}" "${SEED_PW_FILE}"
+  "${ADB}" -s "${DEVICE_ID}" shell "
+    run-as ${APP_ID} mkdir -p /data/data/${APP_ID}/files
+    run-as ${APP_ID} cp ${SEED_PW_FILE} ${APP_PW_FILE}
+    rm -f ${SEED_PW_FILE}
+  "
   rm -f "${SEED_PW_TMP}"
 fi
 

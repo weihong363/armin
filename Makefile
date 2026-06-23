@@ -55,3 +55,7 @@ integration-test: emulator-seed
 		--driver=test_driver/integration_test.dart \
 		--target=integration_test/app_test.dart \
 		-d emulator-5554
+	flutter drive \
+		--driver=test_driver/integration_test.dart \
+		--target=integration_test/runtime_gate_test.dart \
+		-d emulator-5554

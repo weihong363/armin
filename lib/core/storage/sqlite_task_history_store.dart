@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/cupertino.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
 
 import '../../features/hosts/models/host_config.dart';
@@ -80,8 +82,10 @@ class SQLiteTaskHistoryStore extends TaskHistoryStore {
     // Only supported on Android (emulator dev workflow).
     if (!Platform.isAndroid) return;
 
-    const seedPath = '/data/local/tmp/armin_seed_passwords.json';
-    final seedFile = File(seedPath);
+    final supportDirectory = await getApplicationSupportDirectory();
+    final seedFile = File(
+      '${supportDirectory.path}/armin_seed_passwords.json',
+    );
     if (!await seedFile.exists()) return;
 
     try {
@@ -96,8 +100,10 @@ class SQLiteTaskHistoryStore extends TaskHistoryStore {
       }
       // Delete the seed file after successful import.
       await seedFile.delete();
-    } catch (_) {
-      // Seed file is malformed or inaccessible; silently ignore.
+    } catch (e) {
+      // Seed file is malformed or inaccessible.
+      // Log the error so CI/emulator tests can detect credential failures.
+      debugPrint('importSeedPasswords failed: $e');
     }
   }
 

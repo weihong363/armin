@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 
-/// Armin 模拟器集成回归测试。
+/// Armin 模拟器集成回归测试（冷启动与导航冒烟）。
 ///
 /// 运行前必须先用 seed-config.sh 初始化模拟器数据库：
 ///   DEVICE_ID=emulator-5554 ./scripts/emulator/seed-config.sh
@@ -15,12 +15,13 @@ import 'package:integration_test/integration_test.dart';
 ///     --target=integration_test/app_test.dart \
 ///     -d emulator-5554
 ///
-/// 这些测试覆盖核心行为基线 B01、B09 的模拟器验证。
+/// 覆盖 B09（导航不抢占用户）的模拟器验证。
+/// B01-B04、B06、P06 的真实 SSH 自动化门禁见 runtime_gate_test.dart。
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
-  // ── B01 / B09: App 冷启动后首页正常渲染 ──────────────────────────
+  // ── B09: App 冷启动后首页正常渲染 ─────────────────────────────────
   group('Home screen — cold start', () {
     testWidgets('renders Armin header and empty inbox', (tester) async {
       await _pumpApp(tester);

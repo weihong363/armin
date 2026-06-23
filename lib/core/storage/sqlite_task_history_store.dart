@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:sqflite/sqflite.dart';
 
@@ -14,7 +15,7 @@ import 'task_history_store.dart';
 /// Shares the `armin_runtime.db` database owned by
 /// [SQLiteRuntimePersistenceStore]. The runtime store must be initialized
 /// first so the history tables already exist.
-class SQLiteTaskHistoryStore implements TaskHistoryStore {
+class SQLiteTaskHistoryStore extends TaskHistoryStore {
   SQLiteTaskHistoryStore({
     required SQLiteRuntimePersistenceStore runtimeStore,
     SecurePasswordStore? passwordStore,
@@ -67,6 +68,37 @@ class SQLiteTaskHistoryStore implements TaskHistoryStore {
     final db = await _db();
     await db.delete('hosts', where: 'host_id = ?', whereArgs: [hostId]);
     await _passwordStore.deletePassword(hostId);
+  }
+
+  // ─── [DEV-ONLY] Emulator seed password import ───────────────────────
+  //
+  // This is NOT a production feature. It only runs on Android when
+  // seed-config.sh has pushed a temporary password file to the emulator.
+  // See TaskHistoryStore.importSeedPasswords() for the full contract.
+  @override
+  Future<void> importSeedPasswords() async {
+    // Only supported on Android (emulator dev workflow).
+    if (!Platform.isAndroid) return;
+
+    const seedPath = '/data/local/tmp/armin_seed_passwords.json';
+    final seedFile = File(seedPath);
+    if (!await seedFile.exists()) return;
+
+    try {
+      final content = await seedFile.readAsString();
+      final map = jsonDecode(content) as Map<String, dynamic>;
+      for (final entry in map.entries) {
+        final hostId = entry.key;
+        final password = entry.value as String;
+        if (password.isNotEmpty) {
+          await _passwordStore.savePassword(hostId, password);
+        }
+      }
+      // Delete the seed file after successful import.
+      await seedFile.delete();
+    } catch (_) {
+      // Seed file is malformed or inaccessible; silently ignore.
+    }
   }
 
   // ─── Task Sessions ─────────────────────────────────────────────────

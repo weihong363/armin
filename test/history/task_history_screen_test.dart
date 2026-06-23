@@ -70,8 +70,8 @@ TaskSession _task() {
   );
 }
 
-class _HistoryStore implements TaskHistoryStore {
-  const _HistoryStore(this.task);
+class _HistoryStore extends TaskHistoryStore {
+  _HistoryStore(this.task);
 
   final TaskSession task;
 

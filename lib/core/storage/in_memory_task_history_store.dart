@@ -3,7 +3,7 @@ import '../../features/projects/models/project_path_config.dart';
 import '../../features/tasks/models/task_session.dart';
 import 'task_history_store.dart';
 
-class InMemoryTaskHistoryStore implements TaskHistoryStore {
+class InMemoryTaskHistoryStore extends TaskHistoryStore {
   InMemoryTaskHistoryStore();
 
   final List<HostConfig> _hosts = [];

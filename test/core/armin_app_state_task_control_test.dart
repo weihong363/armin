@@ -2010,7 +2010,7 @@ ProjectPathConfig _projectPath({
   );
 }
 
-class _TaskStore implements TaskHistoryStore {
+class _TaskStore extends TaskHistoryStore {
   _TaskStore(
     this.task, {
     List<HostConfig>? hosts,

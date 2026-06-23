@@ -1859,7 +1859,7 @@ TurnDeliverable _deliverable(String display, {String? speech}) {
   );
 }
 
-class _TaskStore implements TaskHistoryStore {
+class _TaskStore extends TaskHistoryStore {
   _TaskStore(this.task, {this.projectPaths = const []});
 
   TaskSession task;

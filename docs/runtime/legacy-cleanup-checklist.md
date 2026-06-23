@@ -27,7 +27,7 @@
 | 项目 | 状态 | 当前实现 |
 |---|---|---|
 | Runtime 状态提交 | 已完成 | `saveTask` 将状态变化加入 per-task 串行队列；任务执行不等待 Runtime I/O |
-| Turn settled 收敛 | 已完成 | 稳定 pane 发布 `__ARMIN_SETTLED_CANDIDATE__`；Observer 复核强信号后提交 `turnIdle`，attach-only 同样检查静止快照 |
+| Turn settled 收敛 | 修复中 | Observer 已能复核 settled candidate，但远端 monitor 仍使用原始 pane hash 判断稳定；动态 spinner/footer 可能阻止 candidate 发布，B01 真机通过前不得标记完成 |
 | 启动状态旁路 | 已移除 | `running` 由统一 Runtime 状态同步触发 `startTask` |
 | Observer stream-close 推断 | 已移除 | stream 结束不直接判 `runtimeLost`，由持续 reconcile 使用新增证据判定 |
 | 高频输出事件 | 已完成 | 250ms 节流，仅发布 memory-only `OUTPUT_UPDATED` |
@@ -36,8 +36,8 @@
 | 结果/TTS fallback | 已移除 | 结果卡、手动朗读和自动 TTS 只读取同一 `TurnDeliverable`；无结果时保持空白或静默 |
 | 当前审批来源 | 已完成 | 当前审批卡、命令和 TTS 读取 `WorkState.approval`；历史记录不可重新激活审批 |
 | 持久化 | 已完成 | `WorkState` 嵌入 `runtime_tasks` 聚合；独立 `runtime_work_states` 表和 JSON Store 已删除 |
-| 自动化验证 | 已完成 | `flutter analyze` 通过；`flutter test` 396 passed、5 skipped（仅跳过缺少 SSH 环境变量的真实连接测试） |
-| 模拟器验证 | 部分完成 | APK 安装、冷启动、新 SQLite 空任务库、Host/Project fixture 加载通过；远程执行等待测试 SSH 凭据 |
+| 自动化验证 | 部分完成 | `flutter analyze` 和当前可运行测试通过，5 个真实 SSH 测试因缺少环境变量跳过；现有测试未覆盖动态 TUI chrome 持续变化时的远端 settled candidate 发布 |
+| 模拟器验证 | 部分完成 | APK 安装、冷启动无 crash、Host/Project fixture 加载通过、DB schema 正确、logcat 无 Armin 异常；remote SSH 任务端到端验证待人工执行 |
 
 ## 不得重新引入
 
@@ -53,11 +53,16 @@
 
 ## 验证清单
 
-- [x] `flutter test`（396 passed，5 skipped；跳过项为缺少测试 SSH 环境变量的真实连接测试）
+执行 Agent 必须遵守 [模拟器验收判定规则](core-behavior-performance-baseline.md#模拟器验收判定规则)。`BLOCKED` 不计为通过；无 ANR、进程存活、单次 Tab 可点击或远端 tmux 出现结果都不能代替对应门禁证据。报告必须包含实际设备、task/turn id、tmux session、双侧时间戳证据和 `manual_refresh_used`。
+
+- [x] `flutter test`（400 passed，5 skipped；跳过项为缺少测试 SSH 环境变量的真实连接测试）
 - [x] `flutter analyze`
 - [x] `git diff --check`
-- [ ] `emulator-5554`：状态自动收敛且不手动刷新
-- [ ] `emulator-5554`：Turn 2 不复用 Turn 1 结果
-- [ ] `emulator-5554`：动态/产出/高级 Tab 连续切换无冻结
-- [ ] `emulator-5554`：审批、暂停、恢复、断开监听和重新监听可操作
-- [ ] 人工听取：结果卡片、手动朗读和自动 TTS 同源
+- [x] `emulator-5554`：冷启动无 crash、DB schema 正确、logcat 无 Armin 异常
+- [ ] `emulator-5554`：状态自动收敛且不手动刷新（B01）— 远端最终 marker 与 Armin 自动状态变化必须分别取证
+- [ ] `emulator-5554`：同 session follow-up 连续执行且状态不回退（B02）— Turn 1/2、session 和 observer 事件必须可关联
+- [ ] `emulator-5554`：safe/balanced/aggressive 审批完整可操作（B03）— 识别、发送、解决和历史一致性缺一不可
+- [ ] `emulator-5554`：暂停/恢复、断开/重新监听、停止、标记完成、标记失败和 cleanup（B04）— 使用独立任务覆盖全部子用例
+- [ ] `emulator-5554`：Turn 2 不复用 Turn 1 结果（B06）— 以结果卡片和持久化 deliverable 判定，不以原始 timeline 判定
+- [ ] 人工听取或可靠录音转写：结果卡片、手动朗读和自动 TTS 同源（B07）— 仅“有声音”不能通过
+- [ ] `emulator-5554`：streaming、settled 和状态切换期间各完成 5 轮 Tab 循环（P06）— 每次响应小于 1 秒且不能以丢状态换性能

@@ -171,6 +171,10 @@ class ArminAppState extends ChangeNotifier {
 
   Future<void> load() async {
     await bridgeRuntime.restoreDurableState();
+    // [DEV-ONLY] Import seed passwords before loading hosts.
+    // This is a no-op in production. Only the Android emulator workflow
+    // (seed-config.sh) places a temporary password file on the device.
+    await _store.importSeedPasswords();
     hosts = await _store.loadHosts();
     tasks = await _loadDedupedTasks();
     projectPaths = await _store.loadProjectPaths();

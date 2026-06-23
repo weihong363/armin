@@ -1,4 +1,31 @@
-.PHONY: emulator-start emulator-ready emulator-check-network emulator-install emulator-smoke-test emulator-reset
+.PHONY: emulator-start emulator-ready emulator-check-network emulator-install emulator-smoke-test emulator-reset emulator-seed
+.PHONY: analyze test test-fast coverage ci-check integration-test
+
+# ── Static Analysis ──────────────────────────────────────────────
+
+analyze:
+	flutter analyze
+
+# ── Tests ─────────────────────────────────────────────────────────
+
+test:
+	flutter test --exclude-tags real_ssh
+
+test-fast:
+	flutter test --exclude-tags real_ssh,slow
+
+# ── Coverage ──────────────────────────────────────────────────────
+
+coverage:
+	flutter test --coverage --exclude-tags real_ssh
+	@echo "Coverage report: coverage/lcov.info"
+
+# ── CI Check (local) ──────────────────────────────────────────────
+
+ci-check: analyze test-fast
+	@echo "✅ CI checks passed"
+
+# ── Emulator ──────────────────────────────────────────────────────
 
 emulator-start:
 	./scripts/emulator/start.sh
@@ -17,3 +44,14 @@ emulator-smoke-test:
 
 emulator-reset:
 	./scripts/emulator/reset.sh
+
+emulator-seed:
+	DEVICE_ID=emulator-5554 ./scripts/emulator/seed-config.sh
+
+# ── Integration Test ───────────────────────────────────────────────
+
+integration-test: emulator-seed
+	flutter drive \
+		--driver=test_driver/integration_test.dart \
+		--target=integration_test/app_test.dart \
+		-d emulator-5554

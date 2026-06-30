@@ -258,6 +258,49 @@ Thinking
     expect(decision.shouldSpeak, isTrue);
   });
 
+  test('auto speech hash is stable when only evidence fingerprint changes',
+      () async {
+    final previous = _task(status: TaskStatus.running);
+    final first = previous.copyWith(
+      status: TaskStatus.turnIdle,
+      turns: [
+        _turnWithInput(1, '输出项目名').copyWith(
+          deliverable: const TurnDeliverable(
+            displaySummary: 'countdown_widgets',
+            speechSummary: 'countdown_widgets',
+            evidenceFingerprint: 'pane-a',
+          ),
+        ),
+      ],
+    );
+    final second = first.copyWith(
+      turns: [
+        first.turns.single.copyWith(
+          deliverable: const TurnDeliverable(
+            displaySummary: 'countdown_widgets',
+            speechSummary: 'countdown_widgets',
+            evidenceFingerprint: 'pane-b',
+          ),
+        ),
+      ],
+    );
+
+    final firstDecision = await policy.decide(
+      previous: previous,
+      current: first,
+      settings: settings,
+    );
+    final secondDecision = await policy.decide(
+      previous: first,
+      current: second,
+      settings: settings,
+    );
+
+    expect(firstDecision.shouldSpeak, isTrue);
+    expect(secondDecision.shouldSpeak, isTrue);
+    expect(secondDecision.hash, firstDecision.hash);
+  });
+
   test('auto speech reads all displayed card text without compacting',
       () async {
     final previous = _task(status: TaskStatus.running);

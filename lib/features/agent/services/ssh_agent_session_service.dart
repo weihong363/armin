@@ -18,6 +18,9 @@ import 'runtime_policy.dart';
 class SSHAgentSessionService
     implements AgentSessionService, RemoteTaskProbeService {
   static const _staleExitMarker = '__ARMIN_STALE_EXIT_MARKER__';
+  static const _monitorScriptVersion = 'phase2.6-settled-v4';
+  static const _monitorDiagnosticsVerbose =
+      bool.fromEnvironment('ARMIN_MONITOR_DIAG_VERBOSE');
   static const _controlCommandTimeout = Duration(seconds: 15);
   static const _controlConnectionIdleTimeout = Duration(seconds: 20);
 
@@ -158,6 +161,7 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
           .transform(utf8.decoder)
           .listen((text) {
         if (controller.isClosed) return;
+        _debugPrintRuntimeDiagnostics(text);
         output.write(text);
         final update = _buildStreamingUpdate(text, output, observer);
         controller.add(update);
@@ -171,6 +175,7 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
           .transform(utf8.decoder)
           .listen((text) {
         if (controller.isClosed) return;
+        _debugPrintRuntimeDiagnostics(text);
         output.write(text);
         final update = _buildStreamingUpdate(text, output, observer);
         controller.add(update);
@@ -225,7 +230,7 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
             final terminalPrompt = promptState.terminalPrompt;
             final snapshot = observer.observeSettled(observedOutput);
             final hasSettledState = snapshot.turnIdle ||
-                snapshot.needsAttention ||
+                snapshot.runtimeLost ||
                 terminalPrompt != null;
             if (hasSettledState) {
               controller.add(
@@ -235,8 +240,7 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
                   observerState: snapshot.state,
                   turnIdle: snapshot.turnIdle,
                   runtimeLost: snapshot.runtimeLost,
-                  needsAttention:
-                      terminalPrompt != null || snapshot.needsAttention,
+                  needsAttention: terminalPrompt != null,
                   nativeApproval: _nativeApprovalFromPrompt(terminalPrompt),
                   done: true,
                 ),
@@ -256,27 +260,11 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
             await controller.close();
             return;
           }
-          final finalRawOutput = output.rawOutputForLatestUpdate(fallback: '');
-          final promptState = output.promptState(
-            terminalPromptParser: _terminalPromptParser,
-            candidateOutput: finalRawOutput,
-          );
-          final terminalPrompt = promptState.terminalPrompt;
-          final snapshot = observer.observeSettled(observedOutput);
-          final shouldFinishUpdate = snapshot.turnIdle ||
-              snapshot.runtimeLost ||
-              snapshot.needsAttention ||
-              terminalPrompt != null;
           controller.add(
-            AgentExecutionUpdate(
-              rawOutput: '',
-              cleanedOutput: snapshot.cleanedOutput,
-              observerState: snapshot.state,
-              turnIdle: snapshot.turnIdle,
-              runtimeLost: snapshot.runtimeLost,
-              needsAttention: terminalPrompt != null || snapshot.needsAttention,
-              nativeApproval: _nativeApprovalFromPrompt(terminalPrompt),
-              done: shouldFinishUpdate,
+            _buildStreamCompletionUpdate(
+              output: output,
+              observer: observer,
+              observedOutput: observedOutput,
             ),
           );
           await controller.close();
@@ -298,26 +286,135 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
   ) {
     final rawOutput = output.rawOutputForLatestUpdate(fallback: chunk);
     final observedOutput = output.observedText;
-    final snapshot = output.consumeSettledCandidate()
+    final settled = output.consumeSettledCandidate();
+    final snapshot = settled
         ? observer.observeSettled(observedOutput)
         : observer.observe(observedOutput);
     final promptState = output.promptState(
       terminalPromptParser: _terminalPromptParser,
       candidateOutput: rawOutput,
     );
-    final terminalPrompt = promptState.terminalPrompt;
+    final terminalPrompt = snapshot.state == NativeOutputObserverState.running
+        ? null
+        : promptState.terminalPrompt;
+    final hasSettledOutput = _hasSettledTurnEvidence(snapshot.cleanedOutput);
+    final turnIdle = settled && snapshot.turnIdle && hasSettledOutput;
+    final observerState =
+        snapshot.state == NativeOutputObserverState.turnIdle && !turnIdle
+            ? NativeOutputObserverState.outputQuieting
+            : snapshot.state;
     return AgentExecutionUpdate(
       rawOutput: rawOutput,
       cleanedOutput: snapshot.cleanedOutput,
-      observerState: snapshot.state,
+      observerState: observerState,
       runtimeLost: snapshot.runtimeLost,
       needsAttention: terminalPrompt != null || snapshot.needsAttention,
       nativeApproval: _nativeApprovalFromPrompt(terminalPrompt),
-      turnIdle: snapshot.turnIdle,
-      done: snapshot.turnIdle ||
-          snapshot.runtimeLost ||
-          snapshot.needsAttention ||
-          terminalPrompt != null,
+      turnIdle: turnIdle,
+      done: turnIdle || snapshot.runtimeLost || terminalPrompt != null,
+    );
+  }
+
+  bool _hasSettledTurnEvidence(String cleanedOutput) {
+    final lines = cleanedOutput
+        .split('\n')
+        .map((line) => line.trim())
+        .where((line) => line.isNotEmpty);
+    var hasAgentLine = false;
+    for (final line in lines) {
+      if (_looksLikeArminMarkerLine(line)) {
+        return true;
+      }
+      if (!line.startsWith('▪')) {
+        continue;
+      }
+      hasAgentLine = true;
+      final content = line.replaceFirst(RegExp(r'^▪\s*'), '').trim();
+      if (_looksLikeFinalAgentLine(content)) {
+        return true;
+      }
+    }
+    return hasAgentLine && lines.any(_looksLikeCompletionLine);
+  }
+
+  bool _looksLikeArminMarkerLine(String line) {
+    return RegExp(
+      r'\bARMIN_[A-Z0-9_]*_BEGIN\b.*\bARMIN_[A-Z0-9_]*_END\b',
+    ).hasMatch(line);
+  }
+
+  bool _looksLikeFinalAgentLine(String line) {
+    if (line.isEmpty) {
+      return false;
+    }
+    final lower = line.toLowerCase();
+    if (_looksLikePlanningLine(lower) || _looksLikeToolTrace(line)) {
+      return false;
+    }
+    return true;
+  }
+
+  bool _looksLikePlanningLine(String lower) {
+    return lower.startsWith('let me ') ||
+        lower.startsWith('first, ') ||
+        lower.startsWith('next, ') ||
+        lower.startsWith('now ') ||
+        lower.startsWith('i will ') ||
+        lower.startsWith("i'll ") ||
+        lower.startsWith('i need to ') ||
+        lower.startsWith('i am going to ') ||
+        lower.startsWith("i'm going to ") ||
+        lower.contains(' let me ') ||
+        lower.startsWith('让我') ||
+        lower.startsWith('我先') ||
+        lower.startsWith('我会') ||
+        lower.startsWith('我将');
+  }
+
+  bool _looksLikeToolTrace(String line) {
+    return RegExp(
+      r'^(?:Read|Write|Edit|MultiEdit|Glob|Grep|Bash|List|LS|Cat)\s*\(',
+      caseSensitive: false,
+    ).hasMatch(line);
+  }
+
+  bool _looksLikeCompletionLine(String line) {
+    final lower = line.toLowerCase();
+    return lower.contains('completed') ||
+        lower.contains('done') ||
+        lower.contains('ready') ||
+        lower.contains('status=pass') ||
+        lower.contains('完成') ||
+        lower.contains('通过') ||
+        lower.contains('就绪');
+  }
+
+  AgentExecutionUpdate _buildStreamCompletionUpdate({
+    required _ExecutionOutputState output,
+    required NativeOutputObserver observer,
+    required String observedOutput,
+  }) {
+    final finalRawOutput = output.rawOutputForLatestUpdate(fallback: '');
+    final promptState = output.promptState(
+      terminalPromptParser: _terminalPromptParser,
+      candidateOutput: finalRawOutput,
+    );
+    final snapshot = observer.observe(observedOutput);
+    final terminalPrompt = snapshot.state == NativeOutputObserverState.running
+        ? null
+        : promptState.terminalPrompt;
+    final observerState = snapshot.state == NativeOutputObserverState.turnIdle
+        ? NativeOutputObserverState.outputQuieting
+        : snapshot.state;
+    return AgentExecutionUpdate(
+      rawOutput: '',
+      cleanedOutput: snapshot.cleanedOutput,
+      observerState: observerState,
+      turnIdle: false,
+      runtimeLost: snapshot.runtimeLost,
+      needsAttention: terminalPrompt != null,
+      nativeApproval: _nativeApprovalFromPrompt(terminalPrompt),
+      done: snapshot.runtimeLost || terminalPrompt != null,
     );
   }
 
@@ -735,7 +832,7 @@ $tmux send-keys -t "\$pane" C-m$clearHistory
     final staleExitPolls =
         (const Duration(seconds: 10).inMilliseconds + delayMs - 1) ~/ delayMs;
     final monitorStart = -runtimePolicy.monitorCaptureLines;
-    final allowInitialStable = request.attachOnly ? 1 : 0;
+    const monitorDiagnosticsVerbose = _monitorDiagnosticsVerbose ? 1 : 0;
     final approvalPromptPattern = _approvalPromptPattern(profile);
     final sessionSetup = request.attachOnly
         ? '''
@@ -780,32 +877,76 @@ sleep 0.2
 $tmux send-keys -t $session Enter
 ''';
     final script = '''
-set -eu
+set -e
 $sessionSetup
 emit_armin_snapshot() {
   printf "\\n__ARMIN_SNAPSHOT_BEGIN__\\n"
   printf "%s\\n" "\$pane_output"
   printf "__ARMIN_SNAPSHOT_END__\\n"
 }
-pipe_dir="\$(mktemp -d "\${TMPDIR:-/tmp}/armin-pipe.XXXXXX")"
-pipe_file="\$pipe_dir/pane.out"
-mkfifo "\$pipe_file"
-pane_id="\$($tmux display-message -p -t $session '#{pane_id}')"
-cleanup_armin_pipe() {
-  $tmux pipe-pane -t "\$pane_id" 2>/dev/null || true
-  rm -rf "\$pipe_dir"
+ARMIN_DIAG_VERBOSE=$monitorDiagnosticsVerbose
+armin_diag_verbose() {
+  if [ "\$ARMIN_DIAG_VERBOSE" -eq 1 ]; then
+    echo "ARMIN_DIAG: \$*"
+  fi
 }
-trap cleanup_armin_pipe EXIT INT TERM
-cat "\$pipe_file" &
-pipe_cat_pid=\$!
-$tmux pipe-pane -t "\$pane_id" 2>/dev/null || true
-$tmux pipe-pane -t "\$pane_id" "cat > \\"\$pipe_file\\""
+
+# ── Deterministic semantic pane hash ────────────────────────────
+# Normalises \r, ANSI escapes, dynamic TUI chrome, trailing whitespace
+# and empty lines before computing SHA-1.
+armin_pane_semantic() {
+  if ! command -v perl >/dev/null 2>&1; then
+    echo "ARMIN_DIAG: FATAL perl is required for semantic pane filtering" >&2
+    return 1
+  fi
+  perl -CSDA -0ne '
+    s/\\r/\\n/g;
+    s/\\e\\[[0-?]*[ -\\/]*[@-~]//g;
+    s/[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F\\x7F]//g;
+    for my \$line (split /\\n/) {
+      next if \$line =~ /\\besc to cancel\\b/i;
+      \$line =~ s/\\bType your message or \\@path\\/to\\/file\\b.*//i;
+      \$line =~ s/(?:YOLO\\s+)?\\bShift\\+Tab to Auto(?:-accept Edits| Mode)?\\b.*//i;
+      \$line =~ s/\\bAuto Model\\b.*//i;
+      \$line =~ s/\\b(?:Auto\\s+)?Model\\b\\s*[·.].*//i;
+      \$line =~ s/\\bctx\\b.*//i;
+      \$line =~ s/[\\s\\x{2800}-\\x{28ff}]*Thinking[. …]*(?:\\([^)]*\\))?.*//i;
+      \$line =~ s/Credits exhausted\\..*//i;
+      \$line =~ s/Use \\/usage for details.*//i;
+      \$line =~ s/Use \\/upgrade for more.*//i;
+      \$line =~ s/[░█▁▂▃▄▅▆▇▀━─]+//g;
+      \$line =~ s/[\\x{2800}-\\x{28ff}]//g;
+      \$line =~ s/[ \\t]+\$//;
+      next if \$line =~ /^\\s*(?:[·.])?\\s*(?:\\d+%|ctx\\b).*\\s*\$/i;
+      next if \$line =~ /^[\\s·.\\-|%0-9:\\/~_]+\$/;
+      next if \$line =~ /^\\s*\$/;
+      print "\$line\\n";
+    }
+  '
+}
+
+armin_pane_hash() {
+  armin_pane_semantic \\
+  | shasum | awk '{print \$1}'
+}
+
+# ── Hash validation (must be exactly 40 hex chars) ─────────────
+_validate_hash() {
+  if [ -z "\$1" ] || ! printf "%s" "\$1" | grep -Eq '^[0-9a-f]{40}\$'; then
+    echo "ARMIN_DIAG: FATAL hash=\$1 (expected 40-char hex)"
+    exit 1
+  fi
+}
 initial_output="\$($tmux capture-pane -p -t $session -S $monitorStart 2>/dev/null || true)"
-initial_hash="\$(printf "%s" "\$initial_output" | shasum | awk "{print \\\$1}")"
+initial_hash="\$(printf "%s" "\$initial_output" | armin_pane_hash)"
+_validate_hash "\$initial_hash"
+armin_diag_verbose "initial_hash=\$initial_hash stablePolls=$stablePolls"
+echo "ARMIN_DIAG: monitor_version=$_monitorScriptVersion"
 initial_exit_marker_count="\$(printf "%s" "\$initial_output" | grep -c "Armin ${profile.label} exited with status" || true)"
 initial_attention_marker_count="\$(printf "%s" "\$initial_output" | grep -E -i -c ${_shellQuote(approvalPromptPattern)} || true)"
 last_hash="\$initial_hash"
 last_emitted_hash="\$initial_hash"
+STABLE_POLLS=$stablePolls
 $promptSubmit
 stable_count=0
 stale_exit_polls=0
@@ -813,18 +954,14 @@ last_stable_emitted_hash=""
 changed_after_start=0
 i=0
 while [ "\$i" -lt $maxPolls ]; do
-  if ! kill -0 "\$pipe_cat_pid" 2>/dev/null; then
-    if ! $tmux has-session -t $session 2>/dev/null; then
-      echo "Armin could not capture tmux pane because session ${_shellQuote(request.tmuxSessionName)} is not running."
-    fi
-    break
-  fi
-  pane_output="\$($tmux capture-pane -p -t $session -S $monitorStart 2>/dev/null || true)"
-  if [ -z "\$pane_output" ] && ! $tmux has-session -t $session 2>/dev/null; then
+  if ! $tmux has-session -t $session 2>/dev/null; then
+    echo "ARMIN_DIAG: BREAK_SESSION_LOST i=\$i"
     echo "Armin could not capture tmux pane because session ${_shellQuote(request.tmuxSessionName)} is not running."
     break
   fi
-  current_hash="\$(printf "%s" "\$pane_output" | shasum | awk "{print \\\$1}")"
+  pane_output="\$($tmux capture-pane -p -t $session -S $monitorStart 2>/dev/null || true)"
+  current_hash="\$(printf "%s" "\$pane_output" | armin_pane_hash)"
+  _validate_hash "\$current_hash"
   snapshot_emitted=0
   if [ "\$current_hash" != "\$initial_hash" ]; then
     changed_after_start=1
@@ -834,6 +971,30 @@ while [ "\$i" -lt $maxPolls ]; do
   else
     stable_count=0
     last_hash="\$current_hash"
+  fi
+  if [ "\$i" -lt 20 ]; then
+    armin_diag_verbose "i=\$i cur=\${current_hash:0:12} changed=\$changed_after_start st=\$stable_count last=\${last_hash:0:12}"
+  fi
+  if [ "\$stable_count" -ge "\$STABLE_POLLS" ] && [ "\$changed_after_start" -eq 1 ]; then
+    armin_diag_verbose "PRE_SETTLED i=\$i ch=\$changed_after_start st=\$stable_count se=\$snapshot_emitted lsh=\${last_stable_emitted_hash:0:12} chash=\${current_hash:0:12}"
+    if [ "\$current_hash" != "\$last_stable_emitted_hash" ]; then
+      armin_diag_verbose "EMITTING_SETTLED"
+      if [ "\$current_hash" != "\$last_emitted_hash" ]; then
+        armin_diag_verbose "SNAPSHOT_BEFORE_SETTLED i=\$i hash=\${current_hash:0:12}"
+        emit_armin_snapshot
+        snapshot_emitted=1
+        last_emitted_hash="\$current_hash"
+      else
+        armin_diag_verbose "REUSE_SETTLED_SNAPSHOT i=\$i hash=\${current_hash:0:12}"
+      fi
+      armin_diag_verbose "BEFORE_SETTLED_CANDIDATE i=\$i"
+      printf "%s\\n" "${_ExecutionOutputState.settledCandidateForTest}"
+      armin_diag_verbose "AFTER_SETTLED_CANDIDATE i=\$i"
+      armin_diag_verbose "SETTLED i=\$i hash=\${current_hash:0:12}"
+      last_stable_emitted_hash="\$current_hash"
+    else
+      armin_diag_verbose "SKIP_SETTLED_ALREADY_EMITTED i=\$i hash=\${current_hash:0:12}"
+    fi
   fi
   if [ "\$current_hash" != "\$last_emitted_hash" ]; then
     emit_armin_snapshot
@@ -849,11 +1010,13 @@ while [ "\$i" -lt $maxPolls ]; do
     if [ "\$snapshot_emitted" -eq 0 ]; then
       emit_armin_snapshot
     fi
+    echo "ARMIN_DIAG: BREAK_AGENT_EXITED i=\$i"
     break
   fi
   if [ "\$initial_exit_marker_count" -gt 0 ] && [ "\$exit_marker_count" -eq "\$initial_exit_marker_count" ] && [ "\$changed_after_start" -eq 0 ]; then
     stale_exit_polls=\$((stale_exit_polls + 1))
     if [ "\$stale_exit_polls" -ge $staleExitPolls ]; then
+      echo "ARMIN_DIAG: BREAK_STALE_EXIT i=\$i"
       echo "$_staleExitMarker"
       break
     fi
@@ -864,28 +1027,22 @@ while [ "\$i" -lt $maxPolls ]; do
   if [ "\$attention_marker_count" -gt "\$initial_attention_marker_count" ]; then
     if [ "\$snapshot_emitted" -eq 0 ]; then
       emit_armin_snapshot
+      snapshot_emitted=1
     fi
-    break
+    echo "ARMIN_DIAG: ATTENTION_SNAPSHOT i=\$i"
   fi
-  if { [ "\$changed_after_start" -eq 1 ] || [ "$allowInitialStable" -eq 1 ]; } && [ "\$stable_count" -ge $stablePolls ]; then
-    if [ "\$snapshot_emitted" -eq 0 ] && [ "\$current_hash" != "\$last_stable_emitted_hash" ]; then
-      emit_armin_snapshot
-      printf "%s\\n" "${_ExecutionOutputState.settledCandidateForTest}"
-      last_stable_emitted_hash="\$current_hash"
-    fi
-  fi
+  armin_diag_verbose "CHECK i=\$i changed=\$changed_after_start st=\$stable_count STABLE_POLLS=\$STABLE_POLLS"
   if [ "\$i" -eq ${maxPolls - 1} ]; then
     if [ "\$snapshot_emitted" -eq 0 ]; then
       emit_armin_snapshot
     fi
+    echo "ARMIN_DIAG: BREAK_RUNTIME_LIMIT i=\$i"
     echo "Armin runtime limit reached while session ${_shellQuote(request.tmuxSessionName)} remains active."
     break
   fi
   i=\$((i + 1))
   sleep ${delayMs / 1000}
 done
-$tmux pipe-pane -t "\$pane_id" 2>/dev/null || true
-wait "\$pipe_cat_pid" 2>/dev/null || true
 ''';
     return _wrapRemoteCommand(
       script,
@@ -896,6 +1053,23 @@ wait "\$pipe_cat_pid" 2>/dev/null || true
 
   RuntimePolicy _runtimePolicyFor(AgentExecutionRequest request) {
     return _runtimePolicy.forApprovalMode(request.approvalConfig?.mode);
+  }
+
+  void _debugPrintRuntimeDiagnostics(String text) {
+    for (final line in _runtimeDiagnosticLines(text)) {
+      debugPrint(line);
+    }
+  }
+
+  List<String> _runtimeDiagnosticLines(String text) {
+    if (!text.contains('ARMIN_DIAG:')) {
+      return const [];
+    }
+    return const LineSplitter()
+        .convert(text)
+        .where((line) => line.contains('ARMIN_DIAG:'))
+        .map((line) => line.trimRight())
+        .toList(growable: false);
   }
 
   String _buildConnectionTestCommand(AgentConnectionTestRequest request) {
@@ -997,6 +1171,11 @@ fi
   }
 
   @visibleForTesting
+  List<String> runtimeDiagnosticLinesForTest(String text) {
+    return _runtimeDiagnosticLines(text);
+  }
+
+  @visibleForTesting
   String buildConnectionTestCommandForTest(AgentConnectionTestRequest request) {
     return _buildConnectionTestCommand(request);
   }
@@ -1080,17 +1259,41 @@ fi
 
   @visibleForTesting
   List<AgentExecutionUpdate> streamingUpdatesForChunksForTest(
-    List<String> chunks,
-  ) {
+    List<String> chunks, {
+    Duration idleThreshold = const Duration(milliseconds: 1),
+  }) {
     final output = _ExecutionOutputState();
     final observer = NativeOutputObserver(
       cleaner: _cleaner,
-      idleThreshold: const Duration(milliseconds: 1),
+      idleThreshold: idleThreshold,
     );
     return chunks.map((chunk) {
       output.write(chunk);
       return _buildStreamingUpdate(chunk, output, observer);
     }).toList(growable: false);
+  }
+
+  @visibleForTesting
+  AgentExecutionUpdate streamCompletionUpdateForTextForTest(
+    String text, {
+    Duration idleThreshold = const Duration(milliseconds: 1),
+  }) {
+    final output = _ExecutionOutputState();
+    output.write(
+      '\n${_ExecutionOutputState.snapshotBeginForTest}\n'
+      '$text\n'
+      '${_ExecutionOutputState.snapshotEndForTest}\n',
+    );
+    final observer = NativeOutputObserver(
+      cleaner: _cleaner,
+      idleThreshold: idleThreshold,
+    );
+    observer.observe(output.observedText);
+    return _buildStreamCompletionUpdate(
+      output: output,
+      observer: observer,
+      observedOutput: output.observedText,
+    );
   }
 
   @visibleForTesting
@@ -1148,7 +1351,7 @@ fi
         workspaceFlag: '-w',
         readyPattern: r'Qoder|qoder|/help|/status|workspace|>',
         approvalPromptPattern:
-            r'Permission Required|Apply this change|Allow once|Reject and type something|Approve|Proceed|Continue',
+            r'Permission Required|Apply this change|Allow once|Reject and type something',
         skipCodexUpdatePrompt: false,
       );
     }
@@ -1164,7 +1367,7 @@ fi
 
   String _approvalPromptPattern(_AgentRuntimeProfile profile) {
     const genericInteractivePattern =
-        r'([0-9]{1,2}[.)][[:space:]]*(Allow|Reject|Approve|Yes|No|Continue|Proceed))|([>❯][[:space:]]*[0-9]{1,2}[.)])|((permission|approval|confirm|allow|reject|proceed|continue).{0,80}[?？])|((waiting for|asking).{0,40}(user|input))';
+        r'([0-9]{1,2}[.)][[:space:]]*(Allow|Reject|Yes|No))|([>❯][[:space:]]*[0-9]{1,2}[.)])|((permission|approval|confirm|allow|reject).{0,80}[?？])|((waiting for|asking).{0,40}(user|approval|permission))';
     return '$genericInteractivePattern|${profile.approvalPromptPattern}';
   }
 

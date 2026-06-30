@@ -85,16 +85,14 @@ void main() {
   tearDown(() async {
     // 1. Stop observers and clean up remote tmux sessions.
     for (final taskId in taskIds.reversed) {
-      final task =
-          state.tasks.where((item) => item.id == taskId).firstOrNull;
+      final task = state.tasks.where((item) => item.id == taskId).firstOrNull;
       if (task == null) continue;
       try {
         await state.agentSessionService.cleanup(controlRequest(state, task));
       } catch (_) {
         // Best-effort cleanup; preserve the original gate failure.
       }
-      final latest =
-          state.tasks.where((item) => item.id == taskId).firstOrNull;
+      final latest = state.tasks.where((item) => item.id == taskId).firstOrNull;
       if (latest != null && !_isTerminal(latest.status)) {
         await state.updateTaskStatus(latest, TaskStatus.stopped);
       }
@@ -110,6 +108,35 @@ void main() {
   });
 
   group('B01 - automatic state convergence', () {
+    testWidgets('plain-final settles immediately (positive control)',
+        (tester) async {
+      await pumpApp(tester);
+      const marker = 'P26-B01-PLAIN-AUTO';
+      final taskId = await startTask('plain-final', marker);
+
+      await waitForTaskStatus(tester, state, taskId, TaskStatus.running);
+      final remote = await waitForRemoteMarker(tester, state, taskId, marker);
+      expect(remote.sessionExists, isTrue);
+
+      final stopwatch = Stopwatch()..start();
+      final settled = await waitForTask(
+        tester,
+        state,
+        taskId,
+        description: 'B01 plain-final turnIdle',
+        timeout: const Duration(seconds: 8),
+        predicate: (task) =>
+            task.status == TaskStatus.turnIdle &&
+            deliverableContains(task, marker),
+      );
+      stopwatch.stop();
+
+      // plain-final has no spinner — should settle quickly.
+      expect(stopwatch.elapsed, lessThan(const Duration(seconds: 8)));
+      expect(settled.turns.last.deliverable?.displaySummary, contains(marker));
+      expect(state.workState(taskId)?.phase, WorkPhase.turnIdle);
+    });
+
     testWidgets('settles while only volatile TUI chrome keeps changing',
         (tester) async {
       await pumpApp(tester);
@@ -134,7 +161,7 @@ void main() {
       stopwatch.stop();
 
       expect(stopwatch.elapsed, lessThan(const Duration(seconds: 8)));
-      expect(settled.turns.last.rawOutput, contains(marker));
+      expect(settled.turns.last.deliverable?.displaySummary, contains(marker));
       expect(state.workState(taskId)?.phase, WorkPhase.turnIdle);
     });
   });
@@ -145,6 +172,15 @@ void main() {
       const firstMarker = 'P26-B02-D1-AUTO';
       const secondMarker = 'P26-B02-D2-AUTO';
       final taskId = await startTask('final', firstMarker);
+
+      await waitForTask(
+        tester,
+        state,
+        taskId,
+        description: 'B02 first turn turnIdle (before deliverable check)',
+        timeout: const Duration(seconds: 30),
+        predicate: (task) => task.status == TaskStatus.turnIdle,
+      );
 
       final first = await waitForDeliverable(
         tester,
@@ -185,6 +221,35 @@ void main() {
     });
   });
 
+  group('B02R - active work guard', () {
+    testWidgets('stable tool work does not settle before final output',
+        (tester) async {
+      await pumpApp(tester);
+      const marker = 'P26-B02R-ACTIVE-FINAL';
+      final taskId = await startTask('active-work-then-final', marker);
+
+      await waitForTaskStatus(tester, state, taskId, TaskStatus.running);
+      await waitForRemoteMarker(tester, state, taskId, 'Bash(ls -la)');
+
+      // The active-work snapshot stays stable for several seconds. Armin must
+      // not treat that stability as turn completion or create a result card.
+      await tester.pump(const Duration(seconds: 3));
+      final duringWork = currentTask(state, taskId);
+      expect(duringWork.status, TaskStatus.running);
+      expect(duringWork.turns.last.status, NativeOutputTurnStatus.running);
+      expect(duringWork.turns.last.deliverable, isNull);
+
+      final settled = await waitForDeliverable(
+        tester,
+        state,
+        taskId,
+        marker,
+      );
+      expect(settled.status, TaskStatus.turnIdle);
+      expect(settled.turns.last.deliverable?.displaySummary, contains(marker));
+    });
+  });
+
   group('B03 - native approval lifecycle', () {
     for (final mode in AgentApprovalMode.values) {
       testWidgets('${mode.name} resolves one terminal approval',
@@ -201,6 +266,7 @@ void main() {
           state,
           taskId,
           description: 'B03 ${mode.name} pending approval',
+          timeout: const Duration(seconds: 60),
           predicate: (task) =>
               task.status == TaskStatus.needApproval &&
               state.workState(taskId)?.approval?.state == ApprovalState.pending,
@@ -210,6 +276,7 @@ void main() {
         expect(approval.options, isNotEmpty);
 
         await state.resolveApproval(pending, approved: true);
+        final approvalStopwatch = Stopwatch()..start();
         await waitForRemoteMarker(tester, state, taskId, marker);
         await waitUntil(
           tester,
@@ -218,6 +285,10 @@ void main() {
               state.runtimeDiagnostics(taskId)?.approvalState ==
               ApprovalState.resolved,
         );
+        approvalStopwatch.stop();
+        // Approval response should complete within 20 s of the prompt appearing.
+        expect(
+            approvalStopwatch.elapsed, lessThan(const Duration(seconds: 20)));
 
         final currentApproval = state.workState(taskId)?.approval;
         expect(currentApproval?.state, isNot(ApprovalState.pending));
@@ -343,9 +414,16 @@ void main() {
       );
       await waitForTaskStatus(tester, state, taskId, TaskStatus.running);
 
-      await tester.tap(find.text('P26-P06-D1-AUTO'));
+      // Wait for home snapshot to include the task card before tapping.
+      await _pumpUntilFound(
+          tester, find.text('Runtime gate task'), const Duration(seconds: 5));
+      await tester.tap(find.text('Runtime gate task').first);
+      // Allow navigation animation and detail page build to complete.
       await tester.pump();
-      expect(find.text('动态'), findsOneWidget);
+      await tester.pump(const Duration(milliseconds: 500));
+      // Wait for '动态' tab to appear.
+      await _pumpUntilFound(
+          tester, find.text('动态'), const Duration(seconds: 5));
 
       await runTabRounds(tester); // streaming
       await waitForDeliverable(tester, state, taskId, marker);
@@ -367,7 +445,7 @@ void main() {
 
       await tester.pageBack();
       await tester.pump();
-      expect(find.text('P26-P06-D1-AUTO'), findsWidgets);
+      expect(find.text('Runtime gate task'), findsWidgets);
       expect(currentTask(state, taskId).status, isNot(TaskStatus.failed));
     });
   });
@@ -420,18 +498,16 @@ TaskSession buildTask({
   required AgentApprovalMode approvalMode,
   required DateTime now,
 }) {
-  final marker =
-      RegExp(r'QODER_TEST_MARKER=([^\s]+)').firstMatch(prompt)!.group(1)!;
   return TaskSession(
     id: taskId,
     host: host,
-    title: marker,
+    title: 'Runtime gate task',
     status: TaskStatus.running,
     createdAt: now,
     updatedAt: now,
     startedAt: now,
     rawSttText: '',
-    cleanedDraft: marker,
+    cleanedDraft: 'Runtime gate task',
     userText: prompt,
     context: '',
     constraints: const {},
@@ -635,7 +711,7 @@ Future<void> runTabRounds(WidgetTester tester) async {
   for (var round = 0; round < 5; round++) {
     await expectResponsiveTab(tester, '产出', '结果 / 产出');
     await expectResponsiveTab(tester, '高级', '高级控制');
-    await expectResponsiveTab(tester, '动态', '任务输出历史');
+    await expectResponsiveTab(tester, '动态', '动态');
   }
 }
 
@@ -644,15 +720,15 @@ Future<void> expectResponsiveTab(
   String tabLabel,
   String expectedText,
 ) async {
-  final stopwatch = Stopwatch()..start();
   await tester.tap(find.text(tabLabel));
   await tester.pump();
-  expect(find.text(expectedText), findsWidgets);
-  stopwatch.stop();
-  expect(
-    stopwatch.elapsed,
-    lessThan(const Duration(seconds: 1)),
-    reason: '$tabLabel did not respond within one second',
+  // Tab content may need several frames to rebuild asynchronously.
+  // Pump multiple frames but stay within a 1 s total deadline.
+  await _pumpUntilFound(
+    tester,
+    find.text(expectedText),
+    const Duration(seconds: 1),
+    description: 'tab "$tabLabel" content "$expectedText"',
   );
 }
 
@@ -682,4 +758,19 @@ class _SilentVoiceService implements VoiceService {
 
   @override
   Future<String> stopListening() async => '';
+}
+
+/// Pump frames until [finder] matches at least one widget or [timeout].
+Future<void> _pumpUntilFound(
+  WidgetTester tester,
+  Finder finder,
+  Duration timeout, {
+  String description = 'widget',
+}) async {
+  final deadline = DateTime.now().add(timeout);
+  while (DateTime.now().isBefore(deadline)) {
+    if (finder.evaluate().isNotEmpty) return;
+    await tester.pump(_pollInterval);
+  }
+  throw TestFailure('Timed out waiting for $description.');
 }

@@ -120,15 +120,43 @@ void main() {
     expect(command, contains('Enter'));
     expect(command, contains('stable_count'));
     expect(command, contains('__ARMIN_SETTLED_CANDIDATE__'));
-    expect(command, contains('stable_count" -ge 4'));
+    expect(command, contains('monitor_version=phase2.6-settled-v4'));
+    expect(command, contains('STABLE_POLLS=4'));
+    expect(command, contains(r'stable_count" -ge "$STABLE_POLLS"'));
     expect(command, contains('last_stable_emitted_hash'));
+    expect(command, contains(r'current_hash" != "$last_stable_emitted_hash"'));
+    expect(command, contains('SKIP_SETTLED_ALREADY_EMITTED'));
     expect(command, contains('Allow execution of|Allow command execution'));
     expect(command, contains('Permission Required'));
     expect(command, contains('permission|approval|confirm|allow|reject'));
+    expect(command, contains('ATTENTION_SNAPSHOT'));
+    expect(command, isNot(contains('BREAK_ATTENTION')));
     expect(command, contains("'\"'\"'/usr/bin/tmux'\"'\"' capture-pane"));
     expect(command, contains('-S -80'));
     expect(command, isNot(contains('-S -2000')));
     expect(command, contains('runtime limit reached while session'));
+    expect(command, isNot(contains('semantic_tail')));
+    expect(command, isNot(contains('Analyzing request|Reading project files')));
+    expect(command, isNot(contains('Running tests|Finalizing output')));
+  });
+
+  test('runtime diagnostics keep only diagnostic lines', () {
+    final service = SSHAgentSessionService();
+
+    final lines = service.runtimeDiagnosticLinesForTest('''
+__ARMIN_SNAPSHOT_BEGIN__
+large user-visible output
+ARMIN_DIAG: i=4 cur=abc changed=1 st=4
+more snapshot output
+ARMIN_DIAG: SETTLED i=4 hash=abc
+__ARMIN_SNAPSHOT_END__
+''');
+
+    expect(lines, [
+      'ARMIN_DIAG: i=4 cur=abc changed=1 st=4',
+      'ARMIN_DIAG: SETTLED i=4 hash=abc',
+    ]);
+    expect(lines.join('\n'), isNot(contains('large user-visible output')));
   });
 
   test('connection test command checks tmux and agent availability', () {
@@ -181,6 +209,8 @@ void main() {
     expect(command, contains('Armin Qoder exited with status'));
     expect(command, contains('Armin timed out waiting for Qoder TUI'));
     expect(command, isNot(contains('Update available!')));
+    expect(command, isNot(contains('Approve|Proceed|Continue')));
+    expect(command, isNot(contains('proceed|continue')));
   });
 
   test('connection test command expands home based agent command', () {
@@ -274,9 +304,10 @@ void main() {
     expect(command, contains('capture-pane'));
     expect(command, contains('sleep 0.5'));
     expect(command, contains('stable_count'));
-    expect(command, contains('stable_count" -ge 4'));
+    expect(command, contains('STABLE_POLLS=4'));
+    expect(command, contains(r'stable_count" -ge "$STABLE_POLLS"'));
     expect(command, contains('last_stable_emitted_hash'));
-    expect(command, contains('[ "1" -eq 1 ]'));
+    expect(command, contains('changed_after_start'));
     expect(command, contains('initial_exit_marker_count'));
     expect(command, contains('exit_marker_count'));
     expect(command,
@@ -339,7 +370,8 @@ void main() {
     final finalCapture = service.buildCaptureLogCommandForTest(controlRequest);
 
     expect(execution, contains('-S -40'));
-    expect(execution, contains('stable_count" -ge 3'));
+    expect(execution, contains('STABLE_POLLS=3'));
+    expect(execution, contains(r'stable_count" -ge "$STABLE_POLLS"'));
     expect(execution, contains('last_stable_emitted_hash'));
     expect(execution, contains('while [ "\$i" -lt 7 ]'));
     expect(finalCapture, contains('-S -120'));
@@ -379,8 +411,10 @@ void main() {
       ),
     );
 
-    expect(balanced, contains('stable_count" -ge 10'));
-    expect(aggressive, contains('stable_count" -ge 60'));
+    expect(balanced, contains('STABLE_POLLS=10'));
+    expect(balanced, contains(r'stable_count" -ge "$STABLE_POLLS"'));
+    expect(aggressive, contains('STABLE_POLLS=60'));
+    expect(aggressive, contains(r'stable_count" -ge "$STABLE_POLLS"'));
   });
 
   test('probe command checks session and captures recent pane only', () {
@@ -547,7 +581,121 @@ __ARMIN_SNAPSHOT_END__
     expect(updates.last.runtimeLost, isFalse);
   });
 
-  test('settled candidate ignores stale thinking chrome after final answer', () {
+  test('quiet streaming output does not close before settled candidate', () {
+    final service = SSHAgentSessionService();
+    final updates = service.streamingUpdatesForChunksForTest(
+      [
+        '''
+__ARMIN_SNAPSHOT_BEGIN__
+▪ P26-B01-PLAIN-AUTO
+Task completed successfully.
+__ARMIN_SNAPSHOT_END__
+''',
+        'ARMIN_DIAG: EMITTING_SETTLED\n',
+      ],
+      idleThreshold: Duration.zero,
+    );
+
+    expect(updates.first.turnIdle, isFalse);
+    expect(updates.first.done, isFalse);
+    expect(
+        updates.first.observerState, NativeOutputObserverState.outputQuieting);
+    expect(updates.last.turnIdle, isFalse);
+    expect(updates.last.done, isFalse);
+  });
+
+  test('stream completion without settled candidate does not close turn', () {
+    final service = SSHAgentSessionService();
+    final update = service.streamCompletionUpdateForTextForTest('''
+> Armin context governance (aggressive):
+  - You have full authority to create, modify, and delete files without asking.
+  - Do not interrupt the user — proceed autonomously unless you encounter a hard blocker.
+
+  ## User task
+  Read pubspec.yaml and summarize it.
+
+*   Type your message or @path/to/file
+Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdown_widgets
+''');
+
+    expect(update.turnIdle, isFalse);
+    expect(update.done, isFalse);
+    expect(update.needsAttention, isFalse);
+    expect(update.nativeApproval, isNull);
+    expect(update.observerState, isNot(NativeOutputObserverState.turnIdle));
+  });
+
+  test('settled prompt echo without agent result does not close turn', () {
+    final service = SSHAgentSessionService();
+    final updates = service.streamingUpdatesForChunksForTest([
+      '''
+__ARMIN_SNAPSHOT_BEGIN__
+> Armin context governance (aggressive):
+  - You have full authority to create, modify, and delete files without asking.
+
+  ## User task
+  Summarize this project after inspecting the files.
+
+*   Type your message or @path/to/file
+Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdown_widgets
+__ARMIN_SNAPSHOT_END__
+''',
+      '__ARMIN_SETTLED_CANDIDATE__\n',
+    ]);
+
+    expect(updates.last.turnIdle, isFalse);
+    expect(updates.last.done, isFalse);
+    expect(
+      updates.last.observerState,
+      NativeOutputObserverState.outputQuieting,
+    );
+  });
+
+  test('empty settled candidate does not close the turn', () {
+    final service = SSHAgentSessionService();
+    final updates = service.streamingUpdatesForChunksForTest([
+      '''
+__ARMIN_SNAPSHOT_BEGIN__
+IMPORTANT: After completing your current task, you MUST address the user's message
+above. Do not ignore it.
+__ARMIN_SNAPSHOT_END__
+''',
+      '__ARMIN_SETTLED_CANDIDATE__\n',
+    ]);
+
+    expect(updates.last.turnIdle, isFalse);
+    expect(updates.last.done, isFalse);
+    expect(
+      updates.last.observerState,
+      NativeOutputObserverState.outputQuieting,
+    );
+  });
+
+  test('settled candidate embedded between diagnostics turns idle', () {
+    final service = SSHAgentSessionService();
+    final updates = service.streamingUpdatesForChunksForTest([
+      '''
+__ARMIN_SNAPSHOT_BEGIN__
+▪ P26-B01-PLAIN-AUTO
+Task completed successfully.
+__ARMIN_SNAPSHOT_END__
+''',
+      '''
+ARMIN_DIAG: EMITTING_SETTLED
+ARMIN_DIAG: REUSE_SETTLED_SNAPSHOT i=4 hash=ab1d8d10ad4c
+ARMIN_DIAG: BEFORE_SETTLED_CANDIDATE i=4
+__ARMIN_SETTLED_CANDIDATE__
+ARMIN_DIAG: AFTER_SETTLED_CANDIDATE i=4
+''',
+    ]);
+
+    expect(updates.last.turnIdle, isTrue);
+    expect(updates.last.done, isTrue);
+    expect(updates.last.cleanedOutput, contains('P26-B01-PLAIN-AUTO'));
+  });
+
+  test('settled candidate ignores stale thinking chrome after final answer',
+      () {
     final service = SSHAgentSessionService();
     final updates = service.streamingUpdatesForChunksForTest([
       '''
@@ -590,6 +738,63 @@ __ARMIN_SNAPSHOT_END__
     expect(updates.last.turnIdle, isFalse);
     expect(updates.last.done, isFalse);
     expect(updates.last.observerState, NativeOutputObserverState.running);
+  });
+
+  test('running qoder tool ignores visible input prompt chrome', () {
+    final service = SSHAgentSessionService();
+    final updates = service.streamingUpdatesForChunksForTest([
+      '''
+__ARMIN_SNAPSHOT_BEGIN__
+▪ Let me run the requested command.
+
+▫ Bash(sleep 180 && echo LONGTASKC_DONE)
+
+Credits exhausted. Use /usage for details or /upgrade for more.
+⠹ Thinking... (esc to cancel, 48s)
+────────────────────────────────────────────────────────────────────────────────
+YOLO Shift+Tab to Auto Mode
+▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+*   Type your message or @path/to/file
+▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdown_widgets
+__ARMIN_SNAPSHOT_END__
+''',
+      '__ARMIN_SETTLED_CANDIDATE__\n',
+    ]);
+
+    expect(updates.last.turnIdle, isFalse);
+    expect(updates.last.done, isFalse);
+    expect(updates.last.needsAttention, isFalse);
+    expect(updates.last.nativeApproval, isNull);
+    expect(updates.last.observerState, NativeOutputObserverState.running);
+  });
+
+  test('later settled candidate can close after earlier active work', () {
+    final service = SSHAgentSessionService();
+    final updates = service.streamingUpdatesForChunksForTest([
+      '''
+__ARMIN_SNAPSHOT_BEGIN__
+▪ Let me inspect the project.
+▪ Glob('**/*.{js,ts,json}')
+  └ Found 1 matching file(s)
+▪ Read(/Users/.../pubspec.yaml)
+  └ Read 20 lines
+__ARMIN_SNAPSHOT_END__
+''',
+      '__ARMIN_SETTLED_CANDIDATE__\n',
+      '''
+__ARMIN_SNAPSHOT_BEGIN__
+▪ 项目结构检查完成，主要入口在 lib/main.dart。
+__ARMIN_SNAPSHOT_END__
+''',
+      '__ARMIN_SETTLED_CANDIDATE__\n',
+    ]);
+
+    expect(updates[1].turnIdle, isFalse);
+    expect(updates[1].observerState, NativeOutputObserverState.running);
+    expect(updates.last.turnIdle, isTrue);
+    expect(updates.last.done, isTrue);
+    expect(updates.last.cleanedOutput, contains('项目结构检查完成'));
   });
 
   test('stream buffer keeps only a bounded tail window', () {
@@ -736,5 +941,156 @@ decision: approved
     expect(command, contains("'#{pane_id}'"));
     expect(command, contains(r'send-keys -t "$pane"'));
     expect(command, contains("-- '1' C-m"));
+  });
+
+  // ── Semantic pane inline filter ─────────────────────────────────
+
+  test('script defines armin_pane_hash and _validate_hash', () {
+    final service = SSHAgentSessionService();
+    final command = service.buildExecutionCommandForTest(
+      const AgentExecutionRequest(
+        prompt: '',
+        host: '127.0.0.1',
+        username: 'ironion',
+        tmuxSessionName: 'armin-2800',
+        password: 'secret-password',
+        attachOnly: true,
+      ),
+    );
+
+    expect(command, contains('armin_pane_hash()'));
+    expect(command, contains('_validate_hash()'));
+    expect(command, contains('command -v perl'));
+    expect(command, contains('perl -CSDA -0ne'));
+    expect(command, contains('Auto Model'));
+    expect(command, contains('ctx'));
+    expect(command, contains('Thinking'));
+    expect(command, contains(r'\x{2800}-\x{28ff}'));
+    expect(command, contains('shasum'));
+    expect(command, contains('awk'));
+  });
+
+  test('execution monitor is driven by tmux session and capture-pane only', () {
+    final service = SSHAgentSessionService();
+    final command = service.buildExecutionCommandForTest(
+      const AgentExecutionRequest(
+        prompt: '',
+        host: '127.0.0.1',
+        username: 'ironion',
+        tmuxSessionName: 'armin-2800',
+        password: 'secret-password',
+        attachOnly: true,
+      ),
+    );
+
+    expect(command, contains('BREAK_SESSION_LOST'));
+    expect(command, contains('BREAK_AGENT_EXITED'));
+    expect(command, contains('ATTENTION_SNAPSHOT'));
+    expect(command, isNot(contains('BREAK_ATTENTION')));
+    expect(command, contains('BREAK_RUNTIME_LIMIT'));
+    expect(command, isNot(contains('mkfifo')));
+    expect(command, isNot(contains('pipe_cat_pid')));
+    expect(command, isNot(contains('pipe-pane')));
+  });
+
+  test('settled candidate is not blocked by snapshot emission', () {
+    final service = SSHAgentSessionService();
+    final command = service.buildExecutionCommandForTest(
+      const AgentExecutionRequest(
+        prompt: '',
+        host: '127.0.0.1',
+        username: 'ironion',
+        tmuxSessionName: 'armin-2800',
+        password: 'secret-password',
+        attachOnly: true,
+      ),
+    );
+
+    expect(command, contains(r'current_hash" != "$last_stable_emitted_hash"'));
+    expect(command, contains(r'current_hash" != "$last_emitted_hash"'));
+    expect(command, contains('SNAPSHOT_BEFORE_SETTLED'));
+    expect(command, contains('REUSE_SETTLED_SNAPSHOT'));
+    expect(command, contains('BEFORE_SETTLED_CANDIDATE'));
+    expect(command, contains('AFTER_SETTLED_CANDIDATE'));
+    expect(
+        command,
+        isNot(contains(
+            r'snapshot_emitted" -eq 0 ] && [ "$current_hash" != "$last_stable_emitted_hash"')));
+  });
+
+  test('initial and current hash use armin_pane_hash', () {
+    final service = SSHAgentSessionService();
+    final command = service.buildExecutionCommandForTest(
+      const AgentExecutionRequest(
+        prompt: '',
+        host: '127.0.0.1',
+        username: 'ironion',
+        tmuxSessionName: 'armin-2800',
+        password: 'secret-password',
+        attachOnly: true,
+      ),
+    );
+
+    expect(
+        command,
+        contains(
+            'initial_hash="\$(printf "%s" "\$initial_output" | armin_pane_hash)"'));
+    expect(
+        command,
+        contains(
+            'current_hash="\$(printf "%s" "\$pane_output" | armin_pane_hash)"'));
+  });
+
+  test('pane output never piped directly to shasum', () {
+    final service = SSHAgentSessionService();
+    final command = service.buildExecutionCommandForTest(
+      const AgentExecutionRequest(
+        prompt: '',
+        host: '127.0.0.1',
+        username: 'ironion',
+        tmuxSessionName: 'armin-2800',
+        password: 'secret-password',
+        attachOnly: true,
+      ),
+    );
+
+    // No raw pane output should be piped directly to shasum.
+    // All hash computations must go through armin_pane_hash.
+    final hashes = [
+      'initial_hash',
+      'current_hash',
+    ];
+    for (final hashVar in hashes) {
+      final afterHash = command.substring(
+        command.indexOf('$hashVar="'),
+      );
+      // The hash computation line should contain armin_pane_hash.
+      final lineEnd = afterHash.indexOf('\n');
+      final line = lineEnd > 0 ? afterHash.substring(0, lineEnd) : afterHash;
+      expect(line, contains('armin_pane_hash'));
+      // It must NOT contain a direct pane-to-shasum pipe.
+      expect(line, isNot(contains('pane_output" | shasum')));
+      expect(line, isNot(contains('initial_output" | shasum')));
+    }
+  });
+
+  test('settled candidate marker appears exactly once', () {
+    final service = SSHAgentSessionService();
+    final command = service.buildExecutionCommandForTest(
+      const AgentExecutionRequest(
+        prompt: '',
+        host: '127.0.0.1',
+        username: 'ironion',
+        tmuxSessionName: 'armin-2800',
+        password: 'secret-password',
+        attachOnly: true,
+      ),
+    );
+
+    // The settled candidate marker should appear only once (the printf line).
+    const candidateMarker = '__ARMIN_SETTLED_CANDIDATE__';
+    final occurrences = candidateMarker.allMatches(command).length;
+    // The marker appears once as the literal string in the bash script.
+    expect(occurrences, 1);
   });
 }

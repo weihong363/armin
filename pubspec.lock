@@ -220,8 +220,10 @@ packages:
     version: "1.0.3"
   integration_test:
     dependency: "direct dev"
-    description: flutter
-    source: sdk
+    description:
+      path: "third_party/integration_test"
+      relative: true
+    source: path
     version: "0.0.0"
   jni:
     dependency: transitive

@@ -98,7 +98,7 @@ class TaskSpeechPolicy {
       text: speechText,
       hash: '${current.status.name}:'
           '${current.turns.isEmpty ? 'noturn' : current.turns.last.id}:'
-          '${current.turns.isEmpty ? '' : current.turns.last.deliverable?.evidenceFingerprint ?? ''}',
+          '${speechText.hashCode}',
       kind: kind,
       turnId: current.turns.isEmpty ? null : current.turns.last.id,
       turnIndex: current.turns.isEmpty ? null : _latestTurnIndex(current),

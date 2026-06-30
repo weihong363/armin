@@ -223,13 +223,11 @@ class AgentOutputCleaner {
         )
         .replaceAll(RegExp(r'\bAuto Model\b.*', caseSensitive: false), '')
         .replaceAll(
-          RegExp(r'(?:YOLO\s+)?\bShift\+Tab to Auto\b.*',
-              caseSensitive: false),
+          RegExp(r'(?:YOLO\s+)?\bShift\+Tab to Auto\b.*', caseSensitive: false),
           '',
         )
         .replaceAll(
-          RegExp(r'.*\besc to cancel\b.*',
-              caseSensitive: false),
+          RegExp(r'.*\besc to cancel\b.*', caseSensitive: false),
           '',
         )
         .replaceAll(RegExp(r'\bAGENTS\.md file\b.*', caseSensitive: false), '')
@@ -271,6 +269,8 @@ class AgentOutputCleaner {
         lower.startsWith('turn ') ||
         lower.startsWith('结果为：turn ') ||
         lower.startsWith('result: turn ') ||
+        lower.startsWith('important: after completing your current task') ||
+        lower == 'above. do not ignore it.' ||
         GovernanceRules.isGovernanceRuleEndsWith(lower) ||
         lower.startsWith('update available!') ||
         lower.startsWith('release notes:') ||

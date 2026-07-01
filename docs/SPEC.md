@@ -207,7 +207,7 @@ Armin 的 Loop Engineering 边界是单任务循环：Plan → Execute → Obser
 - `rawOutput` / `cleanedOutput` 只能作为 resolver evidence，最终展示和 TTS 应消费 resolved `displaySummary` / `speechSummary`。
 - 手动朗读和自动 TTS 必须通过相同基线验证，不能为了同源牺牲可用性和性能。
 
-当前实现状态：Runtime 在 current-turn evidence 确认后异步解析一次并持久化 `TurnDeliverable`；结果卡片、手动朗读和自动 TTS 只消费该对象，`summary` / `shortSummary` fallback 已移除。`DELIVERABLE_UPDATED` 在持久化后携带 turn id 与 evidence fingerprint 发布，高频输出事件不持久化也不重建首页。
+当前实现状态：Phase 2.6 迁移收口已完成。Runtime 在 current-turn evidence 确认后异步解析一次并持久化 `TurnDeliverable`；结果卡片、手动朗读和自动 TTS 只消费该对象，`summary` / `shortSummary` fallback 已移除。`DELIVERABLE_UPDATED` 在持久化后携带 turn id 与 evidence fingerprint 发布，高频输出事件不持久化也不重建首页。远端 monitor 使用过滤 TUI chrome 后的 semantic hash 触发 settled candidate，避免 spinner/footer 阻塞 turn 收敛；自动 TTS 只在本轮新 deliverable 首次出现时触发。
 
 所有阶段中，任何 Runtime、状态、结果、TTS、observer、reconcile、持久化或 UI 核心变更都必须满足 [Armin 核心行为与性能基线](runtime/core-behavior-performance-baseline.md)。基线失败表示方案尚未达到功能等价或性能等价，不能以架构收口、技术升级或进入新阶段为理由接受回归，也不能通过降低基线完成迁移。
 

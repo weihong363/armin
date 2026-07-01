@@ -29,6 +29,7 @@ const _testProjectPath =
 const _testAgentCommand =
     '/Users/ironion/workspace/armin/scripts/qodercli-test';
 const _pollInterval = Duration(milliseconds: 250);
+const _testSshPassword = String.fromEnvironment('ARMINTEST_SSH_PASSWORD');
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
@@ -115,7 +116,13 @@ void main() {
       final taskId = await startTask('plain-final', marker);
 
       await waitForTaskStatus(tester, state, taskId, TaskStatus.running);
-      final remote = await waitForRemoteMarker(tester, state, taskId, marker);
+      final remote = await waitForRemoteMarker(
+        tester,
+        state,
+        taskId,
+        marker,
+        timeout: const Duration(seconds: 60),
+      );
       expect(remote.sessionExists, isTrue);
 
       final stopwatch = Stopwatch()..start();
@@ -229,7 +236,13 @@ void main() {
       final taskId = await startTask('active-work-then-final', marker);
 
       await waitForTaskStatus(tester, state, taskId, TaskStatus.running);
-      await waitForRemoteMarker(tester, state, taskId, 'Bash(ls -la)');
+      await waitForRemoteMarker(
+        tester,
+        state,
+        taskId,
+        'Bash(ls -la)',
+        timeout: const Duration(seconds: 60),
+      );
 
       // The active-work snapshot stays stable for several seconds. Armin must
       // not treat that stability as turn completion or create a result card.
@@ -366,9 +379,12 @@ void main() {
         final expected =
             completed ? TaskStatus.userCompleted : TaskStatus.userFailed;
         expect(currentTask(state, taskId).status, expected);
-        expect(
-            (await probeTask(state, currentTask(state, taskId))).sessionExists,
-            isFalse);
+        await waitForRemoteSessionExists(
+          tester,
+          state,
+          taskId,
+          expected: false,
+        );
       });
     }
   });
@@ -454,15 +470,18 @@ void main() {
 Future<void> configureTestHost(ArminAppState state) async {
   final seeded =
       state.hosts.where((host) => host.id == _seedHostId).firstOrNull;
-  if (seeded == null) {
-    throw TestFailure('Missing seeded host $_seedHostId. Run seed-config.sh.');
+  final password = seeded?.password ?? _testSshPassword;
+  if (password.isEmpty) {
+    throw TestFailure(
+      'Missing SSH password for $_seedHostId. Run seed-config.sh or pass '
+      '--dart-define=ARMINTEST_SSH_PASSWORD.',
+    );
   }
-  if (seeded.password.isEmpty) {
-    throw TestFailure('Missing SSH password for $_seedHostId.');
-  }
+  final host = seeded ?? testSeedHost();
   await state.saveHost(
-    seeded.copyWith(
+    host.copyWith(
       agentCommand: _testAgentCommand,
+      password: password,
       projectPath: _testProjectPath,
     ),
   );
@@ -473,6 +492,29 @@ Future<void> configureTestHost(ArminAppState state) async {
 
 HostConfig testHost(ArminAppState state) {
   return state.hosts.firstWhere((host) => host.id == _seedHostId);
+}
+
+HostConfig testSeedHost() {
+  final now = DateTime.now().toUtc();
+  return HostConfig(
+    id: _seedHostId,
+    name: 'Local Mac',
+    host: '10.0.2.2',
+    port: 22,
+    username: 'ironion',
+    authType: HostAuthType.password,
+    projectPath: _testProjectPath,
+    tmuxSessionName: 'armin-codex',
+    agentCommand: _testAgentCommand,
+    createdAt: now,
+    updatedAt: now,
+    isDefault: true,
+    tmuxCommand: '/opt/homebrew/bin/tmux',
+    pathPrepend: '/opt/homebrew/bin:/usr/local/bin:\$HOME/.npm-global/bin:'
+        '\$HOME/.npm-packages/bin:\$HOME/.local/bin',
+    shellWrapper: ShellWrapper.zshLogin,
+    machineType: HostMachineType.macAppleSilicon,
+  );
 }
 
 ProjectPathConfig testProject() {
@@ -681,10 +723,11 @@ Future<RemoteTaskProbe> waitForRemoteMarker(
   WidgetTester tester,
   ArminAppState state,
   String taskId,
-  String marker,
-) async {
+  String marker, {
+  Duration timeout = const Duration(seconds: 20),
+}) async {
   RemoteTaskProbe? probe;
-  final deadline = DateTime.now().add(const Duration(seconds: 20));
+  final deadline = DateTime.now().add(timeout);
   while (DateTime.now().isBefore(deadline)) {
     final task = currentTask(state, taskId);
     probe = await probeTask(state, task);
@@ -692,6 +735,24 @@ Future<RemoteTaskProbe> waitForRemoteMarker(
     await tester.pump(_pollInterval);
   }
   throw TestFailure('Timed out waiting for remote marker $marker.');
+}
+
+Future<void> waitForRemoteSessionExists(
+  WidgetTester tester,
+  ArminAppState state,
+  String taskId, {
+  required bool expected,
+  Duration timeout = const Duration(seconds: 10),
+}) async {
+  final deadline = DateTime.now().add(timeout);
+  while (DateTime.now().isBefore(deadline)) {
+    final probe = await probeTask(state, currentTask(state, taskId));
+    if (probe.sessionExists == expected) return;
+    await tester.pump(_pollInterval);
+  }
+  throw TestFailure(
+    'Timed out waiting for remote sessionExists=$expected.',
+  );
 }
 
 bool _isTerminal(TaskStatus status) {

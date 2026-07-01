@@ -108,6 +108,8 @@ Survey / 社区验证方向：
 
 不新增复杂工作流，也不引入多 Agent 编排。Phase 2.6 直接把 Phase 2.5 的任务执行主链路收口为可度量、可复盘的单任务循环；功能和性能由全阶段基线保证，出现回归时回滚版本，不并行维护旧实现。
 
+当前状态：Phase 2.6 迁移收口和自动化门禁已经完成。Runtime 状态串行提交、event-linked deliverable、WorkState 当前审批来源、结果/TTS fallback 移除、semantic settled 收敛、TTS 单次自动播报和高频输出节流均已落地；`ARMIN_DIAG` 仅保留启动指纹和异常路径诊断。后续变更必须继续以核心行为与性能基线作为门禁，不能重新引入旧数据兼容 fallback 或新旧双线并行。
+
 迁移执行步骤和验收标准统一维护在 [legacy-cleanup-checklist.md](runtime/legacy-cleanup-checklist.md)。RuntimeEventBus + WorkState 是状态、审批和结果事件的主路径；parser / tmux capture 只提供当前观察窗口的新证据和 reconcile 输入，不形成第二套状态或结果路径。
 
 当前结果卡片、手动朗读和自动 TTS 只使用持久化的 current-turn `TurnDeliverable`；没有 evidence 时不从 `summary` / `shortSummary` 补造结果。`DELIVERABLE_UPDATED` 在结果持久化后发布并携带 turn id 与 evidence fingerprint，高频 `OUTPUT_UPDATED` 经过节流且只在内存分发。Watcher event replay 归入 Phase 3。

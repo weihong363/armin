@@ -1,0 +1,222 @@
+#!/usr/bin/env python3
+"""Interactive test agent for Armin runtime gate automation.
+
+Replaces qodercli on the remote host during automated gate verification.
+Behaves like a real CLI agent: spinner, thinking, output, optional approval.
+
+Armin launches this process first and pastes prompts into its terminal later.
+Each prompt must contain QODER_TEST_MODE and QODER_TEST_MARKER tokens:
+  QODER_TEST_MODE=final QODER_TEST_MARKER=B01-D1
+
+Modes:
+  plain-final      - Print the unique marker immediately, then stay ready
+  final            - Print spinner for 2s, then unique marker, exit 0
+  spinner-and-final - Print a final marker, then animate TUI chrome forever
+  approval         - Print spinner, then "Permission Required" prompt, wait for stdin
+  slow-stream      - Print lines slowly over QODER_TEST_DURATION seconds
+  active-work-then-final - Print stable tool work before final output
+  spinner-only     - Print spinner indefinitely (for pause/stop tests)
+"""
+
+import os
+import sys
+import time
+import random
+import re
+
+SPINNER_CHARS = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
+
+
+def prompt_value(prompt: str, name: str, default: str) -> str:
+    match = re.search(rf'\b{name}=([^\s]+)', prompt)
+    return match.group(1) if match else default
+
+def spinner_frame(i: int) -> str:
+    return SPINNER_CHARS[i % len(SPINNER_CHARS)]
+
+def print_spinner(duration: float, interval: float = 0.15):
+    """Print spinner frames for `duration` seconds."""
+    end = time.time() + duration
+    i = 0
+    actions = ['Analyzing request...', 'Reading project files...',
+               'Checking dependencies...', 'Planning changes...',
+               'Implementing solution...', 'Running tests...',
+               'Finalizing output...']
+    action_idx = 0
+    while time.time() < end:
+        frame = spinner_frame(i)
+        action = actions[action_idx % len(actions)]
+        # Use \r to overwrite the same line (simulates real CLI spinner)
+        sys.stdout.write(f'\r {frame} {action}')
+        sys.stdout.flush()
+        time.sleep(interval)
+        i += 1
+        if i % 12 == 0:
+            action_idx += 1
+    # Clear the spinner line
+    sys.stdout.write('\r' + ' ' * 60 + '\r')
+    sys.stdout.flush()
+
+def mode_final(marker: str):
+    print_spinner(2.0)
+    print(f'\n▪ {marker}')
+    print(f'  Task completed successfully.')
+    print(f'  Unique identifier: {marker}')
+
+def mode_plain_final(marker: str):
+    print()
+    print(f'▪ {marker}')
+    print('  Task completed successfully.')
+    print(f'  Unique identifier: {marker}')
+    sys.stdout.flush()
+
+def mode_spinner_and_final(marker: str):
+    print_spinner(2.0)
+    print(f'\n▪ {marker}')
+    print(f'  Result: {marker}')
+    print(f'  All checks passed.')
+    for i in range(3):
+        print(f'  Verification step {i+1}: OK')
+    sys.stdout.flush()
+    # Keep changing only volatile TUI chrome. A semantic monitor should settle
+    # while this continues; a raw-pane hash monitor will remain running.
+    i = 0
+    while True:
+        frame = spinner_frame(i)
+        sys.stdout.write(
+            f'\r {frame} Thinking... (esc to cancel)  Auto Model · ctx {i % 100}%'
+        )
+        sys.stdout.flush()
+        time.sleep(0.15)
+        i += 1
+
+def mode_approval(marker: str):
+    print_spinner(2.0)
+    print()
+    print()
+    print(f'Permission Required')
+    print()
+    print(f'Tool: Write')
+    print(f'File: test_{marker}.txt')
+    print()
+    print(f'    1 print("hello world - {marker}")')
+    print()
+    print(f'Qoder has written up a plan and is ready to execute.')
+    print(f'Would you like to proceed?')
+    print()
+    print(f'> 1. Yes, execute with Auto mode')
+    print(f'> 2. Yes, execute with Safe mode')
+    print(f'> 3. Yes, execute with Balanced mode')
+    print(f'> 4. Show the plan details')
+    print(f'> 5. Modify the plan')
+    print(f'> 6. Reject plan')
+    sys.stdout.flush()
+
+    # Wait for stdin (Armin sends the option number)
+    try:
+        choice = sys.stdin.readline().strip()
+        if choice:
+            print()
+            print(f'Received choice: {choice}')
+            print(f'Executing plan...')
+            print_spinner(2.0)
+            print(f'\n▪ {marker}')
+            print(f'  Plan executed successfully with option {choice}.')
+            print(f'  File test_{marker}.txt created.')
+    except EOFError:
+        pass
+
+def mode_slow_stream(marker: str, duration: int):
+    lines = [
+        f'Starting task: {marker}',
+        'Initializing environment...',
+        'Loading configuration...',
+        'Scanning project structure...',
+    ]
+    detail_lines = [
+        f'  file_{i:03d}.py - analyzed ({random.randint(10, 200)} lines)'
+        for i in range(20)
+    ]
+    all_lines = lines + detail_lines + [
+        'Analysis complete.',
+        'Generating report...',
+        f'Report summary for {marker}:',
+        f'  Total files: 20',
+        f'  Issues found: 0',
+        f'  Suggestions: 3',
+        f'\n▪ {marker}',
+        f'  Verification complete.',
+    ]
+
+    interval = duration / len(all_lines)
+    for line in all_lines:
+        print(line)
+        sys.stdout.flush()
+        time.sleep(interval)
+
+def mode_active_work_then_final(marker: str):
+    print_spinner(2.0)
+    print()
+    print('▪ Bash(ls -la)')
+    print('  total 16')
+    print('  drwxr-xr-x  6 ironion  staff  192 .')
+    print('  drwxr-xr-x  8 ironion  staff  256 ..')
+    sys.stdout.flush()
+    time.sleep(5.0)
+    print()
+    print(f'▪ {marker}')
+    print('  Active work completed successfully.')
+    print(f'  Unique identifier: {marker}')
+    sys.stdout.flush()
+
+def mode_spinner_only():
+    """Print spinner indefinitely — used for pause/stop tests."""
+    i = 0
+    actions = ['Working on task...', 'Processing data...',
+               'Analyzing results...', 'Generating output...']
+    while True:
+        frame = spinner_frame(i)
+        action = actions[i % len(actions)]
+        sys.stdout.write(f'\r {frame} {action}')
+        sys.stdout.flush()
+        time.sleep(0.15)
+        i += 1
+
+def execute_prompt(prompt: str):
+    mode = prompt_value(prompt, 'QODER_TEST_MODE', 'final')
+    marker = prompt_value(prompt, 'QODER_TEST_MARKER', 'TEST-MARKER-NOT-SET')
+    duration = int(prompt_value(prompt, 'QODER_TEST_DURATION', '10'))
+    if mode == 'plain-final':
+        mode_plain_final(marker)
+    elif mode == 'final':
+        mode_final(marker)
+    elif mode == 'spinner-and-final':
+        mode_spinner_and_final(marker)
+    elif mode == 'approval':
+        mode_approval(marker)
+    elif mode == 'slow-stream':
+        mode_slow_stream(marker, duration)
+    elif mode == 'active-work-then-final':
+        mode_active_work_then_final(marker)
+    elif mode == 'spinner-only':
+        mode_spinner_only()
+    else:
+        print(f'Unknown mode: {mode}')
+        print('Supported: plain-final, final, spinner-and-final, approval, slow-stream, active-work-then-final, spinner-only')
+
+
+def main():
+    # Satisfy both runtime profiles without changing production detection.
+    print('OpenAI Codex directory: Armin integration test')
+    print('Qoder CLI Test Ready >')
+    sys.stdout.flush()
+    for prompt in sys.stdin:
+        prompt = prompt.strip()
+        if not prompt:
+            continue
+        execute_prompt(prompt)
+        print('\nType your message')
+        sys.stdout.flush()
+
+if __name__ == '__main__':
+    main()

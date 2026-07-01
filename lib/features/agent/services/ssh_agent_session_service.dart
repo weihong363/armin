@@ -399,22 +399,28 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
       terminalPromptParser: _terminalPromptParser,
       candidateOutput: finalRawOutput,
     );
-    final snapshot = observer.observe(observedOutput);
+    final settledSnapshot = observer.observeSettled(observedOutput);
+    final hasSettledOutput =
+        _hasSettledTurnEvidence(settledSnapshot.cleanedOutput);
+    final snapshot =
+        hasSettledOutput ? settledSnapshot : observer.observe(observedOutput);
     final terminalPrompt = snapshot.state == NativeOutputObserverState.running
         ? null
         : promptState.terminalPrompt;
-    final observerState = snapshot.state == NativeOutputObserverState.turnIdle
-        ? NativeOutputObserverState.outputQuieting
-        : snapshot.state;
+    final turnIdle = hasSettledOutput && snapshot.turnIdle;
+    final observerState =
+        snapshot.state == NativeOutputObserverState.turnIdle && !turnIdle
+            ? NativeOutputObserverState.outputQuieting
+            : snapshot.state;
     return AgentExecutionUpdate(
       rawOutput: '',
       cleanedOutput: snapshot.cleanedOutput,
       observerState: observerState,
-      turnIdle: false,
+      turnIdle: turnIdle,
       runtimeLost: snapshot.runtimeLost,
       needsAttention: terminalPrompt != null,
       nativeApproval: _nativeApprovalFromPrompt(terminalPrompt),
-      done: snapshot.runtimeLost || terminalPrompt != null,
+      done: turnIdle || snapshot.runtimeLost || terminalPrompt != null,
     );
   }
 

@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 2,
+  "hosts": [
+    {
+      "id": "host-local-mac",
+      "name": "Local Mac",
+      "host": "10.0.2.2",
+      "port": 22,
+      "username": "ironion",
+      "authType": "password",
+      "projectPath": "",
+      "tmuxSessionName": "armin-codex",
+      "agentCommand": "$HOME/.local/bin/qodercli",
+      "createdAt": "2026-06-17T12:00:00.000Z",
+      "updatedAt": "2026-06-17T12:00:00.000Z",
+      "privateKeyPath": "",
+      "isDefault": true,
+      "tmuxCommand": "/opt/homebrew/bin/tmux",
+      "pathPrepend": "/opt/homebrew/bin:/usr/local/bin:$HOME/.npm-global/bin:$HOME/.npm-packages/bin:$HOME/.local/bin",
+      "shellWrapper": "zshLogin",
+      "machineType": "macAppleSilicon"
+    }
+  ],
+  "tasks": [],
+  "projectPaths": [
+    {
+      "id": "project-armin-test-countdown",
+      "name": "countdown_widgets",
+      "path": "/Users/ironion/workspace/armin-test/countdown_widgets",
+      "createdAt": "2026-06-17T12:00:00.000Z",
+      "updatedAt": "2026-06-17T12:00:00.000Z",
+      "isDefault": false
+    },
+    {
+      "id": "project-armin-test-file-renamer",
+      "name": "file-renamer",
+      "path": "/Users/ironion/workspace/armin-test/file-renamer",
+      "createdAt": "2026-06-17T12:00:00.000Z",
+      "updatedAt": "2026-06-17T12:00:00.000Z",
+      "isDefault": false
+    },
+    {
+      "id": "project-armin-test-shotlink",
+      "name": "shotlink",
+      "path": "/Users/ironion/workspace/armin-test/shotlink",
+      "createdAt": "2026-06-17T12:00:00.000Z",
+      "updatedAt": "2026-06-17T12:00:00.000Z",
+      "isDefault": false
+    },
+    {
+      "id": "project-armin-test-todo-ai",
+      "name": "todo-ai",
+      "path": "/Users/ironion/workspace/armin-test/todo-ai",
+      "createdAt": "2026-06-17T12:00:00.000Z",
+      "updatedAt": "2026-06-17T12:00:00.000Z",
+      "isDefault": false
+    }
+  ]
+}

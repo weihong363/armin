@@ -2,14 +2,15 @@ import 'package:armin/app_state_scope.dart';
 import 'package:armin/core/models/task_status.dart';
 import 'package:armin/core/services/armin_app_state.dart';
 import 'package:armin/core/storage/task_history_store.dart';
-import '../features/agent/services/mock_agent_session_service.dart';
-import '../features/voice/services/mock_voice_service.dart';
 import 'package:armin/features/hosts/models/host_config.dart';
 import 'package:armin/features/hosts/screens/host_list_screen.dart';
 import 'package:armin/features/projects/models/project_path_config.dart';
 import 'package:armin/features/tasks/models/task_session.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+import '../features/agent/services/mock_agent_session_service.dart';
+import '../features/voice/services/mock_voice_service.dart';
 
 void main() {
   testWidgets('host list shows missing secure password state', (tester) async {
@@ -120,7 +121,7 @@ TaskSession _task({
   );
 }
 
-class _HostStore implements TaskHistoryStore {
+class _HostStore extends TaskHistoryStore {
   _HostStore(HostConfig host, {this.tasks = const []}) : hosts = [host];
 
   final List<HostConfig> hosts;

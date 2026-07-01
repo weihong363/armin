@@ -228,6 +228,42 @@ void main() {
     );
   });
 
+  test('turn idle deliverable event uses waiting runtime snapshot', () async {
+    final task = _task(status: TaskStatus.running);
+    final store = _TaskStore(task);
+    final eventBus = RuntimeEventBus();
+    final deliverableEvent = Completer<RuntimeEvent>();
+    final subscription = eventBus.events.listen((event) {
+      if (event.type == RuntimeEventType.deliverableUpdated &&
+          !deliverableEvent.isCompleted) {
+        deliverableEvent.complete(event);
+      }
+    });
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: _TurnIdleAgent(),
+      voiceService: const _SilentVoiceService(),
+      bridgeRuntime: BridgeRuntime(
+        taskStore: InMemoryRuntimeTaskStore(),
+        eventBus: eventBus,
+      ),
+      runtimeEventBus: eventBus,
+    );
+    await state.load();
+
+    state.startTaskExecution(
+      task,
+      const AgentExecutionRequest(prompt: 'Task'),
+    );
+
+    final event = await deliverableEvent.future.timeout(
+      const Duration(seconds: 1),
+    );
+    expect(event.snapshot?.status, RuntimeTaskStatus.waitingUser);
+    expect(store.task!.status, TaskStatus.turnIdle);
+    await subscription.cancel();
+  });
+
   test('markTaskCompleted creates bridge task before completing it', () async {
     final task = _task(status: TaskStatus.running);
     final store = _TaskStore(task);
@@ -297,6 +333,34 @@ void main() {
     expect(state.tasks.single.shortSummary, 'newer');
   });
 
+  test('load aligns running task with latest attention turn', () async {
+    final now = DateTime(2026, 5, 17);
+    final task = _task(status: TaskStatus.running).copyWith(
+      turns: [
+        NativeOutputTurn(
+          id: 'turn-1',
+          taskId: 'task-1',
+          turnIndex: 1,
+          userInput: 'Task',
+          rawOutput: 'Permission Required',
+          cleanedOutput: 'Permission Required',
+          startedAt: now,
+          lastOutputAt: now,
+          status: NativeOutputTurnStatus.needAttention,
+        ),
+      ],
+    );
+    final state = ArminAppState(
+      store: _TaskStore(task),
+      agentSessionService: _ControlAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+
+    await state.load();
+
+    expect(state.tasks.single.status, TaskStatus.needAttention);
+  });
+
   test('refreshTasks asynchronously syncs remote snapshot for running tasks',
       () async {
     final task = _task(status: TaskStatus.running).copyWith(
@@ -333,7 +397,10 @@ Thinking
     await state.refreshTasks();
 
     expect(state.tasks.single.status, TaskStatus.running);
-    await _waitUntil(() => store.task!.status == TaskStatus.turnIdle);
+    await _waitUntil(
+        () => store.task!.summary?.contains('FlipCountdown') == true);
+    expect(store.task!.status, TaskStatus.running);
+    expect(store.task!.turns.single.status, NativeOutputTurnStatus.running);
     expect(store.task!.summary, contains('FlipCountdown 已完成'));
     expect(store.task!.summary, isNot(contains('Credits exhausted')));
     expect(agent.events, contains('captureLog'));
@@ -368,9 +435,10 @@ Thinking
     await state.load();
 
     await state.refreshTasks();
-    await _waitUntil(() => store.task!.status == TaskStatus.turnIdle);
+    await _waitUntil(() => store.task!.summary?.contains('同步完成') == true);
 
     expect(state.tasks, hasLength(1));
+    expect(store.task!.status, TaskStatus.running);
     expect(store.tasks.where((item) => item.id == task.id), hasLength(1));
     expect(agent.events, contains('captureLog'));
   });
@@ -701,7 +769,7 @@ Thinking
     expect(agent.lastExecuteRequest?.attachOnly, isTrue);
   });
 
-  test('selectTerminalOption accepts options from pending approval history',
+  test('selectTerminalOption rejects archived approval without current state',
       () async {
     const option = NativeApprovalOption(
       key: '2',
@@ -728,21 +796,11 @@ Thinking
     );
     await state.load();
 
-    await state.selectTerminalOption(task, option);
-    await Future<void>.delayed(Duration.zero);
-
-    expect(agent.selectedTerminalOption, '2');
-    expect(store.task!.status, TaskStatus.running);
-    expect(store.task!.nativeApproval, isNull);
-    expect(
-      store.task!.nativeApprovalRequests.single.state,
-      ApprovalState.resolved,
+    await expectLater(
+      state.selectTerminalOption(task, option),
+      throwsA(isA<StateError>()),
     );
-    expect(
-      store.task!.nativeApprovalRequests.single.selectedOptionKey,
-      '2',
-    );
-    expect(agent.lastExecuteRequest?.attachOnly, isTrue);
+    expect(agent.selectedTerminalOption, isNull);
   });
 
   test('selectTerminalOption resolves stale pending approval with new id',
@@ -1021,7 +1079,7 @@ Thinking
     expect(agent.events, contains('captureLog'));
   });
 
-  test('refreshTaskFromRemote settles completed yolo output after credits',
+  test('refreshTaskFromRemote syncs yolo output without settling the turn',
       () async {
     final task = _task(status: TaskStatus.running).copyWith(
       turns: [
@@ -1064,8 +1122,8 @@ Thinking
     await state.refreshTaskFromRemote(task);
     await Future<void>.delayed(Duration.zero);
 
-    expect(store.task!.status, TaskStatus.turnIdle);
-    expect(store.task!.turns.last.status, NativeOutputTurnStatus.turnIdle);
+    expect(store.task!.status, TaskStatus.running);
+    expect(store.task!.turns.last.status, NativeOutputTurnStatus.running);
     expect(store.task!.summary, contains('FlipCountdown 已完全移除'));
     expect(store.task!.summary, isNot(contains('Credits exhausted')));
     expect(agent.lastExecuteRequest, isNull);
@@ -1117,6 +1175,173 @@ Thinking
 
     expect(agent.lastExecuteRequest, isNull);
     expect(agent.events, contains('captureLog'));
+  });
+
+  test('remote snapshot poll settles detached latest turn deliverable',
+      () async {
+    final task = _task(status: TaskStatus.observerDetached).copyWith(
+      shortSummary: '已自动断开监听以节省手机性能，远端任务仍在运行。',
+      turns: [
+        NativeOutputTurn(
+          id: 'turn-task-1-1',
+          taskId: 'task-1',
+          turnIndex: 1,
+          userInput: '刷题项目简介',
+          rawOutput: '▪ README.md 已创建。',
+          cleanedOutput: '▪ README.md 已创建。',
+          startedAt: DateTime(2026, 5, 18),
+          lastOutputAt: DateTime(2026, 5, 18),
+          status: NativeOutputTurnStatus.turnIdle,
+        ),
+        NativeOutputTurn(
+          id: 'turn-task-1-2',
+          taskId: 'task-1',
+          turnIndex: 2,
+          userInput: '输出项目名',
+          rawOutput: '',
+          cleanedOutput: '',
+          startedAt: DateTime(2026, 5, 18, 0, 1),
+          lastOutputAt: DateTime(2026, 5, 18, 0, 1),
+          status: NativeOutputTurnStatus.running,
+        ),
+      ],
+    );
+    final store = _TaskStore(task);
+    final agent = _ControlAgent()
+      ..capturedLog = '''
+> 刷题项目简介
+▪ README.md 已创建。
+
+> 输出项目名
+▪ The project name is countdown_widgets.
+  This is derived from the working directory path.
+Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdown_widgets
+''';
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: agent,
+      voiceService: const _SilentVoiceService(),
+      enableRemoteReconcile: true,
+      remoteSnapshotPollInterval: const Duration(milliseconds: 10),
+    );
+    await state.load();
+
+    await _waitUntil(() =>
+        agent.events.where((event) => event == 'captureLog').isNotEmpty &&
+        store.task?.turns.last.status == NativeOutputTurnStatus.turnIdle);
+    await _waitUntil(() => store.task?.turns.last.deliverable != null);
+    state.dispose();
+
+    expect(store.task!.status, TaskStatus.turnIdle);
+    expect(store.task!.turns.last.turnIndex, 2);
+    expect(store.task!.turns.last.deliverable?.displaySummary,
+        contains('countdown_widgets'));
+    expect(store.task!.turns.first.deliverable?.displaySummary,
+        isNot(contains('countdown_widgets')));
+    expect(store.task!.shortSummary, contains('countdown_widgets'));
+    expect(agent.lastExecuteRequest, isNull);
+  });
+
+  test('remote snapshot poll keeps detached planning output unfinished',
+      () async {
+    final task = _task(status: TaskStatus.observerDetached).copyWith(
+      turns: [
+        NativeOutputTurn(
+          id: 'turn-task-1-1',
+          taskId: 'task-1',
+          turnIndex: 1,
+          userInput: '刷题项目简介',
+          rawOutput: '',
+          cleanedOutput: '',
+          startedAt: DateTime(2026, 5, 18),
+          lastOutputAt: DateTime(2026, 5, 18),
+          status: NativeOutputTurnStatus.running,
+        ),
+      ],
+    );
+    final store = _TaskStore(task);
+    final agent = _ControlAgent()
+      ..capturedLog = '''
+▪ Let me help you create a project description for your coding practice.
+  First, I'll explore the current codebase.
+
+▪ Glob('**/*.{js,jsx,ts,tsx,md}')
+  └ No files found
+
+▪ The repository appears to be empty. Since there's no existing codebase
+  structure to work with, I'll create a standard project description.
+⠸ Thinking... (esc to cancel, 20s)
+''';
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: agent,
+      voiceService: const _SilentVoiceService(),
+      enableRemoteReconcile: true,
+      remoteSnapshotPollInterval: const Duration(milliseconds: 10),
+    );
+    await state.load();
+
+    await _waitUntil(
+        () => agent.events.where((event) => event == 'captureLog').isNotEmpty);
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    state.dispose();
+
+    expect(store.task!.status, TaskStatus.observerDetached);
+    expect(store.task!.turns.last.status, NativeOutputTurnStatus.running);
+    expect(store.task!.turns.last.deliverable, isNull);
+  });
+
+  test('remote snapshot poll settles latest turn while observer is active',
+      () async {
+    final task = _task(status: TaskStatus.running).copyWith(
+      turns: [
+        NativeOutputTurn(
+          id: 'turn-task-1-1',
+          taskId: 'task-1',
+          turnIndex: 1,
+          userInput: '输出项目名',
+          rawOutput: '',
+          cleanedOutput: '',
+          startedAt: DateTime(2026, 5, 18),
+          lastOutputAt: DateTime(2026, 5, 18),
+          status: NativeOutputTurnStatus.running,
+        ),
+      ],
+    );
+    final store = _TaskStore(task);
+    final agent = _HangingAgent()
+      ..capturedLog = '''
+> 输出项目名
+▪ countdown_widgets
+Credits exhausted. Use /usage for details or /upgrade for more.
+YOLO Shift+Tab to Auto Mode
+*   Type your message or @path/to/file
+Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdown_widgets
+''';
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: agent,
+      voiceService: const _SilentVoiceService(),
+      enableRemoteReconcile: true,
+      remoteSnapshotPollInterval: const Duration(milliseconds: 10),
+    );
+    await state.load();
+    state.startTaskExecution(
+      task,
+      const AgentExecutionRequest(prompt: '输出项目名'),
+    );
+
+    await _waitUntil(() =>
+        agent.events.where((event) => event == 'captureLog').isNotEmpty &&
+        store.task?.turns.last.status == NativeOutputTurnStatus.turnIdle);
+    await _waitUntil(() => store.task?.turns.last.deliverable != null);
+    state.dispose();
+
+    expect(store.task!.status, TaskStatus.turnIdle);
+    expect(store.task!.turns.last.deliverable?.displaySummary,
+        contains('countdown_widgets'));
+    expect(agent.lastExecuteRequest?.attachOnly, isFalse);
+    expect(agent.cleanedUp, isFalse);
   });
 
   test('remote reconcile keeps stable running output as running', () async {
@@ -1223,6 +1448,30 @@ Thinking
     expect(store.task!.turns.last.userInput, '只输出 pets 名字');
   });
 
+  test('sendFollowUp preserves fast observer attention update', () async {
+    final task = _task(status: TaskStatus.turnIdle);
+    final store = _TaskStore(task);
+    final agent = _FastAttentionFollowUpAgent();
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: agent,
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+    state.startTaskExecution(
+      task,
+      const AgentExecutionRequest(prompt: 'Task'),
+    );
+
+    await state.sendFollowUp(task, '继续执行');
+    await Future<void>.delayed(Duration.zero);
+
+    expect(store.task!.status, TaskStatus.needAttention);
+    expect(store.task!.turns.last.status, NativeOutputTurnStatus.needAttention);
+    state.dispose();
+    await agent.close();
+  });
+
   test('sendFollowUp preserves aggressive execution mode on reattach',
       () async {
     final task = _task(status: TaskStatus.turnIdle).copyWith(
@@ -1245,6 +1494,44 @@ Thinking
       agent.lastExecuteRequest?.approvalConfig?.mode,
       AgentApprovalMode.aggressive,
     );
+  });
+
+  test('sendFollowUp rollback unsent turn when remote send fails', () async {
+    final now = DateTime(2026, 5, 18);
+    final task = _task(status: TaskStatus.turnIdle).copyWith(
+      turns: [
+        NativeOutputTurn(
+          id: 'turn-task-1-1',
+          taskId: 'task-1',
+          turnIndex: 1,
+          userInput: '输出项目的日文名',
+          rawOutput: '▪ カウントダウンウィジェット',
+          cleanedOutput: '▪ カウントダウンウィジェット',
+          startedAt: now,
+          lastOutputAt: now,
+          status: NativeOutputTurnStatus.turnIdle,
+        ),
+      ],
+    );
+    final store = _TaskStore(task);
+    final agent = _SendFollowUpFailingAgent();
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: agent,
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await expectLater(
+      state.sendFollowUp(task, '输出韩文的项目名'),
+      throwsStateError,
+    );
+
+    expect(store.task!.status, TaskStatus.turnIdle);
+    expect(store.task!.turns, hasLength(1));
+    expect(store.task!.turns.single.userInput, '输出项目的日文名');
+    expect(store.task!.shortSummary, contains('发送补充指令失败'));
+    expect(agent.lastExecuteRequest?.attachOnly, isTrue);
   });
 
   test('sendFollowUp persists constraints recognized from user language',
@@ -1359,6 +1646,73 @@ Thinking
     expect(voice.spokenSummaries.single, contains('done'));
   });
 
+  test('existing deliverable event does not auto speak on task entry',
+      () async {
+    final now = DateTime(2026, 5, 18);
+    final task = _task(status: TaskStatus.turnIdle).copyWith(
+      turns: [
+        NativeOutputTurn(
+          id: 'turn-task-1-1',
+          taskId: 'task-1',
+          turnIndex: 1,
+          userInput: '输出项目简介',
+          rawOutput: '项目简介已输出',
+          cleanedOutput: '项目简介已输出',
+          startedAt: now,
+          lastOutputAt: now,
+          status: NativeOutputTurnStatus.turnIdle,
+          deliverable: const TurnDeliverable(
+            displaySummary: '项目简介已输出',
+            speechSummary: '项目简介已输出',
+            evidenceFingerprint: 'existing-result',
+          ),
+        ),
+      ],
+    );
+    final store = _TaskStore(task);
+    final voice = _CapturingVoiceService();
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: _ControlAgent(),
+      voiceService: voice,
+    );
+    await state.load();
+    state.setActiveDetailTaskId(task.id);
+
+    state.runtimeEventBus.publish(RuntimeEvent(
+      type: RuntimeEventType.deliverableUpdated,
+      taskId: task.id,
+      createdAt: DateTime.now(),
+      turnId: 'turn-task-1-1',
+      evidenceFingerprint: 'existing-result',
+    ));
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    expect(voice.spokenSummaries, isEmpty);
+  });
+
+  test('waiting user event does not auto speak existing result', () async {
+    final task = _task(status: TaskStatus.turnIdle);
+    final store = _TaskStore(task);
+    final voice = _CapturingVoiceService();
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: _ControlAgent(),
+      voiceService: voice,
+    );
+    await state.load();
+    state.setActiveDetailTaskId(task.id);
+
+    state.runtimeEventBus.publish(RuntimeEvent(
+      type: RuntimeEventType.taskWaitingUser,
+      taskId: task.id,
+      createdAt: DateTime.now(),
+    ));
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    expect(voice.spokenSummaries, isEmpty);
+  });
+
   test('turn idle update does not complete or clean up task', () async {
     final task = _task(status: TaskStatus.running);
     final store = _TaskStore(task);
@@ -1381,6 +1735,54 @@ Thinking
     expect(agent.cleanedUp, isFalse);
     expect(store.task!.turns.single.status, NativeOutputTurnStatus.turnIdle);
     expect(store.task!.turns.single.rawOutput, contains('hello'));
+  });
+
+  test('turn idle stops observer progress from appending thinking', () async {
+    final task = _task(status: TaskStatus.running);
+    final store = _TaskStore(task);
+    final agent = _IdleThenThinkingAgent();
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: agent,
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    state.startTaskExecution(
+      task,
+      const AgentExecutionRequest(prompt: 'Task'),
+    );
+    await _waitUntil(() => store.task!.status == TaskStatus.turnIdle);
+    await Future<void>.delayed(const Duration(milliseconds: 30));
+
+    expect(agent.cancelled, isTrue);
+    expect(store.task!.turns.single.rawOutput, contains('done'));
+    expect(store.task!.turns.single.rawOutput, isNot(contains('Thinking')));
+    state.dispose();
+    await agent.close();
+  });
+
+  test('empty turn idle update keeps task running', () async {
+    final task = _task(status: TaskStatus.running);
+    final store = _TaskStore(task);
+    final agent = _EmptyTurnIdleAgent();
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: agent,
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    state.startTaskExecution(
+      task,
+      const AgentExecutionRequest(prompt: 'Task'),
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    expect(store.task!.status, TaskStatus.running);
+    expect(store.task!.turns.single.status, NativeOutputTurnStatus.running);
+    expect(store.task!.summary, isNull);
+    expect(agent.cleanedUp, isFalse);
   });
 
   test('done update needing attention does not write a result summary',
@@ -1832,7 +2234,7 @@ Thinking
     expect(store.task!.turns.single.status, NativeOutputTurnStatus.failed);
   });
 
-  test('failed execution speaks failure summary', () async {
+  test('failed execution without turn deliverable stays silent', () async {
     final task = _task(status: TaskStatus.running);
     final store = _TaskStore(task);
     final voice = _CapturingVoiceService();
@@ -1851,9 +2253,8 @@ Thinking
     await Future<void>.delayed(Duration.zero);
 
     expect(store.task!.status, TaskStatus.failed);
-    await _waitUntil(() => voice.spokenSummaries.isNotEmpty);
-    expect(voice.spokenSummaries.single, contains('任务失败'));
-    expect(voice.spokenSummaries.single, contains('建议先查看失败原因'));
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    expect(voice.spokenSummaries, isEmpty);
   });
 
   test('socket interruption detaches observer without killing tmux session',
@@ -1880,6 +2281,90 @@ Thinking
     expect(store.task!.rawLog, contains('SocketException'));
     expect(store.task!.metricEvents.last.eventType, 'observer_connection_lost');
     expect(agent.cleanedUp, isFalse);
+  });
+
+  test('turn idle persists buffered progress before publishing deliverable',
+      () async {
+    final task = _task(status: TaskStatus.running);
+    final store = _TaskStore(task);
+    final agent = _BufferedThenIdleAgent();
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: agent,
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    state.startTaskExecution(
+      task,
+      const AgentExecutionRequest(prompt: 'Task'),
+    );
+
+    await _waitUntil(
+      () =>
+          store.task?.turns.isNotEmpty == true &&
+          store.task?.turns.last.deliverable != null,
+      timeout: const Duration(seconds: 1),
+    );
+
+    final latestTurn = store.task!.turns.last;
+    expect(store.task!.status, TaskStatus.turnIdle);
+    expect(latestTurn.rawOutput, contains('项目的中文名是：倒计时小部件'));
+    expect(latestTurn.deliverable?.displaySummary, contains('倒计时小部件'));
+    expect(
+        latestTurn.deliverable?.displaySummary, isNot(contains('Model · ctx')));
+  });
+
+  test('same turn deliverable updates when refreshed evidence changes',
+      () async {
+    final now = DateTime(2026, 5, 17);
+    final task = _task(status: TaskStatus.turnIdle).copyWith(
+      turns: [
+        NativeOutputTurn(
+          id: 'turn-task-1-1',
+          taskId: 'task-1',
+          turnIndex: 1,
+          userInput: '输出项目的日文名',
+          rawOutput: '''
+输出项目的日文名
+▪ 项目的日文名是：カウントダウンウィジェット
+  ✅ 美しいカウントダウンウィジェット集
+''',
+          cleanedOutput: '''
+▪ 项目的日文名是：カウントダウンウィジェット
+  ✅ 美しいカウントダウンウィジェット集
+''',
+          startedAt: now,
+          lastOutputAt: now,
+          status: NativeOutputTurnStatus.turnIdle,
+          deliverable: const TurnDeliverable(
+            displaySummary: '* Model · ctx ░░░░░░░░░░ 2%',
+            speechSummary: '* Model · ctx 2%',
+            evidenceFingerprint: 'old-footer',
+          ),
+        ),
+      ],
+    );
+    final store = _TaskStore(task);
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: _ControlAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await state.saveTask(task);
+
+    await _waitUntil(
+      () =>
+          store.task!.turns.single.deliverable?.evidenceFingerprint !=
+          'old-footer',
+      timeout: const Duration(seconds: 1),
+    );
+
+    final deliverable = store.task!.turns.single.deliverable!;
+    expect(deliverable.displaySummary, contains('カウントダウンウィジェット'));
+    expect(deliverable.displaySummary, isNot(contains('Model · ctx')));
   });
 }
 
@@ -1969,7 +2454,7 @@ ProjectPathConfig _projectPath({
   );
 }
 
-class _TaskStore implements TaskHistoryStore {
+class _TaskStore extends TaskHistoryStore {
   _TaskStore(
     this.task, {
     List<HostConfig>? hosts,
@@ -2195,6 +2680,29 @@ class _ControlAgent implements AgentSessionService {
   }
 }
 
+class _FastAttentionFollowUpAgent extends _ControlAgent {
+  final StreamController<AgentExecutionUpdate> _updates =
+      StreamController<AgentExecutionUpdate>.broadcast();
+
+  @override
+  Stream<AgentExecutionUpdate> execute(AgentExecutionRequest request) {
+    lastExecuteRequest = request;
+    return _updates.stream;
+  }
+
+  @override
+  Future<void> sendFollowUp(AgentControlRequest request) async {
+    await super.sendFollowUp(request);
+    _updates.add(const AgentExecutionUpdate(
+      rawOutput: 'Permission Required',
+      cleanedOutput: 'Permission Required',
+      needsAttention: true,
+    ));
+  }
+
+  Future<void> close() => _updates.close();
+}
+
 class _ProbeAgent extends _ControlAgent implements RemoteTaskProbeService {
   RemoteTaskProbe probe = const RemoteTaskProbe.missingSession();
   int probeCount = 0;
@@ -2225,6 +2733,14 @@ class _FailingAgent extends _ControlAgent {
   }
 }
 
+class _SendFollowUpFailingAgent extends _ControlAgent {
+  @override
+  Future<void> sendFollowUp(AgentControlRequest request) async {
+    lastFollowUp = request.instruction;
+    throw StateError('No route to host');
+  }
+}
+
 class _ConnectionInterruptedAgent extends _ControlAgent {
   @override
   Stream<AgentExecutionUpdate> execute(AgentExecutionRequest request) async* {
@@ -2252,6 +2768,83 @@ class _TurnIdleAgent extends _ControlAgent {
       done: true,
     );
   }
+}
+
+class _BufferedThenIdleAgent extends _ControlAgent {
+  @override
+  Stream<AgentExecutionUpdate> execute(AgentExecutionRequest request) async* {
+    yield const AgentExecutionUpdate(
+      rawOutput: '''
+输出项目的中文名
+▪ 项目的中文名是：倒计时小部件
+  依据来自 pubspec.yaml 文件中的 description 字段。
+''',
+      cleanedOutput: '''
+▪ 项目的中文名是：倒计时小部件
+  依据来自 pubspec.yaml 文件中的 description 字段。
+''',
+    );
+    yield const AgentExecutionUpdate(
+      rawOutput: '''
+*   Type your message or @path/to/file
+Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdown_widgets
+''',
+      cleanedOutput: '''
+*   Type your message or @path/to/file
+Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdown_widgets
+''',
+      turnIdle: true,
+      done: true,
+    );
+  }
+}
+
+class _EmptyTurnIdleAgent extends _ControlAgent {
+  @override
+  Stream<AgentExecutionUpdate> execute(AgentExecutionRequest request) async* {
+    yield const AgentExecutionUpdate(
+      rawOutput: '',
+      cleanedOutput: '',
+      turnIdle: true,
+      done: true,
+    );
+  }
+}
+
+class _IdleThenThinkingAgent extends _ControlAgent {
+  final StreamController<AgentExecutionUpdate> _updates =
+      StreamController<AgentExecutionUpdate>();
+  bool cancelled = false;
+
+  _IdleThenThinkingAgent() {
+    _updates.onCancel = () {
+      cancelled = true;
+    };
+  }
+
+  @override
+  Stream<AgentExecutionUpdate> execute(AgentExecutionRequest request) {
+    lastExecuteRequest = request;
+    scheduleMicrotask(() {
+      if (_updates.isClosed) return;
+      _updates.add(const AgentExecutionUpdate(
+        rawOutput: 'done',
+        cleanedOutput: 'done',
+        turnIdle: true,
+        done: true,
+      ));
+      Future<void>.delayed(const Duration(milliseconds: 10), () {
+        if (_updates.isClosed) return;
+        _updates.add(const AgentExecutionUpdate(
+          rawOutput: 'Thinking...',
+          cleanedOutput: 'Thinking...',
+        ));
+      });
+    });
+    return _updates.stream;
+  }
+
+  Future<void> close() => _updates.close();
 }
 
 class _DoneNeedsAttentionAgent extends _ControlAgent {

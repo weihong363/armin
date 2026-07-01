@@ -21,5 +21,5 @@
 
 ## 推荐测试
 
-- `flutter test test/storage/json_task_history_store_test.dart`
+- `flutter test test/runtime`
 - 如新增项目路径 UI 测试，放在 `test/projects/` 或相关 settings 测试中。

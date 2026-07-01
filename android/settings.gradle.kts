@@ -21,9 +21,10 @@ pluginManagement {
 }
 
 plugins {
-    id("dev.flutter.flutter-plugin-loader") version "1.0.0"
-    id("com.android.application") version "8.11.1" apply false
-    id("org.jetbrains.kotlin.android") version "2.2.20" apply false
+    id("dev.flutter.flutter-plugin-loader") version providers.gradleProperty("flutterPluginLoaderVersion").get()
+    id("org.jetbrains.kotlin.android") version providers.gradleProperty("kotlinVersion").get() apply false
+    id("com.android.application") version providers.gradleProperty("agpVersion").get() apply false
+    id("com.android.library") version providers.gradleProperty("agpVersion").get() apply false
 }
 
 include(":app")

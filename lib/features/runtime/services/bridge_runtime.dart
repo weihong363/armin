@@ -22,6 +22,7 @@ class BridgeRuntime {
   final RuntimeEventBus eventBus;
   final RuntimeSessionManager sessionManager;
   final TaskWatcher watcher;
+  final Map<String, Future<void>> _durableWriteChains = {};
 
   /// Per-task diagnostics for debugging (not exposed to end users).
   final Map<String, RuntimeDiagnostics> _diagnostics = {};
@@ -255,14 +256,17 @@ class BridgeRuntime {
     String taskId, {
     String summary = '',
     DateTime? now,
-  }) {
-    return _transition(
+  }) async {
+    final updated = await _transition(
       taskId,
       RuntimeTaskStatus.waitingUser,
       RuntimeEventType.taskPaused,
       summary: summary,
       now: now,
+      workPhase: WorkPhase.quieting,
+      workHeadline: 'Task paused.',
     );
+    return updated;
   }
 
   Future<RuntimeTaskSnapshot> resumeTask(
@@ -442,8 +446,6 @@ class BridgeRuntime {
     DateTime? now,
   }) {
     final observedAt = now ?? DateTime.now();
-    _publishDirect(
-        RuntimeEventType.approvalRequested, taskId, observedAt, null);
     _diagnosticsUpdate(
         taskId,
         (d) => d.copyWith(
@@ -453,10 +455,12 @@ class BridgeRuntime {
     _updateWorkState(
       taskId,
       WorkPhase.needsApproval,
-      approval?.question ?? 'Agent needs your approval.',
+      approval?.question ?? '这个任务需要你做决定',
       '',
       approval: approval,
     );
+    _publishDirect(
+        RuntimeEventType.approvalRequested, taskId, observedAt, null);
   }
 
   /// Publish an approval resolving event (user action sent to terminal).
@@ -513,10 +517,21 @@ class BridgeRuntime {
         'Please try again.');
   }
 
-  /// Publish an output updated event.
-  void notifyOutputUpdated(String taskId, {DateTime? now}) {
+  /// Publish an output updated event with optional output summary.
+  void notifyOutputUpdated(String taskId, {DateTime? now, String? output}) {
     final observedAt = now ?? DateTime.now();
-    _publishDirect(RuntimeEventType.outputUpdated, taskId, observedAt, null);
+    final trimmed = output?.trim() ?? '';
+    final snapshot = trimmed.isNotEmpty
+        ? RuntimeTaskSnapshot(
+            taskId: taskId,
+            status: RuntimeTaskStatus.running,
+            createdAt: observedAt,
+            updatedAt: observedAt,
+            summary: trimmed,
+          )
+        : null;
+    _publishDirect(
+        RuntimeEventType.outputUpdated, taskId, observedAt, snapshot);
     _diagnosticsUpdate(
         taskId,
         (d) => d.copyWith(
@@ -525,11 +540,46 @@ class BridgeRuntime {
             ));
   }
 
-  /// Publish a deliverable updated event.
-  void notifyDeliverableUpdated(String taskId, {DateTime? now}) {
+  /// Publish a deliverable updated event with optional deliverable summary.
+  Future<void> notifyDeliverableUpdated(
+    String taskId, {
+    required String deliverableSummary,
+    required String turnId,
+    required String evidenceFingerprint,
+    DateTime? now,
+  }) async {
     final observedAt = now ?? DateTime.now();
-    _publishDirect(
-        RuntimeEventType.deliverableUpdated, taskId, observedAt, null);
+    final trimmed = deliverableSummary.trim();
+    if (trimmed.isEmpty || turnId.trim().isEmpty) return;
+    final current = await _requireTask(taskId);
+    final snapshot = current.copyWith(
+      updatedAt: observedAt,
+      summary: trimmed,
+    );
+    final event = RuntimeEvent(
+      type: RuntimeEventType.deliverableUpdated,
+      taskId: taskId,
+      createdAt: observedAt,
+      snapshot: snapshot,
+      turnId: turnId,
+      evidenceFingerprint: evidenceFingerprint,
+    );
+    await _enqueueDurableWrite(taskId, () => _saveEvent(event));
+    final currentWorkState = _workStates[taskId];
+    if (currentWorkState != null &&
+        currentWorkState.lastDeliverableId != evidenceFingerprint) {
+      final updatedWorkState = currentWorkState.copyWith(
+        lastDeliverableId: evidenceFingerprint,
+        deliverableCount: currentWorkState.deliverableCount + 1,
+        updatedAt: observedAt,
+      );
+      _workStates[taskId] = updatedWorkState;
+      await _enqueueDurableWrite(
+        taskId,
+        () => _saveWorkState(updatedWorkState),
+      );
+    }
+    eventBus.publish(event);
     _diagnosticsUpdate(
         taskId,
         (d) => d.copyWith(
@@ -553,6 +603,8 @@ class BridgeRuntime {
     RuntimeEventType eventType, {
     required String summary,
     DateTime? now,
+    WorkPhase? workPhase,
+    String? workHeadline,
   }) async {
     _validateTaskId(taskId);
     final current = await _requireTask(taskId);
@@ -570,13 +622,21 @@ class BridgeRuntime {
               eventCount: d.eventCount + 1,
               updatedAt: updated.updatedAt,
             ));
-    // Update WorkState based on transition
+    if (workPhase != null) {
+      _updateWorkState(
+        taskId,
+        workPhase,
+        workHeadline ?? '',
+        summary,
+      );
+      return updated;
+    }
+    // Update WorkState based on transition.
     switch (status) {
       case RuntimeTaskStatus.running:
         _updateWorkState(taskId, WorkPhase.working, '', summary);
       case RuntimeTaskStatus.waitingUser:
-        _updateWorkState(
-            taskId, WorkPhase.turnIdle, 'Waiting for you.', summary);
+        _updateWorkState(taskId, WorkPhase.turnIdle, '等待你的指示', summary);
       case RuntimeTaskStatus.completed:
         _updateWorkState(
             taskId, WorkPhase.completed, 'Task completed.', summary);
@@ -606,7 +666,9 @@ class BridgeRuntime {
       snapshot: snapshot,
     );
     eventBus.publish(event);
-    unawaited(_saveEvent(event));
+    unawaited(
+      _enqueueDurableWrite(snapshot.taskId, () => _saveEvent(event)),
+    );
     _diagnosticsUpdate(
         snapshot.taskId,
         (d) => d.copyWith(
@@ -630,7 +692,13 @@ class BridgeRuntime {
       snapshot: snapshot,
     );
     eventBus.publish(event);
-    unawaited(_saveEvent(event));
+    if (_shouldPersistEvent(type)) {
+      unawaited(_enqueueDurableWrite(taskId, () => _saveEvent(event)));
+    }
+  }
+
+  bool _shouldPersistEvent(RuntimeEventType type) {
+    return type != RuntimeEventType.outputUpdated;
   }
 
   void _ensureDiagnostics(String taskId) {
@@ -665,16 +733,19 @@ class BridgeRuntime {
     String detail, {
     NativeTerminalApproval? approval,
   }) {
+    final current = _workStates[taskId];
     final state = WorkState(
       taskId: taskId,
       phase: phase,
       headline: headline,
       detail: detail,
       approval: approval,
+      lastDeliverableId: current?.lastDeliverableId,
+      deliverableCount: current?.deliverableCount ?? 0,
       updatedAt: DateTime.now(),
     );
     _workStates[taskId] = state;
-    unawaited(_saveWorkState(state));
+    unawaited(_enqueueDurableWrite(taskId, () => _saveWorkState(state)));
     _diagnosticsUpdate(
         taskId,
         (d) => d.copyWith(
@@ -701,6 +772,20 @@ class BridgeRuntime {
     if (store is RuntimePersistenceStore) {
       await store.saveWorkState(state);
     }
+  }
+
+  Future<void> _enqueueDurableWrite(
+    String taskId,
+    Future<void> Function() write,
+  ) {
+    final previous = _durableWriteChains[taskId] ?? Future<void>.value();
+    final next = previous.then((_) => write());
+    _durableWriteChains[taskId] = next;
+    return next.whenComplete(() {
+      if (identical(_durableWriteChains[taskId], next)) {
+        _durableWriteChains.remove(taskId);
+      }
+    });
   }
 }
 

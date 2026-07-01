@@ -77,6 +77,16 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
     );
     final cleaned =
         _redactor.redactInlineSecrets(_cleaner.clean(withoutPromptBlocks));
+    final finalMarkerLines = _finalMarkerDeliverableLines(cleaned);
+    if (finalMarkerLines.isNotEmpty) {
+      final display = _compactDisplay(finalMarkerLines.take(maxDisplayLines));
+      final speech = DeviceVoiceService.cleanSpeechSummary(display);
+      return OutputSummary(
+        displaySummary: display,
+        speechSummary: speech,
+        importantLines: finalMarkerLines,
+      );
+    }
     final packageSummary = _packageTreeSummary(cleaned);
     if (packageSummary.isNotEmpty) {
       final speech = DeviceVoiceService.cleanSpeechSummary(packageSummary);
@@ -149,7 +159,7 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
       if (trimmed.isEmpty) {
         continue;
       }
-      final bulletMatch = RegExp(r'^[▪■●•]\s*(.+)$').firstMatch(trimmed);
+      final bulletMatch = RegExp(r'^[▪■●]\s*(.+)$').firstMatch(trimmed);
       if (bulletMatch != null) {
         flush();
         final content = bulletMatch.group(1)?.trim() ?? '';
@@ -175,6 +185,20 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
       return const [];
     }
     return blocks.last;
+  }
+
+  List<String> _finalMarkerDeliverableLines(String cleaned) {
+    String? marker;
+    final markerPattern = RegExp(
+        r'^[▪■●]\s*(ARMIN[A-Z0-9_]*(?:\s+.*)?ARMIN[A-Z0-9_]*|ARMIN[A-Z0-9_]*)\s*$');
+    for (final rawLine in cleaned.split('\n')) {
+      final trimmed = rawLine.trim();
+      final match = markerPattern.firstMatch(trimmed);
+      if (match != null) {
+        marker = _semanticLine(match.group(1)?.trim() ?? '');
+      }
+    }
+    return marker == null || marker.isEmpty ? const [] : [marker];
   }
 
   bool _looksLikeBulletToolCall(String line) {
@@ -874,7 +898,26 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
     }
     value = _dropToolTracePrefix(value);
     value = _stripPromptNoisePrefix(value);
+    if (_looksLikePlanningLine(value)) {
+      return '';
+    }
     return _normalizePetDescription(value);
+  }
+
+  bool _looksLikePlanningLine(String line) {
+    final lower = line.trim().toLowerCase();
+    return lower.startsWith('let me ') ||
+        lower.startsWith('first, ') ||
+        lower.startsWith('next, ') ||
+        lower.startsWith('now ') ||
+        lower.startsWith('i will ') ||
+        lower.startsWith("i'll ") ||
+        lower.startsWith('i am going to ') ||
+        lower.startsWith("i'm going to ") ||
+        lower.startsWith('i need to ') ||
+        lower.contains(" i'll ") ||
+        lower.contains(' i will ') ||
+        lower.contains(' let me ');
   }
 
   String _stripPromptNoisePrefix(String line) {
@@ -904,6 +947,14 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
     ),
     RegExp(
       r'^(?:do not analyze unrelated architecture\.?|run only targeted tests\.?|keep command output short\.?)[\s:：,，。．.\-]*',
+      caseSensitive: false,
+    ),
+    RegExp(
+      r'^(?:message\s+)?above\.?\s+do not ignore it\.?[\s:：,，。．.\-]*',
+      caseSensitive: false,
+    ),
+    RegExp(
+      r'^working:[\s:：,，。．.\-]*',
       caseSensitive: false,
     ),
     RegExp(
@@ -1139,7 +1190,9 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
   bool _looksLikeLowValueLine(String line) {
     final lower = line.toLowerCase();
     return lower == '无' ||
+        _looksLikeEncodedPromptEchoLine(lower) ||
         lower == 'none' ||
+        lower == '*' ||
         lower == 'not_run' ||
         lower.startsWith('```') ||
         lower.startsWith('import ') ||
@@ -1163,6 +1216,8 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
         lower.startsWith('## user task') ||
         lower.startsWith('## context chunk') ||
         lower.startsWith('## secret placeholders') ||
+        lower.startsWith('important: after completing your current task') ||
+        lower == 'above. do not ignore it.' ||
         lower.startsWith('completion: tls handshake eof') ||
         lower.contains('update successful') ||
         lower.startsWith('tool:') ||
@@ -1206,6 +1261,8 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
         lower.startsWith('opened ') ||
         lower.startsWith('checked ') ||
         lower.startsWith('shift+tab ') ||
+        RegExp(r'^(?:auto\s+)?model\s+·\s+ctx\b').hasMatch(lower) ||
+        lower.contains('type your message or @path/to/file') ||
         lower.startsWith('the user ') ||
         lower.startsWith('done.') ||
         lower.startsWith('let me ') ||
@@ -1235,9 +1292,18 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
         line.startsWith('需求');
   }
 
+  bool _looksLikeEncodedPromptEchoLine(String lower) {
+    return lower.contains('%20') ||
+        lower.contains('%2 0') ||
+        (lower.contains('%2') &&
+            (lower.contains('only') || lower.contains('armin_'))) ||
+        RegExp(r'^0armin_[a-z0-9_]+_begin\b').hasMatch(lower);
+  }
+
   bool _looksLikeResultLine(String line) {
     final lower = line.toLowerCase();
-    return line.contains('已') ||
+    return _looksLikeArminMarkerResult(lower) ||
+        line.contains('已') ||
         line.contains('实际') ||
         line.contains('找到') ||
         line.contains('结果') ||
@@ -1247,6 +1313,11 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
         line.contains('失败') ||
         line.contains('额度已用完') ||
         _looksLikeEnglishStatusLine(lower);
+  }
+
+  bool _looksLikeArminMarkerResult(String lower) {
+    return RegExp(r'\barmin_[a-z0-9_]+_begin\b').hasMatch(lower) &&
+        RegExp(r'\barmin_[a-z0-9_]+_end\b').hasMatch(lower);
   }
 
   bool _looksLikeEnglishStatusLine(String lower) {

@@ -64,6 +64,25 @@ hello
     expect(summary.speechSummary, isEmpty);
   });
 
+  test('rule provider ignores Armin follow-up control injection', () async {
+    const injected = OutputSummaryRequest(
+      cleanedOutput: '''
+IMPORTANT: After completing your current task, you MUST address the user's message
+above. Do not ignore it.
+项目结构检查完成，主要入口在 lib/main.dart。
+''',
+      status: TaskStatus.turnIdle,
+      taskTitle: '检查项目结构',
+    );
+
+    final summary =
+        await const RuleBasedOutputSummaryProvider().summarize(injected);
+
+    expect(summary.displaySummary, '项目结构检查完成，主要入口在 lib/main.dart。');
+    expect(summary.displaySummary, isNot(contains('IMPORTANT')));
+    expect(summary.displaySummary, isNot(contains('Do not ignore it')));
+  });
+
   test('rule provider drops turn headers and prompt governance echoes',
       () async {
     const noisyTurn = OutputSummaryRequest(
@@ -350,6 +369,157 @@ Thinking...
     expect(summary.displaySummary, isNot(contains('实现一个批量重命名工具')));
     expect(summary.displaySummary, isNot(contains('Thinking')));
     expect(summary.displaySummary, isNot(contains('检查项目结构')));
+  });
+
+  test('rule provider ignores trailing thinking chrome after final answer',
+      () async {
+    const request = OutputSummaryRequest(
+      cleanedOutput: '''
+Thinking
+ │ File read successfully. No modifications needed.
+ ▪ ARMIN_VERIFY_BEGIN case_id=P26-D2 status=PASS next_action=COMPLETE ARMIN_VERIFY_END
+
+──────────────────────────────────────────────────────────────────────────
+ Auto Model · ctx ░░░░░░░░░░ 0% · ~/workspace/armin
+ ⠸ Thinking... (esc to cancel, 1m 2s)
+ YOLO Shift+Tab to Auto Mode
+''',
+      status: TaskStatus.turnIdle,
+      taskTitle: '读取 pubspec.yaml',
+      promptInputs: ['读取 pubspec.yaml'],
+    );
+
+    final summary =
+        await const RuleBasedOutputSummaryProvider().summarize(request);
+
+    expect(summary.displaySummary, contains('ARMIN_VERIFY_BEGIN'));
+    expect(summary.displaySummary, contains('status=PASS'));
+    expect(summary.displaySummary, isNot(contains('Thinking')));
+    expect(summary.displaySummary, isNot(contains('ctx')));
+    expect(summary.displaySummary, isNot(contains('YOLO')));
+  });
+
+  test('rule provider drops encoded prompt echo before final marker', () async {
+    const request = OutputSummaryRequest(
+      cleanedOutput: '''
+> Read%20pubspec.yaml.%20Do%20not%20modify%20files.%20Final%20answer%20only:%2
+0ARMIN_SIMPLE_BEGIN%20status=PASS%20files_changed=0%20ARMIN_SIMPLE_END
+▪ ARMIN_SIMPLE_BEGIN status=PASS files_changed=0 ARMIN_SIMPLE_END
+*
+Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdown_widgets
+''',
+      status: TaskStatus.turnIdle,
+      taskTitle:
+          'Read%20pubspec.yaml.%20Do%20not%20modify%20files.%20Final%20answer%20only:%20ARMIN_SIMPLE_BEGIN%20status=PASS%20files_changed=0%20ARMIN_SIMPLE_END',
+      promptInputs: [
+        'Read%20pubspec.yaml.%20Do%20not%20modify%20files.%20Final%20answer%20only:%20ARMIN_SIMPLE_BEGIN%20status=PASS%20files_changed=0%20ARMIN_SIMPLE_END',
+      ],
+    );
+
+    final summary =
+        await const RuleBasedOutputSummaryProvider().summarize(request);
+
+    expect(
+      summary.displaySummary,
+      'ARMIN_SIMPLE_BEGIN status=PASS files_changed=0 ARMIN_SIMPLE_END',
+    );
+    expect(summary.displaySummary, isNot(contains('%20')));
+    expect(summary.displaySummary, isNot(contains('only:%2')));
+  });
+
+  test('rule provider prefers marker over governance replay transcript',
+      () async {
+    const request = OutputSummaryRequest(
+      cleanedOutput: '''
+● Initializing... Prompts will be queued.
+> Armin context governance (aggressive):
+- You have full authority to create, modify, and delete files without
+asking.
+- Do not interrupt the user — proceed autonomously unless you encounter a
+hard blocker.
+Read%20pubspec.yaml.%20Do%20not%20modify%20files.%20Final%20answer%20only:%2
+0ARMIN_SIMPLE_BEGIN%20status=PASS%20files_changed=0%20ARMIN_SIMPLE_END
+> The user sent a new message while you were working:
+- You have full authority to create, modify, and delete files without
+asking.
+- Do not interrupt the user — proceed autonomously unless you encounter a
+hard blocker.
+message above. Do not ignore it.
+▪ Let me read the pubspec.yaml file.
+▪ Read(/Users/.../pubspec.yaml)
+▪ ARMIN_SIMPLE_BEGIN status=PASS files_changed=0 ARMIN_SIMPLE_END
+*
+Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdown_widgets
+''',
+      status: TaskStatus.turnIdle,
+      taskTitle:
+          'Read%20pubspec.yaml.%20Do%20not%20modify%20files.%20Final%20answer%20only:%20ARMIN_SIMPLE_BEGIN%20status=PASS%20files_changed=0%20ARMIN_SIMPLE_END',
+      promptInputs: [
+        'Read%20pubspec.yaml.%20Do%20not%20modify%20files.%20Final%20answer%20only:%20ARMIN_SIMPLE_BEGIN%20status=PASS%20files_changed=0%20ARMIN_SIMPLE_END',
+      ],
+    );
+
+    final summary =
+        await const RuleBasedOutputSummaryProvider().summarize(request);
+
+    expect(
+      summary.displaySummary,
+      'ARMIN_SIMPLE_BEGIN status=PASS files_changed=0 ARMIN_SIMPLE_END',
+    );
+    expect(summary.displaySummary, isNot(contains('Initializing')));
+    expect(summary.displaySummary, isNot(contains('governance')));
+    expect(summary.displaySummary, isNot(contains('hard blocker')));
+  });
+
+  test('rule provider strips inline do-not-ignore prefix before marker',
+      () async {
+    const request = OutputSummaryRequest(
+      cleanedOutput: '''
+> The user sent a new message while you were working:
+message above. Do not ignore it. ARMINR1PASS
+*
+Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdown_widgets
+''',
+      status: TaskStatus.turnIdle,
+      taskTitle: 'Read pubspec.yaml',
+      promptInputs: ['Read pubspec.yaml'],
+      agentCommand: 'qodercli',
+    );
+
+    final summary =
+        await const RuleBasedOutputSummaryProvider().summarize(request);
+
+    expect(summary.displaySummary, 'ARMINR1PASS');
+    expect(summary.displaySummary, isNot(contains('Do not ignore it')));
+  });
+
+  test('rule provider prefers final qoder bullet over tool output', () async {
+    const request = OutputSummaryRequest(
+      cleanedOutput: '''
+▪ Let me list the contents of the lib directory.
+
+▪ Bash(ls -la lib/)
+  └ total 16
+    drwxr-xr-x@ 4 ironion  staff   128 Jun 30 00:01 .
+    drwxr-xr-x  7 ironion  staff   224 Jun 30 00:00 ..
+    … +2 lines
+
+▪ ARMINR2C
+Credits exhausted. Use /usage for details or /upgrade for more.
+Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdown_widgets
+''',
+      status: TaskStatus.turnIdle,
+      taskTitle: 'Read lib directory briefly',
+      promptInputs: ['Read lib directory briefly'],
+      agentCommand: 'qodercli',
+    );
+
+    final summary =
+        await const RuleBasedOutputSummaryProvider().summarize(request);
+
+    expect(summary.displaySummary, 'ARMINR2C');
+    expect(summary.displaySummary, isNot(contains('drwxr-xr-x')));
+    expect(summary.displaySummary, isNot(contains('Bash(')));
   });
 
   test('rule provider removes meta narration prefixes before results',
@@ -1161,6 +1331,99 @@ README.md 已写入，包含三种模式的完整使用示例、公共参数表�
     expect(summary.displaySummary, isNot(contains('The user rejected')));
     expect(summary.displaySummary, isNot(contains('Write(')));
     expect(summary.displaySummary, isNot(contains('Done. README.md created')));
+  });
+
+  test('rule provider ignores qoder planning and keeps final project summary',
+      () async {
+    const request = OutputSummaryRequest(
+      cleanedOutput: '''
+▪ Let me help you create a project description for your coding practice
+  (leetcode-style) project.
+
+  First, I'll explore the current codebase to understand its structure and
+  identify where to add the project description.
+
+▪ Glob('**/*.{js,jsx,ts,tsx,md}')
+  └ No files found
+
+▪ The repository appears to be empty or contains only deleted files. Since
+  there's no existing codebase structure to work with, I'll create a standard
+  project description for a coding practice/leetcode-style project.
+
+  Let me create a README.md file with a comprehensive project description:
+
+▪ Write(/Users/.../README.md)
+  └ Accepted README.md (Ctrl+O to expand)
+
+▪ I've created a README.md file with a comprehensive project description for
+  your coding practice project. The description includes:
+
+  - Project overview and purpose
+  - Key features like problem categorization, difficulty levels, and progress
+    tracking
+  - Technology stack information
+  - Getting started instructions
+  - Contribution guidelines
+
+  The README is written in clear, professional markdown format and provides all
+  the essential information someone would need to understand and use your
+  coding practice project.
+
+  Would you like me to make any specific modifications to the README content?
+Credits exhausted. Use /usage for details or /upgrade for more.
+Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdown_widgets
+''',
+      status: TaskStatus.turnIdle,
+      taskTitle: '刷题项目简介',
+      promptInputs: ['刷题项目简介'],
+      agentCommand: 'qodercli',
+    );
+
+    final summary = await const RuleBasedOutputSummaryProvider().summarize(
+      request,
+    );
+
+    expect(summary.displaySummary, contains("I've created a README.md file"));
+    expect(summary.displaySummary, contains('Project overview and purpose'));
+    expect(summary.displaySummary, isNot(contains("First, I'll explore")));
+    expect(summary.displaySummary, isNot(contains('Glob(')));
+    expect(summary.displaySummary, isNot(contains('Write(')));
+    expect(summary.displaySummary, isNot(contains("I'll create")));
+  });
+
+  test('rule provider keeps middle dot list items in one deliverable block',
+      () async {
+    const request = OutputSummaryRequest(
+      cleanedOutput: '''
+▪ 这是一个基于 Flutter/Dart 的高视觉表现力倒计时小部件（Widget）库。
+  ✅ 核心特性：
+  - 支持 3 种设计风格：
+  • CircularCountdown：环形进度动画（类时钟旋转效果）
+  • LinearCountdown：线性进度条（可定制高度、标签显隐）
+  • FlipCountdown：翻转式数字动画（模拟机械翻页钟的沉浸感）
+  ✅ 技术栈：
+  - 兼容 Flutter 3.10+ 与 Dart SDK ≥3.0.0
+  - 内置完整单元测试（共 17 个用例，16 个通过，1 个失败）
+  - 标准 Flutter 包结构：lib/（源码）、test/（测试）、example/（示例）、doc/（文档）
+Credits exhausted. Use /usage for details or /upgrade for more.
+Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdown_widgets
+''',
+      status: TaskStatus.turnIdle,
+      taskTitle: '用中文输出',
+      promptInputs: ['用中文输出'],
+      agentCommand: 'qodercli',
+    );
+
+    final summary = await const RuleBasedOutputSummaryProvider().summarize(
+      request,
+    );
+
+    expect(summary.displaySummary, startsWith('这是一个基于 Flutter/Dart'));
+    expect(summary.displaySummary, contains('CircularCountdown'));
+    expect(summary.displaySummary, contains('LinearCountdown'));
+    expect(summary.displaySummary, contains('FlipCountdown'));
+    expect(summary.displaySummary, contains('✅ 技术栈'));
+    expect(summary.displaySummary, isNot(contains('Model · ctx')));
   });
 }
 

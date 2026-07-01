@@ -26,4 +26,4 @@
 - `flutter test test/hosts/host_config_test.dart`
 - `flutter test test/hosts/host_form_screen_test.dart`
 - `flutter test test/hosts/host_list_screen_test.dart`
-- `flutter test test/storage/json_task_history_store_test.dart`
+- `flutter test test/runtime`

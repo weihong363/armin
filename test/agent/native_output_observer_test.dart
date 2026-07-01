@@ -61,7 +61,7 @@ void main() {
       now: DateTime(2026, 5, 23, 12),
     );
 
-    expect(snapshot.state, NativeOutputObserverState.running);
+    expect(snapshot.state, isNot(NativeOutputObserverState.turnIdle));
     expect(snapshot.turnIdle, isFalse);
   });
 
@@ -84,6 +84,265 @@ Credits exhausted. Use /usage for details or /upgrade for more.
 
     expect(snapshot.state, NativeOutputObserverState.turnIdle);
     expect(snapshot.needsAttention, isFalse);
+    expect(snapshot.turnIdle, isTrue);
+  });
+
+  test('settled final answer is not kept running by trailing thinking chrome',
+      () {
+    final observer = NativeOutputObserver(
+      idleThreshold: const Duration(seconds: 1),
+    );
+    const output = '''
+Thinking
+ │ File read successfully. No modifications needed.
+ ▪ ARMIN_VERIFY_BEGIN case_id=P26-D2 status=PASS next_action=COMPLETE ARMIN_VERIFY_END
+
+──────────────────────────────────────────────────────────────────────────
+ Auto Model · ctx ░░░░░░░░░░ 0% · ~/workspace/armin
+ ⠸ Thinking... (esc to cancel, 1m 2s)
+ YOLO Shift+Tab to Auto Mode
+''';
+
+    final snapshot = observer.observeSettled(
+      output,
+      now: DateTime(2026, 5, 23, 12),
+    );
+
+    expect(snapshot.state, NativeOutputObserverState.turnIdle);
+    expect(snapshot.needsAttention, isFalse);
+    expect(snapshot.turnIdle, isTrue);
+  });
+
+  test('settled candidate stays running while recent tool work is visible', () {
+    final observer = NativeOutputObserver(
+      idleThreshold: const Duration(seconds: 1),
+    );
+    const output = '''
+▪ Let me summarize the project information by exploring its structure and key files.
+
+▪ Glob('**/*.{js,jsx,ts,tsx,css,html,json}')
+  └ Found 1 matching file(s) (Ctrl+O to expand)
+
+▪ Let me read the Qoder settings file to understand the project configuration.
+
+▪ Read(/Users/.../settings.local.json)
+  └ Read 8 lines
+
+▪ Let me check the current directory structure and look for key project files.
+
+▪ Bash(ls -la)
+  └ total 16
+    drwxr-xr-x  11 ironion  staff  352 Jun 20 23:21 .
+
+▪ Let me examine the pubspec.yaml file to understand the project's Dart/Flutter configuration.
+
+▪ Read(/Users/.../pubspec.yaml)
+  └ Read 20 lines
+
+▪ Let me check the lib directory structure to understand the project's source code organization.
+''';
+
+    final snapshot = observer.observeSettled(
+      output,
+      now: DateTime(2026, 6, 27, 12),
+    );
+
+    expect(snapshot.state, NativeOutputObserverState.running);
+    expect(snapshot.turnIdle, isFalse);
+  });
+
+  test('settled final answer wins over earlier tool work in the same pane', () {
+    final observer = NativeOutputObserver(
+      idleThreshold: const Duration(seconds: 1),
+    );
+    const output = '''
+▪ Let me summarize the project information by exploring its structure and key files.
+
+▪ Glob('**/*.{js,jsx,ts,tsx,css,html,json}')
+  └ Found 1 matching file(s) (Ctrl+O to expand)
+
+▪ Read(/Users/.../pubspec.yaml)
+  └ Read 20 lines
+
+▪ P26-B02R-ACTIVE-FINAL
+  Project inspection completed.
+  Unique identifier: P26-B02R-ACTIVE-FINAL
+''';
+
+    final snapshot = observer.observeSettled(
+      output,
+      now: DateTime(2026, 6, 27, 12),
+    );
+
+    expect(snapshot.state, NativeOutputObserverState.turnIdle);
+    expect(snapshot.turnIdle, isTrue);
+  });
+
+  test('planning bullet before tool execution is not a deliverable', () {
+    final observer = NativeOutputObserver(
+      idleThreshold: const Duration(seconds: 1),
+    );
+    const output = '''
+▪ Let me help you create a project description for your coding practice
+  (leetcode-style) project.
+
+  First, I'll explore the current codebase to understand its structure and
+  identify where to add the project description.
+
+▪ Glob('**/*.{js,jsx,ts,tsx,md}')
+  └ No files found
+
+▪ The repository appears to be empty or contains only deleted files. Since
+  there's no existing codebase structure to work with, I'll create a standard
+  project description for a coding practice/leetcode-style project.
+
+  Let me create a README.md file with a comprehensive project description:
+
+⠸ Thinking... (esc to cancel, 20s)
+Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdown_widgets
+''';
+
+    final snapshot = observer.observeSettled(
+      output,
+      now: DateTime(2026, 6, 28),
+    );
+
+    expect(snapshot.state, NativeOutputObserverState.running);
+    expect(snapshot.turnIdle, isFalse);
+  });
+
+  test('real qoder mid-task output is not treated as turn idle', () {
+    final observer = NativeOutputObserver(
+      idleThreshold: const Duration(seconds: 1),
+    );
+    const output = '''
+██████                            ╭─ What's new (v1.0.32) ────────────────╮
+██    ██  Qoder CLI v1.0.32
+████  ██  Not Login Please Auth
+● Initializing... Prompts will be queued.
+
+> Armin context governance (aggressive):
+  LONG RUNNING TASK TEST CASE 4 P1. In the current countdown_widgets Flutter
+  project create or complete a package of countdown widgets.
+
+> The user sent a new message while you were working:
+  IMPORTANT: After completing your current task, you MUST address the user's
+  message above. Do not ignore it.
+
+▪ Let me start by exploring the current Flutter project structure to understand
+  what's already implemented for countdown widgets.
+
+▪ Glob('**/*.dart')
+  └ No files found
+
+▪ Bash(ls -la)
+  └ total 0
+
+▪ Write(/Users/.../pubspec.yaml)
+  └ Accepted pubspec.yaml (Ctrl+O to expand)
+
+▪ Now I'll create the main library file that will export all the countdown
+  widgets:
+
+▪ Write(/Users/.../countdown_widgets.dart)
+  └ Accepted countdown_widgets.dart (Ctrl+O to expand)
+
+✓ Update successful! The new version will be used on your next run.
+Credits exhausted. Use /usage for details or /upgrade for more.
+*   Type your message or @path/to/file
+Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdown_widgets
+''';
+
+    final snapshot = observer.observeSettled(
+      output,
+      now: DateTime(2026, 6, 30),
+    );
+
+    expect(snapshot.state, isNot(NativeOutputObserverState.turnIdle));
+    expect(snapshot.turnIdle, isFalse);
+  });
+
+  test('real qoder thinking after interim summary stays running', () {
+    final observer = NativeOutputObserver(
+      idleThreshold: const Duration(seconds: 1),
+    );
+    const output = '''
+██████                            ╭─ What's new (v1.0.33) ────────────────╮
+██    ██  Not Login Please Auth
+● Initializing... Prompts will be queued.
+
+> Armin context governance (aggressive):
+  LONGTASKA. Do not modify files. First run sleep 180. Then inspect
+  pubspec.yaml lib and test.
+
+▪ The current project is a countdown widgets application, but the user's task
+  references Flutter files that are not immediately visible.
+
+  Let me inspect the current directory structure and key files to provide an
+  accurate project review.
+
+▪ Bash(ls -la)
+  └ total 8
+    drwxr-xr-x   7 ironion  staff  224 Jun 30 00:00 .
+
+▪ Glob('**/*.js')
+  └ No files found
+
+✓ Update successful! The new version will be used on your next run.
+Credits exhausted. Use /usage for details or /upgrade for more.
+⠹ Thinking... (esc to cancel, 30s)
+YOLO Shift+Tab to Auto Mode
+Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdown_widgets
+''';
+
+    final snapshot = observer.observeSettled(
+      output,
+      now: DateTime(2026, 6, 30, 22, 15),
+    );
+
+    expect(snapshot.state, NativeOutputObserverState.running);
+    expect(snapshot.turnIdle, isFalse);
+  });
+
+  test('final created summary settles after earlier planning and tools', () {
+    final observer = NativeOutputObserver(
+      idleThreshold: const Duration(seconds: 1),
+    );
+    const output = '''
+▪ Let me help you create a project description for your coding practice
+  (leetcode-style) project.
+
+▪ Glob('**/*.{js,jsx,ts,tsx,md}')
+  └ No files found
+
+▪ The repository appears to be empty or contains only deleted files. Since
+  there's no existing codebase structure to work with, I'll create a standard
+  project description for a coding practice/leetcode-style project.
+
+▪ Write(/Users/.../README.md)
+  └ Accepted README.md (Ctrl+O to expand)
+
+▪ I've created a README.md file with a comprehensive project description for
+  your coding practice project. The description includes:
+
+  - Project overview and purpose
+  - Key features like problem categorization, difficulty levels, and progress
+    tracking
+  - Technology stack information
+  - Getting started instructions
+  - Contribution guidelines
+
+  Would you like me to make any specific modifications to the README content?
+Credits exhausted. Use /usage for details or /upgrade for more.
+Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdown_widgets
+''';
+
+    final snapshot = observer.observeSettled(
+      output,
+      now: DateTime(2026, 6, 28),
+    );
+
+    expect(snapshot.state, NativeOutputObserverState.turnIdle);
     expect(snapshot.turnIdle, isTrue);
   });
 
@@ -116,7 +375,9 @@ Thinking
     expect(snapshot.turnIdle, isTrue);
   });
 
-  test('credits exhausted without deliverable still requires attention', () {
+  test(
+      'credits exhausted footer without deliverable does not require attention',
+      () {
     final observer = NativeOutputObserver(
       idleThreshold: const Duration(seconds: 1),
     );
@@ -131,8 +392,8 @@ Credits exhausted. Use /usage for details or /upgrade for more.
       now: DateTime(2026, 5, 23, 12),
     );
 
-    expect(snapshot.state, NativeOutputObserverState.needAttention);
-    expect(snapshot.needsAttention, isTrue);
+    expect(snapshot.state, NativeOutputObserverState.outputQuieting);
+    expect(snapshot.needsAttention, isFalse);
     expect(snapshot.turnIdle, isFalse);
   });
 

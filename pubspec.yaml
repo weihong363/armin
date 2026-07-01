@@ -20,6 +20,12 @@ dev_dependencies:
   flutter_lints: ^4.0.0
   flutter_test:
     sdk: flutter
+  integration_test:
+    sdk: flutter
+
+dependency_overrides:
+  integration_test:
+    path: third_party/integration_test
 
 flutter:
   uses-material-design: true

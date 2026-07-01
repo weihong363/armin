@@ -395,7 +395,7 @@ HostConfig _host({
   );
 }
 
-class _TaskStore implements TaskHistoryStore {
+class _TaskStore extends TaskHistoryStore {
   _TaskStore({
     required List<HostConfig> hosts,
     List<ProjectPathConfig>? projectPaths,

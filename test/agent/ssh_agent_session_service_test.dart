@@ -625,6 +625,43 @@ Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdo
     expect(update.observerState, isNot(NativeOutputObserverState.turnIdle));
   });
 
+  test('stream completion with qoder prompt echo and thinking does not close',
+      () {
+    final service = SSHAgentSessionService();
+    final update = service.streamCompletionUpdateForTextForTest('''
+██████                            ╭─ What's new (v1.0.35) ────────────────╮
+ ██      ██                          │ - Added plugin marketplace support    │
+ ██  ██  ██  Qoder CLI v1.0.34       │ - Upgraded QoderCLI rules types with… │
+ ██    ██                            │ - Fixed Plan and Ask tools not being… │
+   ████  ██  Not Login Please Auth   │ /release-notes for more               │
+                                     ╰───────────────────────────────────────╯
+ ● Initializing... Prompts will be queued.
+▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+ > Phase 2.7 real qodercli long task verification.
+   Constraints:
+   - Do not modify files.
+   - Final answer must be in Chinese and include the exact marker
+   ARMIN_P27_REAL_TURN1_123.
+   Final answer must include these sections:
+   1. 项目定位
+   2. 技术栈
+   6. 下一步建议
+▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+ Credits exhausted. Use /usage for details or /upgrade for more.
+ ⠸ Thinking... (esc to cancel, 4s)
+────────────────────────────────────────────────────────────────────────────────
+ YOLO Shift+Tab to Auto Mode                           1 MCP server · 15 skills
+▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+ *   Type your message or @path/to/file
+▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  Model · ctx ░░░░░░░░░░ 0% · ~/workspace/armin-test/countdown_widgets
+''');
+
+    expect(update.turnIdle, isFalse);
+    expect(update.done, isFalse);
+    expect(update.observerState, NativeOutputObserverState.running);
+  });
+
   test('settled prompt echo without agent result does not close turn', () {
     final service = SSHAgentSessionService();
     final updates = service.streamingUpdatesForChunksForTest([
@@ -669,6 +706,47 @@ __ARMIN_SNAPSHOT_END__
       updates.last.observerState,
       NativeOutputObserverState.outputQuieting,
     );
+  });
+
+  test('settled qoder prompt echo with thinking does not close the turn', () {
+    final service = SSHAgentSessionService();
+    final updates = service.streamingUpdatesForChunksForTest([
+      '''
+__ARMIN_SNAPSHOT_BEGIN__
+██████                            ╭─ What's new (v1.0.35) ────────────────╮
+ ██      ██                          │ - Added plugin marketplace support    │
+ ██  ██  ██  Qoder CLI v1.0.34       │ - Upgraded QoderCLI rules types with… │
+ ██    ██                            │ - Fixed Plan and Ask tools not being… │
+   ████  ██  Not Login Please Auth   │ /release-notes for more               │
+                                     ╰───────────────────────────────────────╯
+ ● Initializing... Prompts will be queued.
+▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+ > Phase 2.7 real qodercli long task verification.
+   Constraints:
+   - Do not modify files.
+   - Final answer must be in Chinese and include the exact marker
+   ARMIN_P27_REAL_TURN1_123.
+   Final answer must include these sections:
+   1. 项目定位
+   2. 技术栈
+   6. 下一步建议
+▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+ Credits exhausted. Use /usage for details or /upgrade for more.
+ ⠸ Thinking... (esc to cancel, 4s)
+────────────────────────────────────────────────────────────────────────────────
+ YOLO Shift+Tab to Auto Mode                           1 MCP server · 15 skills
+▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+ *   Type your message or @path/to/file
+▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  Model · ctx ░░░░░░░░░░ 0% · ~/workspace/armin-test/countdown_widgets
+__ARMIN_SNAPSHOT_END__
+''',
+      '__ARMIN_SETTLED_CANDIDATE__\n',
+    ]);
+
+    expect(updates.last.turnIdle, isFalse);
+    expect(updates.last.done, isFalse);
+    expect(updates.last.observerState, NativeOutputObserverState.running);
   });
 
   test('settled candidate embedded between diagnostics turns idle', () {

@@ -820,7 +820,7 @@ class _TaskHeaderState extends State<_TaskHeader> {
                   key: const Key('runtime-control-state-badge'),
                   label: _detailStatusLabel(task.status, widget.workState),
                   color: statusColor,
-                  animate: _workPhaseFor(widget.workState) ==
+                  animate: _workPhaseFor(widget.workState, task.status) ==
                       WorkPhase.working,
                 ),
                 _TaskTimingText(task: task),
@@ -1192,7 +1192,7 @@ class _CurrentSituationCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final text = progressSnapshot != null &&
-            _workPhaseFor(workState) == WorkPhase.working
+            _workPhaseFor(workState, task.status) == WorkPhase.working
         ? _progressSituationText(task, progressSnapshot!)
         : _currentSituationText(task, workState);
     return _InfoCard(
@@ -3522,8 +3522,25 @@ class _NextAction {
   final Color color;
 }
 
-WorkPhase _workPhaseFor(WorkState? workState) {
-  return workState?.phase ?? WorkPhase.idle;
+WorkPhase _workPhaseFor(WorkState? workState, [TaskStatus? status]) {
+  final phase = workState?.phase;
+  if (phase != null) {
+    return phase;
+  }
+  return switch (status) {
+    TaskStatus.draft || TaskStatus.pending || null => WorkPhase.idle,
+    TaskStatus.running => WorkPhase.working,
+    TaskStatus.paused || TaskStatus.observerDetached => WorkPhase.quieting,
+    TaskStatus.turnIdle => WorkPhase.turnIdle,
+    TaskStatus.needApproval => WorkPhase.needsApproval,
+    TaskStatus.needAttention => WorkPhase.needsInstruction,
+    TaskStatus.completed || TaskStatus.userCompleted => WorkPhase.completed,
+    TaskStatus.failed ||
+    TaskStatus.userFailed ||
+    TaskStatus.runtimeLost =>
+      WorkPhase.failed,
+    TaskStatus.stopped => WorkPhase.stopped,
+  };
 }
 
 WorkState? _effectiveWorkStateFor(TaskSession task, WorkState? workState) {
@@ -3538,7 +3555,7 @@ String _detailStatusLabel(TaskStatus status, [WorkState? workState]) {
   if (workState != null && workState.headline.trim().isNotEmpty) {
     return workState.headline.trim();
   }
-  switch (_workPhaseFor(workState)) {
+  switch (_workPhaseFor(workState, status)) {
     case WorkPhase.idle:
       return '等待开始';
     case WorkPhase.working:
@@ -3565,7 +3582,7 @@ String _detailStatusLabel(TaskStatus status, [WorkState? workState]) {
 }
 
 Color _detailStatusColor(TaskStatus status, [WorkState? workState]) {
-  return switch (_workPhaseFor(workState)) {
+  return switch (_workPhaseFor(workState, status)) {
     WorkPhase.needsApproval ||
     WorkPhase.needsDecision ||
     WorkPhase.needsReview ||
@@ -3641,13 +3658,13 @@ String _cleanSnippet(String value, {int maxChars = 160}) {
       .trim();
 }
 
-String _currentSituationText(TaskSession _, [WorkState? workState]) {
+String _currentSituationText(TaskSession task, [WorkState? workState]) {
   if (workState == null) {
     return '正在同步任务状态。';
   }
   final statusText = workState.statusText.trim();
   if (statusText.isNotEmpty) return statusText;
-  return switch (workState.phase) {
+  return switch (_workPhaseFor(workState, task.status)) {
     WorkPhase.idle => '等待开始。',
     WorkPhase.working => '此任务仍在工作中。',
     WorkPhase.quieting => '更新已暂停。',
@@ -3696,7 +3713,7 @@ String _progressActionText(String value) {
 }
 
 _NextAction _nextActionForTask(TaskStatus status, [WorkState? workState]) {
-  switch (_workPhaseFor(workState)) {
+  switch (_workPhaseFor(workState, status)) {
     case WorkPhase.needsApproval:
       return _NextAction(
         title: '需要你决定',
@@ -3765,7 +3782,7 @@ _PrimaryTaskAction? _primaryTaskActionFor(
   TaskStatus status, [
   WorkState? workState,
 ]) {
-  switch (_workPhaseFor(workState)) {
+  switch (_workPhaseFor(workState, status)) {
     case WorkPhase.needsApproval:
       return const _PrimaryTaskAction(
         label: '查看',

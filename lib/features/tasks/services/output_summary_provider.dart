@@ -56,8 +56,8 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
   const RuleBasedOutputSummaryProvider({
     AgentOutputCleaner cleaner = const AgentOutputCleaner(),
     SecretRedactor redactor = const SecretRedactor(),
-    this.maxDisplayLines = 20,
-    this.maxDisplayChars = 420,
+    this.maxDisplayLines = 40,
+    this.maxDisplayChars = 2000,
     this.maxStructuredDisplayLines = 80,
     this.maxStructuredDisplayChars = 3000,
   })  : _cleaner = cleaner,
@@ -188,17 +188,35 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
   }
 
   List<String> _finalMarkerDeliverableLines(String cleaned) {
-    String? marker;
-    final markerPattern = RegExp(
-        r'^[▪■●]\s*(ARMIN[A-Z0-9_]*(?:\s+.*)?ARMIN[A-Z0-9_]*|ARMIN[A-Z0-9_]*)\s*$');
+    final markerParts = <String>[];
+    final markerPattern = RegExp(r'^[▪■●]\s*(ARMIN[A-Z0-9_]*(?:\s+.*)?)\s*$');
     for (final rawLine in cleaned.split('\n')) {
       final trimmed = rawLine.trim();
       final match = markerPattern.firstMatch(trimmed);
       if (match != null) {
-        marker = _semanticLine(match.group(1)?.trim() ?? '');
+        markerParts
+          ..clear()
+          ..add(_semanticLine(match.group(1)?.trim() ?? ''));
+        continue;
       }
+      if (markerParts.isEmpty) {
+        continue;
+      }
+      final semantic = _semanticLine(trimmed);
+      if (semantic.isEmpty ||
+          _looksLikeLowValueLine(semantic) ||
+          !_looksLikeMarkerContinuation(semantic)) {
+        continue;
+      }
+      markerParts.add(semantic);
     }
-    return marker == null || marker.isEmpty ? const [] : [marker];
+    final marker = markerParts.join(' ').trim();
+    return marker.isEmpty ? const [] : [marker];
+  }
+
+  bool _looksLikeMarkerContinuation(String line) {
+    final trimmed = line.trim();
+    return RegExp(r'^[A-Za-z_][A-Za-z0-9_]*=').hasMatch(trimmed);
   }
 
   bool _looksLikeBulletToolCall(String line) {
@@ -1153,6 +1171,10 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
       if (_looksLikeChinesePromptEcho(compactLine, compactInput)) {
         return true;
       }
+      if (RegExp(r'^armin[a-z0-9_]*\.?$').hasMatch(compactLine) &&
+          compactInput.contains(compactLine.replaceAll('.', ''))) {
+        return true;
+      }
       final taskWords = _taskWords(input);
       if (taskWords.isNotEmpty) {
         final lower = line.toLowerCase();
@@ -1206,6 +1228,16 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
         lower.startsWith('dart ') ||
         lower.startsWith('任务：') ||
         lower.startsWith('任务:') ||
+        lower.startsWith('constraints:') ||
+        lower.startsWith('initializing... prompts will be queued') ||
+        lower.startsWith('- do not ') ||
+        lower.startsWith('- final answer ') ||
+        lower.startsWith('final answer must') ||
+        lower.startsWith('final answer') ||
+        lower.startsWith('sections:') ||
+        RegExp(
+          r'^\d+[.)]\s*(?:项目定位|技术栈|核心组件/能力|核心组件|当前测试或质量状态|适合继续开发的方向|下一步建议)$',
+        ).hasMatch(line.trim()) ||
         lower.startsWith('补充上下文') ||
         lower.startsWith('执行约束') ||
         lower.startsWith('风险信息') ||

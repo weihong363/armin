@@ -283,6 +283,37 @@ Summer：一位迷人的美国沙滩女孩 Codex 宠物，棕发波浪、暖棕�
     expect(summary.displaySummary, isNot(contains('过程记录 0')));
   });
 
+  test('rule provider keeps long deliverable key paragraphs for result card',
+      () async {
+    const request = OutputSummaryRequest(
+      cleanedOutput: '''
+我先检查一下项目结构，然后输出简介。
+Explored
+Read(pubspec.yaml)
+▪ FlipCountdown：翻转式数字动画（模拟机械翻页钟的沉浸感）
+  ✅ 技术栈：Flutter / Dart，核心组件使用 AnimationController、Tween 和 Transform 组合实现。
+  ✅ 组件能力：支持倒计时、正计时、数字翻页、分段显示、主题颜色和尺寸配置。
+  ✅ 使用场景：适合活动倒计时、仪表盘、小组件集合、演示页面和教学示例。
+  ✅ 项目结构：lib 目录提供核心 widget，test 目录覆盖数字状态和动画切换。
+  ✅ 当前状态：项目可以作为高视觉表现力倒计时小组件库继续扩展。
+  下一步建议：补充 README 示例、录制 GIF 预览，并增加更多主题 preset。
+''',
+      status: TaskStatus.turnIdle,
+      taskTitle: '输出项目简介',
+    );
+
+    final summary =
+        await const RuleBasedOutputSummaryProvider().summarize(request);
+
+    expect(summary.displaySummary, contains('FlipCountdown：翻转式数字动画'));
+    expect(summary.displaySummary, contains('技术栈：Flutter / Dart'));
+    expect(summary.displaySummary, contains('组件能力：支持倒计时'));
+    expect(summary.displaySummary, contains('项目结构：lib 目录提供核心 widget'));
+    expect(summary.displaySummary, contains('下一步建议：补充 README 示例'));
+    expect(summary.displaySummary, isNot(contains('Explored')));
+    expect(summary.displaySummary, isNot(contains('Read(pubspec.yaml)')));
+  });
+
   test('rule provider joins wrapped natural-language result lines', () async {
     const wrapped = OutputSummaryRequest(
       cleanedOutput: '''
@@ -1389,6 +1420,86 @@ Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdo
     expect(summary.displaySummary, isNot(contains('Glob(')));
     expect(summary.displaySummary, isNot(contains('Write(')));
     expect(summary.displaySummary, isNot(contains("I'll create")));
+  });
+
+  test('rule provider does not turn qoder prompt echo into deliverable',
+      () async {
+    const request = OutputSummaryRequest(
+      cleanedOutput: '''
+██████
+██    ██  Not Login Please Auth
+● Initializing... Prompts will be queued.
+
+> Phase 2.7 real qodercli long task verification.
+  Constraints:
+  - Do not modify files.
+  - Final answer must include the exact marker
+  ARMIN_P27_REAL_TURN1_123.
+  Final answer must include these sections:
+  1. 项目定位
+  2. 技术栈
+  6. 下一步建议
+Credits exhausted. Use /usage for details or /upgrade for more.
+⠸ Thinking... (esc to cancel, 4s)
+YOLO Shift+Tab to Auto Mode
+Model · ctx ░░░░░░░░░░ 0% · ~/workspace/armin-test/countdown_widgets
+''',
+      status: TaskStatus.turnIdle,
+      taskTitle: 'Phase 2.7 real qodercli long task',
+      promptInputs: [
+        'Phase 2.7 real qodercli long task verification. Final answer must include the exact marker ARMIN_P27_REAL_TURN1_123.',
+      ],
+      agentCommand: 'qodercli',
+    );
+
+    final summary = await const RuleBasedOutputSummaryProvider().summarize(
+      request,
+    );
+
+    expect(summary.displaySummary, isNot(contains('ARMIN_P27_REAL_TURN1_123')));
+    expect(summary.displaySummary, isNot(contains('Constraints')));
+    expect(summary.displaySummary, isNot(contains('项目定位')));
+    expect(summary.displaySummary, isNot(contains('Thinking')));
+  });
+
+  test('rule provider keeps qoder final marker continuation', () async {
+    const request = OutputSummaryRequest(
+      cleanedOutput: '''
+> Do not modify files.
+  Read pubspec.yaml only.
+  Final answer only:
+  ARMIN_REAL_SMOKE_123 status=PASS project=countdown_widgets
+  files_changed=0
+▪ Let me read the pubspec.yaml file.
+▪ Read(/Users/.../pubspec.yaml)
+  └ Read 21 lines
+▪ ARMIN_REAL_SMOKE_123 status=PASS project=countdown_widgets
+  files_changed=0
+Credits exhausted. Use /usage for details or /upgrade for more.
+* Type your message or @path/to/file
+Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdown_widgets
+''',
+      status: TaskStatus.turnIdle,
+      taskTitle: 'Phase 2.7 real qodercli smoke',
+      promptInputs: [
+        'Do not modify files. Read pubspec.yaml only. Final answer only: '
+            'ARMIN_REAL_SMOKE_123 status=PASS project=countdown_widgets '
+            'files_changed=0',
+      ],
+      agentCommand: 'qodercli',
+    );
+
+    final summary = await const RuleBasedOutputSummaryProvider().summarize(
+      request,
+    );
+
+    expect(
+      summary.displaySummary,
+      'ARMIN_REAL_SMOKE_123 status=PASS project=countdown_widgets '
+      'files_changed=0',
+    );
+    expect(summary.displaySummary, isNot(contains('only:')));
+    expect(summary.displaySummary, isNot(contains('Let me read')));
   });
 
   test('rule provider keeps middle dot list items in one deliverable block',

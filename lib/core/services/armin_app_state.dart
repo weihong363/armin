@@ -1248,8 +1248,7 @@ class ArminAppState extends ChangeNotifier {
           await _cleanupTaskSession(finalTask);
           return;
         }
-        // Stream completion only ends this observer. Durable task state is
-        // reconciled by periodic remote probes instead of a one-shot guess.
+        await _captureAndApplyRemoteSnapshot(latest, allowSettled: true);
       },
     );
     _runningExecutions[initialTask.id] = subscription;
@@ -2440,7 +2439,7 @@ Apply this decision to the pending approval request.
             ? latest.rawOutput
             : latest.cleanedOutput)
         .trim();
-    if (summary.isEmpty) {
+    if (summary.isEmpty || !_hasSettledRemoteResultEvidence(summary)) {
       return synced;
     }
     turns[turns.length - 1] = latest.copyWith(
@@ -2456,6 +2455,40 @@ Apply this decision to the pending approval request.
       shortSummary: summary,
       clearNativeApproval: true,
     );
+  }
+
+  bool _hasSettledRemoteResultEvidence(String output) {
+    final lines = output
+        .split('\n')
+        .map((line) => line.trim())
+        .where((line) => line.isNotEmpty);
+    for (final line in lines) {
+      final lower = line.toLowerCase();
+      if (RegExp(r'\barmin_[a-z0-9_]*_begin\b.*\barmin_[a-z0-9_]*_end\b')
+          .hasMatch(lower)) {
+        return true;
+      }
+      if (!line.startsWith('▪')) {
+        continue;
+      }
+      final content = line.replaceFirst(RegExp(r'^▪\s*'), '').trim();
+      final contentLower = content.toLowerCase();
+      if (content.isEmpty ||
+          contentLower.startsWith('let me ') ||
+          contentLower.startsWith("i'll ") ||
+          contentLower.startsWith('i will ') ||
+          contentLower.startsWith('first, ') ||
+          contentLower.startsWith('now ') ||
+          contentLower.startsWith('next, ') ||
+          RegExp(
+            r'^(?:Read|Write|Edit|MultiEdit|Glob|Grep|Bash|List|LS|Cat)\s*\(',
+            caseSensitive: false,
+          ).hasMatch(content)) {
+        continue;
+      }
+      return true;
+    }
+    return false;
   }
 
   TaskSession _taskWithCurrentTurnDecision(

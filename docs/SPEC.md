@@ -211,6 +211,26 @@ Armin 的 Loop Engineering 边界是单任务循环：Plan → Execute → Obser
 
 所有阶段中，任何 Runtime、状态、结果、TTS、observer、reconcile、持久化或 UI 核心变更都必须满足 [Armin 核心行为与性能基线](runtime/core-behavior-performance-baseline.md)。基线失败表示方案尚未达到功能等价或性能等价，不能以架构收口、技术升级或进入新阶段为理由接受回归，也不能通过降低基线完成迁移。
 
+## Phase 2.7 体验修整边界
+
+Phase 2.7 是 Phase 2.6 收口后的体验修整阶段，不改变 Runtime 主路径，不新增复杂 workflow，也不提前实现 Phase 3 的 Loop Runtime。所有改动都必须复用 Phase 2.6 已完成的 latest turn deliverable、WorkState、Runtime event 和节流输出路径。
+
+Phase 2.7 重点处理：
+
+- 结果卡片完整性：展示 current-turn `TurnDeliverable.displaySummary` 的完整关键内容，避免只显示中间片段或丢失首尾结论。
+- 状态一致性：任务列表、详情页、动态 timeline、结果页和操作区使用一致的任务状态语义，不能出现详情已 waiting 但项目卡仍显示 agent started 的分裂状态。
+- TTS 播报体验：自动播报只绑定“本轮新 deliverable 首次出现”事件；进入页面、恢复监听、切 Tab、手动刷新或读取历史任务不得触发自动重播。
+- 长任务观察体验：真实 qodercli 长任务执行中保持 running / needApproval / needAttention 等真实状态，不以静默 pane、prompt echo 或稳定 thinking chrome 提前判定完成。
+- UI 响应：完整结果展示、状态聚合和 TTS 去重不得把大文本解析、摘要或语音清洗放回同步 UI 路径。
+
+Phase 2.7 不处理：
+
+- 多 Agent 编排。
+- 通用 workflow engine。
+- Calendar-triggered execution。
+- watcher event replay 和跨 App 重启的完整 session daemon。
+- 安全远端执行器、relay、身份、权限和多设备同步。
+
 ## 未来安全远端执行方向
 
 近期 Codex 方向中出现的 authenticated remote executor、端到端加密 relay channel 和基于 Noise 的安全通信，是 Armin 未来可以参考的重要架构方向，但不属于 Phase 2.5 或 Phase 3 的近期优先级。

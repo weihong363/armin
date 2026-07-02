@@ -1291,6 +1291,79 @@ Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdo
     expect(store.task!.turns.last.deliverable, isNull);
   });
 
+  test('remote snapshot poll keeps qoder prompt echo thinking unfinished',
+      () async {
+    final task = _task(status: TaskStatus.running).copyWith(
+      turns: [
+        NativeOutputTurn(
+          id: 'turn-task-1-1',
+          taskId: 'task-1',
+          turnIndex: 1,
+          userInput: 'Phase 2.7 real qodercli long task verification',
+          rawOutput: '',
+          cleanedOutput: '',
+          startedAt: DateTime(2026, 5, 18),
+          lastOutputAt: DateTime(2026, 5, 18),
+          status: NativeOutputTurnStatus.running,
+        ),
+      ],
+    );
+    final store = _TaskStore(task);
+    final agent = _HangingAgent()
+      ..capturedLog = '''
+██████                            ╭─ What's new (v1.0.35) ────────────────╮
+ ██      ██                          │ - Added plugin marketplace support    │
+ ██  ██  ██  Qoder CLI v1.0.34       │ - Upgraded QoderCLI rules types with… │
+ ██    ██                            │ - Fixed Plan and Ask tools not being… │
+   ████  ██  Not Login Please Auth   │ /release-notes for more               │
+                                     ╰───────────────────────────────────────╯
+ ● Initializing... Prompts will be queued.
+▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+ > Phase 2.7 real qodercli long task verification.
+   Constraints:
+   - Do not modify files.
+   - Final answer must be in Chinese and include the exact marker
+   ARMIN_P27_REAL_TURN1_123.
+   Final answer must include these sections:
+   1. 项目定位
+   2. 技术栈
+   6. 下一步建议
+▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+ Credits exhausted. Use /usage for details or /upgrade for more.
+ ⠸ Thinking... (esc to cancel, 4s)
+────────────────────────────────────────────────────────────────────────────────
+ YOLO Shift+Tab to Auto Mode                           1 MCP server · 15 skills
+▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+ *   Type your message or @path/to/file
+▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  Model · ctx ░░░░░░░░░░ 0% · ~/workspace/armin-test/countdown_widgets
+''';
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: agent,
+      voiceService: const _SilentVoiceService(),
+      enableRemoteReconcile: true,
+      remoteSnapshotPollInterval: const Duration(milliseconds: 10),
+    );
+    await state.load();
+    state.startTaskExecution(
+      task,
+      const AgentExecutionRequest(
+        prompt: 'Phase 2.7 real qodercli long task verification',
+      ),
+    );
+
+    await _waitUntil(
+        () => agent.events.where((event) => event == 'captureLog').isNotEmpty);
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    state.dispose();
+
+    expect(store.task!.status, TaskStatus.running);
+    expect(store.task!.turns.last.status, NativeOutputTurnStatus.running);
+    expect(store.task!.turns.last.deliverable, isNull);
+    expect(store.task!.summary, isNot(contains('Not Login Please Auth')));
+  });
+
   test('remote snapshot poll settles latest turn while observer is active',
       () async {
     final task = _task(status: TaskStatus.running).copyWith(
@@ -1691,6 +1764,56 @@ Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdo
     expect(voice.spokenSummaries, isEmpty);
   });
 
+  test('fresh deliverable event only auto speaks once', () async {
+    final now = DateTime(2026, 5, 18);
+    final baseTask = _task(status: TaskStatus.turnIdle);
+    final freshTask = baseTask.copyWith(
+      turns: [
+        NativeOutputTurn(
+          id: 'turn-task-1-1',
+          taskId: 'task-1',
+          turnIndex: 1,
+          userInput: '输出项目简介',
+          rawOutput: '项目简介已输出',
+          cleanedOutput: '项目简介已输出',
+          startedAt: now,
+          lastOutputAt: now,
+          status: NativeOutputTurnStatus.turnIdle,
+          deliverable: const TurnDeliverable(
+            displaySummary: '项目简介已输出',
+            speechSummary: '项目简介已输出',
+            evidenceFingerprint: 'fresh-result',
+          ),
+        ),
+      ],
+    );
+    final store = _TaskStore(baseTask);
+    final voice = _CapturingVoiceService();
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: _ControlAgent(),
+      voiceService: voice,
+    );
+    await state.load();
+    state.setActiveDetailTaskId(baseTask.id);
+    await state.saveTask(freshTask);
+
+    final event = RuntimeEvent(
+      type: RuntimeEventType.deliverableUpdated,
+      taskId: baseTask.id,
+      createdAt: DateTime.now(),
+      turnId: 'turn-task-1-1',
+      evidenceFingerprint: 'fresh-result',
+    );
+    state.runtimeEventBus.publish(event);
+    state.runtimeEventBus.publish(event);
+    await _waitUntil(() => voice.spokenSummaries.isNotEmpty);
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    expect(voice.spokenSummaries, hasLength(1));
+    expect(voice.spokenSummaries.single, contains('项目简介已输出'));
+  });
+
   test('waiting user event does not auto speak existing result', () async {
     final task = _task(status: TaskStatus.turnIdle);
     final store = _TaskStore(task);
@@ -1783,6 +1906,57 @@ Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdo
     expect(store.task!.turns.single.status, NativeOutputTurnStatus.running);
     expect(store.task!.summary, isNull);
     expect(agent.cleanedUp, isFalse);
+  });
+
+  test('stream completion captures final remote pane before staying running',
+      () async {
+    final task = _task(status: TaskStatus.running);
+    final store = _TaskStore(task);
+    final agent = _StreamEndsWithFinalPaneAgent()
+      ..capturedLog = '''
+> Do not modify files.
+  Read pubspec.yaml only.
+  Final answer only:
+  ARMIN_REAL_SESSION_CHECK status=PASS project=countdown_widgets files_changed=0
+
+▪ Let me read the pubspec.yaml file.
+
+▪ Read(/Users/.../pubspec.yaml)
+  └ Read 21 lines
+
+▪ ARMIN_REAL_SESSION_CHECK status=PASS project=countdown_widgets files_changed=0
+Credits exhausted. Use /usage for details or /upgrade for more.
+* Type your message...
+Model · ctx ░░░░░░░░░░ 2%
+''';
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: agent,
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    state.startTaskExecution(
+      task,
+      const AgentExecutionRequest(prompt: 'Task'),
+    );
+    await _waitUntil(() => store.task!.status == TaskStatus.turnIdle);
+    await state.drainForTest();
+    await _waitUntil(() => store.task!.turns.single.deliverable != null);
+
+    final latestTurn = store.task!.turns.single;
+    expect(agent.events, contains('captureLog'));
+    expect(agent.cleanedUp, isFalse);
+    expect(store.task!.status, TaskStatus.turnIdle);
+    expect(latestTurn.status, NativeOutputTurnStatus.turnIdle);
+    expect(
+      latestTurn.cleanedOutput,
+      contains('ARMIN_REAL_SESSION_CHECK status=PASS'),
+    );
+    expect(
+      latestTurn.deliverable!.displaySummary,
+      contains('ARMIN_REAL_SESSION_CHECK status=PASS'),
+    );
   });
 
   test('done update needing attention does not write a result summary',
@@ -2807,6 +2981,17 @@ class _EmptyTurnIdleAgent extends _ControlAgent {
       cleanedOutput: '',
       turnIdle: true,
       done: true,
+    );
+  }
+}
+
+class _StreamEndsWithFinalPaneAgent extends _ControlAgent {
+  @override
+  Stream<AgentExecutionUpdate> execute(AgentExecutionRequest request) async* {
+    lastExecuteRequest = request;
+    yield const AgentExecutionUpdate(
+      rawOutput: '⠋ Thinking... (esc to cancel, 0s)',
+      cleanedOutput: '⠋ Thinking... (esc to cancel, 0s)',
     );
   }
 }

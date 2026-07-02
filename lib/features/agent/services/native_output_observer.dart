@@ -152,9 +152,8 @@ class NativeOutputObserver {
   }
 
   bool _containsActiveWork(List<String> lines) {
-    final lastDeliverableIndex =
-        lines.lastIndexWhere((line) =>
-            _looksLikeDeliverableLine(line) && !_isBackgroundTaskLine(line));
+    final lastDeliverableIndex = lines.lastIndexWhere((line) =>
+        _looksLikeDeliverableLine(line) && !_isBackgroundTaskLine(line));
     final activeWindow =
         lastDeliverableIndex < 0 ? lines : lines.skip(lastDeliverableIndex + 1);
     return activeWindow.any((line) {
@@ -167,9 +166,8 @@ class NativeOutputObserver {
         // (e.g. Bash) to complete — unless the turn is already finished
         // (credits exhausted or high-confidence deliverable present).
         if (lower.contains('thinking') || lower.contains('working')) {
-          final hasCreditsExhausted =
-              lines.any((l) => l.contains('credits exhausted'));
-          if (!_hasHighConfidenceDeliverable(lines) && !hasCreditsExhausted) {
+          if (!_hasHighConfidenceDeliverable(lines) &&
+              (_hasRecentWorkContext(lines) || _hasPromptEchoContext(lines))) {
             return true;
           }
         }
@@ -200,8 +198,13 @@ class NativeOutputObserver {
       final normalized =
           _statusWord(line).replaceFirst(RegExp(r'^[▪▫■●]\s*'), '').trim();
       final lower = normalized.toLowerCase();
-      return RegExp(r'\barmin_[a-z0-9_]+_begin\b').hasMatch(lower) ||
-          RegExp(r'\barmin[a-z0-9_]*\b').hasMatch(lower) ||
+      final hasBullet = line.trimLeft().startsWith(RegExp('[▪▫■●]'));
+      final hasStructuredMarker =
+          RegExp(r'\barmin_[a-z0-9_]+_begin\b').hasMatch(lower);
+      final hasStandaloneBulletMarker =
+          hasBullet && RegExp(r'\barmin[a-z0-9_]*\b').hasMatch(lower);
+      return hasStructuredMarker ||
+          hasStandaloneBulletMarker ||
           lower.startsWith('done.') ||
           lower.startsWith("i've created ") ||
           lower.contains('completed successfully') ||
@@ -232,6 +235,19 @@ class NativeOutputObserver {
       }
       return line.trimLeft().startsWith(RegExp('[▪▫■●]')) ||
           _looksLikeActiveWorkLine(normalized);
+    });
+  }
+
+  bool _hasPromptEchoContext(List<String> lines) {
+    return lines.any((line) {
+      final normalized =
+          _statusWord(line).replaceFirst(RegExp(r'^[▪▫■●]\s*'), '').trim();
+      final lower = normalized.toLowerCase();
+      return lower.startsWith('constraints:') ||
+          lower.startsWith('final answer') ||
+          lower.startsWith('sections:') ||
+          lower.contains('exact marker') ||
+          RegExp(r'\barmin[a-z0-9_]*\b').hasMatch(lower);
     });
   }
 

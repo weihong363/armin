@@ -123,6 +123,29 @@ Survey / 社区验证方向：
 - 观察 token 消耗和有效产出之间的关系，避免为了更长输出牺牲用户每次交互效率
 - 引入轻量 Loop Engineering 视角：Plan → Execute → Observe → Evaluate → Adjust → Verify，但只用于任务级评估和提示改进，不做通用 workflow engine
 
+### Phase 2.7：任务体验修整与真实长任务验收
+
+Phase 2.7 不新增 Runtime 架构、不引入多 Agent 编排、不提前实现 Phase 3 Loop Engine。目标是在 Phase 2.6 已收口的单任务主链路上，打磨真实使用中的结果可读性、状态一致性、TTS 体验和长任务观察体验。
+
+优先级：
+
+1. 结果卡片完整性：结果卡片必须完整呈现 latest turn deliverable 的关键内容，不丢首段、尾段或最终结论；不得混入 prompt echo、thinking、TUI chrome、旧 turn 或 reconnect snapshot。
+2. 状态展示一致性：任务列表卡片、详情状态卡、动态 timeline、结果页和底部操作区必须消费同一任务状态语义；`running`、`turnIdle`、`needApproval`、`paused`、`userCompleted`、`userFailed` 不得互相矛盾。
+3. TTS 自动播报体验：自动 TTS 只在本轮新 deliverable 首次生成时播报一次；进入详情页、切 Tab、手动刷新、重连或恢复旧任务不得重播旧结果。手动朗读继续使用同一 latest turn deliverable source。
+4. 长任务观察体验：真实 qodercli / aggressive 模式下，3-5 分钟任务执行期间不得提前进入 waiting；完成后无需手动刷新即可继续输入下一轮；动态页展示有意义进展但不被 spinner / thinking 高频刷屏污染。
+5. UI 性能门禁：任何展示完整结果、状态统一或 TTS 调整都不得牺牲 Tab 响应和任务控制可用性；不得把 summary、TTS 清洗或全文扫描放回同步 UI 路径。
+
+Phase 2.7 验收门禁：
+
+- P27-R01：结果卡片完整显示 latest turn deliverable，包含最终输出关键段落。
+- P27-R02：多 turn 结果不串轮，Turn 2/3 不显示旧 turn 结果。
+- P27-S01：列表、详情、timeline、结果页和操作区状态一致。
+- P27-S02：完成后无需手动刷新即可继续输入下一轮。
+- P27-TTS01：自动 TTS 每个 turn 的新结果只播报一次。
+- P27-TTS02：进入详情页、重连、切 Tab 或手动刷新不重播旧结果。
+- P27-LT01：真实 qodercli 长任务 3-5 分钟内不提前 waiting，完成后自动收敛。
+- P27-PERF01：动态 / 产出 / 高级 Tab 连续切换无明显卡顿，无 ANR。
+
 ## 第三阶段
 
 Phase 3 的优先级不变，核心是 “Loops > Prompts”：Loop Engine、日历触发执行、任务调度、任务恢复与 resume、审批工作流、自动摘要、长任务管理、结果追踪和通知。

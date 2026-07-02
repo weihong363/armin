@@ -87,6 +87,39 @@ Credits exhausted. Use /usage for details or /upgrade for more.
     expect(snapshot.turnIdle, isTrue);
   });
 
+  test('qoder prompt echo and thinking chrome stay running without result', () {
+    final observer = NativeOutputObserver(
+      idleThreshold: const Duration(seconds: 1),
+    );
+    const output = '''
+██████
+██    ██  Not Login Please Auth
+● Initializing... Prompts will be queued.
+
+> Phase 2.7 real qodercli long task verification.
+  Constraints:
+  - Do not modify files.
+  - Final answer must include the exact marker
+  ARMIN_P27_REAL_TURN1_123.
+  Final answer must include these sections:
+  1. 项目定位
+  2. 技术栈
+  6. 下一步建议
+Credits exhausted. Use /usage for details or /upgrade for more.
+⠸ Thinking... (esc to cancel, 4s)
+YOLO Shift+Tab to Auto Mode
+Model · ctx ░░░░░░░░░░ 0% · ~/workspace/armin-test/countdown_widgets
+''';
+
+    final snapshot = observer.observeSettled(
+      output,
+      now: DateTime(2026, 7, 2, 12),
+    );
+
+    expect(snapshot.state, NativeOutputObserverState.running);
+    expect(snapshot.turnIdle, isFalse);
+  });
+
   test('settled final answer is not kept running by trailing thinking chrome',
       () {
     final observer = NativeOutputObserver(

@@ -438,8 +438,25 @@ String _hostLabel(TaskSession task) {
   return '${task.host.name} / $projectPath';
 }
 
-WorkPhase _workPhaseFor(WorkState? workState, TaskStatus _) {
-  return workState?.phase ?? WorkPhase.idle;
+WorkPhase _workPhaseFor(WorkState? workState, TaskStatus status) {
+  final phase = workState?.phase;
+  if (phase != null) {
+    return phase;
+  }
+  return switch (status) {
+    TaskStatus.draft || TaskStatus.pending => WorkPhase.idle,
+    TaskStatus.running => WorkPhase.working,
+    TaskStatus.paused || TaskStatus.observerDetached => WorkPhase.quieting,
+    TaskStatus.turnIdle => WorkPhase.turnIdle,
+    TaskStatus.needApproval => WorkPhase.needsApproval,
+    TaskStatus.needAttention => WorkPhase.needsInstruction,
+    TaskStatus.completed || TaskStatus.userCompleted => WorkPhase.completed,
+    TaskStatus.failed ||
+    TaskStatus.userFailed ||
+    TaskStatus.runtimeLost =>
+      WorkPhase.failed,
+    TaskStatus.stopped => WorkPhase.stopped,
+  };
 }
 
 WorkState? _effectiveWorkStateFor(TaskSession task, WorkState? workState) {

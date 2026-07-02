@@ -37,7 +37,8 @@
 | 当前审批来源 | 已完成 | 当前审批卡、命令和 TTS 读取 `WorkState.approval`；历史记录不可重新激活审批 |
 | 持久化 | 已完成 | `WorkState` 嵌入 `runtime_tasks` 聚合；独立 `runtime_work_states` 表和 JSON Store 已删除 |
 | 自动化验证 | 已完成 | B01/B02/B03/B04/B06/P06 Runtime Gate 已通过；最小回归测试和 `flutter analyze` 已通过；B07 音频同源仍按人工听取或可靠录音转写验收 |
-| 模拟器验证 | 已完成 | `emulator-5554` 可完成 `flutter run` 构建启动；Runtime Gate 自动化覆盖真实 SSH/tmux 路径，真实长任务仍作为后续体验回归样本 |
+| 真实 qodercli 验证 | 已完成 | `emulator-5554` 已完成真实 qodercli smoke、项目简介、final sync、同 session Turn 2 和长任务/回归抽样；验证结果卡片来自 latest turn、完成后自动 `turnIdle`、无需手动刷新继续输入 |
+| 模拟器验证 | 已完成 | `emulator-5554` 可完成构建启动；Runtime Gate 自动化覆盖真实 SSH/tmux 路径，真实 qodercli 抽样覆盖 Phase 2.7 用户路径 |
 
 ## 不得重新引入
 
@@ -64,5 +65,8 @@
 - [x] `emulator-5554`：safe/balanced/aggressive 审批完整可操作（B03）— 识别、发送、解决和历史一致性缺一不可
 - [x] `emulator-5554`：暂停/恢复、断开/重新监听、停止、标记完成、标记失败和 cleanup（B04）— 使用独立任务覆盖全部子用例
 - [x] `emulator-5554`：Turn 2 不复用 Turn 1 结果（B06）— 以结果卡片和持久化 deliverable 判定，不以原始 timeline 判定
+- [x] `emulator-5554`：真实 qodercli smoke、项目简介、final sync 和同 session Turn 2 — 记录 `task_id`、`armin-*` session、两轮 marker 和 latest turn deliverable
+- [x] `emulator-5554`：真实 qodercli 长任务/回归抽样 — 执行中不提前 waiting，完成后自动 `turnIdle`，无需手动刷新继续输入
+- [x] 代码级 TTS 去重：fresh deliverable 自动播报一次，重复 event、重进详情、手动刷新不重播旧结果
 - [ ] 人工听取或可靠录音转写：结果卡片、手动朗读和自动 TTS 同源（B07）— 仅“有声音”不能通过
 - [x] `emulator-5554`：streaming、settled 和状态切换期间各完成 5 轮 Tab 循环（P06）— 每次响应小于 1 秒且不能以丢状态换性能

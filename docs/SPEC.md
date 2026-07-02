@@ -192,6 +192,8 @@ MVP 记录指标事件但没有仪表板。目标字段涵盖任务持续时间�
 
 Armin 的 Loop Engineering 边界是单任务循环：Plan → Execute → Observe → Evaluate → Adjust → Verify。Runtime 负责观察和归约状态；评估层记录本轮循环的成本、结果质量和用户后续动作；UI 只暴露对用户有帮助的下一步。该循环不等同于多 Agent workflow、自动调度器或通用任务依赖图。
 
+Phase 3 起步以 [Phase 3 Loop Runtime 前置设计](runtime/phase-3-loop-runtime-prep.md) 为准。第一批只记录 task/turn 级 loop facts、恢复现有 Runtime 状态、展示有限下一步建议，并继续复用 RuntimeEventBus、WorkState、ApprovalState 和 latest turn `TurnDeliverable`。它不自动执行下一步、不替用户验收结果、不引入多 Agent 调度，也不把日历触发和完整 scheduler 提前做成核心依赖。
+
 ## Phase 2.6 迁移收口边界
 
 结果来源和 Runtime 状态迁移必须保证原有功能不受影响。收口目标是减少错误来源，而不是把所有展示、朗读、诊断和状态刷新逻辑强行合并到一个尚未覆盖完整场景的入口。具体执行步骤统一以 [legacy-cleanup-checklist.md](runtime/legacy-cleanup-checklist.md) 为准。
@@ -209,11 +211,15 @@ Armin 的 Loop Engineering 边界是单任务循环：Plan → Execute → Obser
 
 当前实现状态：Phase 2.6 迁移收口已完成。Runtime 在 current-turn evidence 确认后异步解析一次并持久化 `TurnDeliverable`；结果卡片、手动朗读和自动 TTS 只消费该对象，`summary` / `shortSummary` fallback 已移除。`DELIVERABLE_UPDATED` 在持久化后携带 turn id 与 evidence fingerprint 发布，高频输出事件不持久化也不重建首页。远端 monitor 使用过滤 TUI chrome 后的 semantic hash 触发 settled candidate，避免 spinner/footer 阻塞 turn 收敛；自动 TTS 只在本轮新 deliverable 首次出现时触发。
 
+真实 qodercli 验收状态：`emulator-5554` 已完成真实 qodercli smoke、项目简介、final sync、同 session Turn 2 和长任务/回归抽样验证。验证结论是：远端最终输出已出现但 SSH stream 结束或 observer 切换时，Armin 会补抓最终 pane 并自动收敛；Turn 2 复用同一 `armin-*` session；结果卡片来自 latest turn deliverable；fresh deliverable 自动播报只触发一次，重复事件、重进详情和手动刷新不重播旧结果。
+
 所有阶段中，任何 Runtime、状态、结果、TTS、observer、reconcile、持久化或 UI 核心变更都必须满足 [Armin 核心行为与性能基线](runtime/core-behavior-performance-baseline.md)。基线失败表示方案尚未达到功能等价或性能等价，不能以架构收口、技术升级或进入新阶段为理由接受回归，也不能通过降低基线完成迁移。
 
 ## Phase 2.7 体验修整边界
 
 Phase 2.7 是 Phase 2.6 收口后的体验修整阶段，不改变 Runtime 主路径，不新增复杂 workflow，也不提前实现 Phase 3 的 Loop Runtime。所有改动都必须复用 Phase 2.6 已完成的 latest turn deliverable、WorkState、Runtime event 和节流输出路径。
+
+当前实现状态：Phase 2.7 核心修整已完成。结果完整性、状态一致性、Turn 2 连续输入、自动 TTS 去重和真实 qodercli 长任务观察均已有自动化或模拟器证据；后续如果出现同类回归，应优先按基线复现并修复当前主路径，不再引入旧数据兼容 fallback 或并行逻辑。
 
 Phase 2.7 重点处理：
 
@@ -222,6 +228,21 @@ Phase 2.7 重点处理：
 - TTS 播报体验：自动播报只绑定“本轮新 deliverable 首次出现”事件；进入页面、恢复监听、切 Tab、手动刷新或读取历史任务不得触发自动重播。
 - 长任务观察体验：真实 qodercli 长任务执行中保持 running / needApproval / needAttention 等真实状态，不以静默 pane、prompt echo 或稳定 thinking chrome 提前判定完成。
 - UI 响应：完整结果展示、状态聚合和 TTS 去重不得把大文本解析、摘要或语音清洗放回同步 UI 路径。
+
+主用户路径约束：
+
+- 新建任务后，任务列表、详情状态、timeline、结果页和操作区必须消费同一任务状态语义。
+- 执行中远端仍在工作时，Armin 必须保持 `running` 或明确的 `needApproval` / `needAttention`，不能提前显示 waiting。
+- `turnIdle` 只表示当前 turn 等待用户继续；用户可以直接发送下一轮，且下一轮应复用当前任务的同一 `armin-*` session。
+- 每轮结果卡片只展示该 turn 的 `TurnDeliverable.displaySummary`；timeline 中保留的 prompt、thinking 或 TUI chrome 不参与正式结果判定。
+- 自动 TTS 只由 fresh deliverable 触发一次；手动朗读读取同一 `speechSummary` / `displaySummary` 来源。
+
+长任务体验约束：
+
+- 真实 qodercli / aggressive 模式下，长任务执行期间 UI 要持续表达“仍在运行”，而不是以 pane 静默、稳定 footer 或旧 marker 作为完成依据。
+- 完成后应自动收敛到 `turnIdle`，无需用户手动刷新、重进详情或重新监听。
+- 动态页展示进展和审计信息，但不得让 spinner / thinking 高频刷新阻塞 Tab 切换或首页响应。
+- 输出摘要、TTS 清洗、prompt echo 过滤和全文扫描必须异步执行，不能回到同步 UI build 路径。
 
 Phase 2.7 不处理：
 

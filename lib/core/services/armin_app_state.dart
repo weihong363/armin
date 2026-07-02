@@ -253,7 +253,11 @@ class ArminAppState extends ChangeNotifier {
       await Future.wait(_runtimeSyncChains.values.toList(growable: false));
     }
 
-    // 3. Allow a microtask tick for any remaining callbacks to flush.
+    // 3. Wait for queued speech callbacks that may have been triggered by
+    // fresh deliverables.
+    await _speechQueue;
+
+    // 4. Allow a microtask tick for any remaining callbacks to flush.
     await Future<void>.delayed(Duration.zero);
   }
 
@@ -1818,6 +1822,11 @@ Apply this decision to the pending approval request.
       ),
     );
     final syncedLatest = _latestTask(task.id) ?? latest;
+    _queueFreshDeliverableSpeech(
+      syncedLatest,
+      turnId: resolved.provenance.turnId,
+      evidenceFingerprint: resolved.provenance.evidenceFingerprint,
+    );
     await _enqueueRuntimeSync(syncedLatest);
     _publishedDeliverableFingerprints[publishKey] = evidence.fingerprint;
     _runtimeDiag(
@@ -2753,6 +2762,46 @@ Apply this decision to the pending approval request.
     return '$taskId:$normalizedTurnId:$normalizedFingerprint';
   }
 
+  void _queueFreshDeliverableSpeech(
+    TaskSession task, {
+    required String? turnId,
+    required String? evidenceFingerprint,
+  }) {
+    final key = _deliverableSpeechKey(
+      taskId: task.id,
+      turnId: turnId,
+      evidenceFingerprint: evidenceFingerprint,
+    );
+    if (key.isEmpty || _seenDeliverableSpeechKeys.contains(key)) {
+      return;
+    }
+    _seenDeliverableSpeechKeys.add(key);
+    _speechQueue = _speechQueue
+        .then((_) async {
+          if (_activeDetailTaskId != task.id) {
+            return;
+          }
+          final decision = await _taskSpeechPolicy.decide(
+            previous: task,
+            current: task,
+            settings: speechSettings,
+            approval: bridgeRuntime.workState(task.id)?.approval,
+          );
+          if (!decision.shouldSpeak) {
+            return;
+          }
+          final speechHash = '$key:${decision.hash}';
+          if (_lastSpokenHashes[task.id] == speechHash) {
+            return;
+          }
+          _lastSpokenHashes[task.id] = speechHash;
+          await voiceService.speakSummary(decision.text);
+        })
+        .catchError((Object error) {
+          debugPrint('Fresh deliverable speech failed: $error');
+        });
+  }
+
   /// Listens to EventBus for fresh deliverable events. Existing/persisted
   /// results are marked as seen during load so opening a task never replays
   /// old output.
@@ -2767,18 +2816,15 @@ Apply this decision to the pending approval request.
     final task = _latestTask(event.taskId);
     if (task == null) return;
     if (event.type == RuntimeEventType.deliverableUpdated) {
-      final key = _deliverableSpeechKey(
-        taskId: event.taskId,
+      _queueFreshDeliverableSpeech(
+        task,
         turnId: event.turnId,
         evidenceFingerprint: event.evidenceFingerprint,
       );
-      if (key.isEmpty || _seenDeliverableSpeechKeys.contains(key)) {
-        return;
-      }
-      _seenDeliverableSpeechKeys.add(key);
+      return;
     }
-    // For deliverable updates, use the task itself (previous==current
-    // still triggers first-speech decisions).
+    // Approval events use the task itself; the speech policy reads the current
+    // WorkState approval payload for the spoken prompt.
     _queueTaskSpeech(task, task);
   }
 

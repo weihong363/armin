@@ -55,6 +55,14 @@ Phase 2.7 的体验修整必须继续满足上面的 B01-B10 和 P01-P07，并�
 | P27-LT01 | 真实 qodercli 长任务 3-5 分钟内不提前 waiting，完成后自动收敛。 | B01、B02、B06 |
 | P27-PERF01 | 动态 / 产出 / 高级 Tab 连续切换无明显卡顿，无 ANR。 | P04、P06、P07 |
 
+当前 Phase 2.7 验收状态：
+
+- 已通过自动化 Runtime Gate：B01、B02、B03、B04、B06、P06。
+- 已通过真实 qodercli 模拟器抽样：smoke、项目简介、final sync、同 session Turn 2、长任务/回归样本。
+- 已通过代码级 TTS 去重验证：fresh deliverable 自动播报一次，重复事件、重进详情和手动刷新不重播旧结果。
+- B07 最终音频听感仍按人工听取或可靠录音转写判定；没有音频证据时不能把“代码级播报文本正确”直接记为音频 PASS。
+- 真实 qodercli 验收必须和 `qodercli-test` 区分记录；`qodercli-test` 只能证明 Runtime/observer 可控路径，不替代真实 Agent 抽样。
+
 ## 模拟器验收判定规则
 
 以下规则适用于 B01、B02、B03、B04、B06、B07 和 P06。执行 Agent 不得自行降低条件或用相邻能力代替目标能力。
@@ -250,6 +258,16 @@ Phase 2.7 的体验修整必须继续满足上面的 B01-B10 和 P01-P07，并�
 | SSH/tmux 与审批 | SSH service 测试 + 同一 session/选项发送现场验证 |
 | 新阶段/核心架构变更 | 适用基线清单 + 变更前后证据 + 至少一次模拟器核心流程 |
 | 发布前完整回归 | `flutter test`、`flutter analyze`、`git diff --check` + 真机核心流程 |
+
+Phase 2.7 之后的核心体验回归，至少保留以下证据：
+
+- `task_id`、`turn_id`、`tmux_session`、Agent 类型、approval mode 和唯一 marker。
+- 远端 tmux 中最终输出与 Armin 状态/结果卡片的对应关系。
+- Turn 2 验证必须记录同一 `armin-*` session、两轮 deliverable 和 cross-turn 不污染断言。
+- TTS 验证必须记录 fresh deliverable 的 turn id、evidence fingerprint、自动播报次数和重复事件后的播报次数。
+- 长任务验证必须记录执行中状态未提前 waiting、完成后自动 `turnIdle`、无需手动刷新继续输入下一轮。
+
+交给低成本 Agent 执行模拟器验收时，必须使用 [低可靠 Agent 验收模板](low-reliability-agent-verification-template.md)。该模板固定设备、真实 qodercli、禁止事项、必跑用例和 JSON 报告格式；不符合模板的报告不能作为 Phase 2.7 后续回归证据。
 
 Android `gfxinfo` 可能无法覆盖 Flutter SurfaceView 的实际帧；没有有效帧数据时，不得用 `0 jank` 作为通过证据。应结合 Flutter frame timing、自动化交互响应、ANR、事件写入数量和用户可见冻结判断。
 

@@ -1797,17 +1797,20 @@ Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdo
     await state.load();
     state.setActiveDetailTaskId(baseTask.id);
     await state.saveTask(freshTask);
+    await state.drainForTest();
+    await _waitUntil(() => voice.spokenSummaries.isNotEmpty);
 
+    final fingerprint =
+        store.task!.turns.single.deliverable!.evidenceFingerprint;
     final event = RuntimeEvent(
       type: RuntimeEventType.deliverableUpdated,
       taskId: baseTask.id,
       createdAt: DateTime.now(),
       turnId: 'turn-task-1-1',
-      evidenceFingerprint: 'fresh-result',
+      evidenceFingerprint: fingerprint,
     );
     state.runtimeEventBus.publish(event);
     state.runtimeEventBus.publish(event);
-    await _waitUntil(() => voice.spokenSummaries.isNotEmpty);
     await Future<void>.delayed(const Duration(milliseconds: 20));
 
     expect(voice.spokenSummaries, hasLength(1));
@@ -1912,6 +1915,7 @@ Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdo
       () async {
     final task = _task(status: TaskStatus.running);
     final store = _TaskStore(task);
+    final voice = _CapturingVoiceService();
     final agent = _StreamEndsWithFinalPaneAgent()
       ..capturedLog = '''
 > Do not modify files.
@@ -1924,7 +1928,7 @@ Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdo
 ▪ Read(/Users/.../pubspec.yaml)
   └ Read 21 lines
 
-▪ ARMIN_REAL_SESSION_CHECK status=PASS project=countdown_widgets files_changed=0
+▪ ARMIN_REAL_SESSION_CHECK status=PASS project=countdown_widgets files_changed=0。项目简介：countdown_widgets 是一个 Flutter 倒计时组件库。
 Credits exhausted. Use /usage for details or /upgrade for more.
 * Type your message...
 Model · ctx ░░░░░░░░░░ 2%
@@ -1932,9 +1936,10 @@ Model · ctx ░░░░░░░░░░ 2%
     final state = ArminAppState(
       store: store,
       agentSessionService: agent,
-      voiceService: const _SilentVoiceService(),
+      voiceService: voice,
     );
     await state.load();
+    state.setActiveDetailTaskId(task.id);
 
     state.startTaskExecution(
       task,
@@ -1955,7 +1960,12 @@ Model · ctx ░░░░░░░░░░ 2%
     );
     expect(
       latestTurn.deliverable!.displaySummary,
-      contains('ARMIN_REAL_SESSION_CHECK status=PASS'),
+      contains('Flutter 倒计时组件库'),
+    );
+    await _waitUntil(() => voice.spokenSummaries.length == 1);
+    expect(
+      voice.spokenSummaries.single,
+      contains('countdown_widgets'),
     );
   });
 

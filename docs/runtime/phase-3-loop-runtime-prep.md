@@ -85,19 +85,21 @@ Loop Runtime 的新增数据必须满足：
 
 - 已定义 `LoopTurnMetrics`、`LoopEvaluation`，表达单 turn 的事实和评估结果；当前代码不包含下一步建议字段。
 - 已在 latest turn deliverable 保存点写入 `loop_evaluated` metric event；事实与结果卡片同源，避免 prompt echo、thinking、旧 turn 或 reconnect snapshot 参与评估。
+- 已记录关键用户动作 `loop_user_action`：继续下一轮、标记完成、标记失败，并绑定 task、turn、next turn、输入长度和来源。
 - 当前写入复用 `TaskSession.metricEvents`，随现有 task 持久化路径保存和恢复；不新增数据库表、不新增并行状态管线。
-- 已补充单元测试，覆盖 turn settle 后生成 deliverable 时同步写入 loop facts，并确认当前 payload 不包含下一步建议。
-- 尚未启用自动下一步执行、规则型验收辅助建议、AI follow-up 草稿、scheduler 或通知策略；下一步进入任务详情 Loop 状态视图与 App 重启恢复门禁。
+- 已补充单元测试，覆盖 turn settle 后生成 deliverable 时同步写入 loop facts、用户动作 facts、AppState 重建恢复 deliverable/facts/approval WorkState，并确认当前 payload 不包含下一步建议。
+- 已新增规则型验收辅助建议纯服务，覆盖补测试证据、收敛阻塞、补修改清单、确认完成度、校验约束等高价值 follow-up 草稿；当前不接 UI、不自动发送。
+- 尚未启用自动下一步执行、AI follow-up 草稿、scheduler 或通知策略；下一步进入任务详情 Loop 状态视图与更完整的恢复门禁。
 
 ## 当前可执行部分
 
 当前可以继续执行的内容：
 
-1. 完善 Loop facts：补充用户动作事件，例如继续、标记完成、标记失败、拒绝/重做。
+1. 完善 Loop facts：补充拒绝/重做等尚未产品化的用户动作事件。
 2. 任务详情 Loop 状态视图：只展示事实状态，例如执行中、等待审批、等待用户验证、运行时丢失、用户已收尾。
-3. App 重启恢复测试：确认 task、turn、approval、deliverable、loop facts 从 SQLite 恢复后一致。
+3. App 重启恢复测试：继续补充 SQLite runtime store 的设备级恢复一致性；代码级 RuntimePersistenceStore 契约已覆盖 approval 和 WorkState。
 4. 指标门禁：确认 loop facts 写入不会影响 Tab 切换、状态自动刷新、结果卡片和 TTS。
-5. 规则型验收辅助建议设计：定义高价值建议规则、输入边界和安全门禁；不接 AI、不自动发送。
+5. 规则型验收辅助建议 UI 接入：当前服务和测试已完成，后续只展示草稿，不自动发送。
 
 ## Phase 2.7 指标门禁
 
@@ -115,6 +117,8 @@ Loop facts 属于 Phase 2.7 收尾与 Phase 3 前置数据，不得改变 Phase 
 - `flutter test test/features/voice/services/task_speech_policy_test.dart`
 - `flutter analyze`
 - `git diff --check`
+
+Flutter 测试和分析命令必须串行执行。当前 Flutter native assets 构建会复用 `build/native_assets`，并发运行多个 `flutter test` 或 `flutter analyze` 可能出现 `objective_c.dylib`、`native_assets.json` 或 `NativeAssetsManifest.json` 缺失。这类失败先按工具链并发产物冲突处理，单独重跑同一命令；单独重跑仍失败才算门禁失败。
 
 真机或模拟器抽样只用于补充确认真实 qodercli 路径没有回归，不能替代上述代码级门禁。
 

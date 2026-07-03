@@ -259,6 +259,8 @@ Phase 2.7 的体验修整必须继续满足上面的 B01-B10 和 P01-P07，并�
 | 新阶段/核心架构变更 | 适用基线清单 + 变更前后证据 + 至少一次模拟器核心流程 |
 | 发布前完整回归 | `flutter test`、`flutter analyze`、`git diff --check` + 真机核心流程 |
 
+Flutter 测试命令必须串行执行。当前工具链的 native assets 构建会复用 `build/native_assets`，并发运行多个 `flutter test` 或 `flutter analyze` 可能导致 `objective_c.dylib`、`native_assets.json` 或 `NativeAssetsManifest.json` 缺失。遇到这类错误时，先单独重跑同一命令；单独重跑仍失败才记为代码或门禁失败。
+
 Phase 2.7 之后的核心体验回归，至少保留以下证据：
 
 - `task_id`、`turn_id`、`tmux_session`、Agent 类型、approval mode 和唯一 marker。

@@ -592,8 +592,19 @@ class ArminAppState extends ChangeNotifier {
       userInput: instruction.trim(),
       now: inputAt,
     );
-    await _saveControlledTask(
+    final taskWithLoopAction = _taskWithLoopUserAction(
       taskWithNewTurn,
+      kind: LoopUserActionKind.continueTask,
+      targetTurn: taskWithVoiceInput.turns.lastOrNull ??
+          _turnBeforeLast(taskWithNewTurn),
+      nextTurn: taskWithNewTurn.turns.lastOrNull,
+      instructionLength: instruction.trim().length,
+      source: rawVoiceText.trim().isEmpty ? 'text' : 'voice',
+      status: TaskStatus.running,
+      now: inputAt,
+    );
+    await _saveControlledTask(
+      taskWithLoopAction,
       status: TaskStatus.running,
       logMessage: 'User sent follow-up instruction.',
       eventType:
@@ -1120,6 +1131,8 @@ class ArminAppState extends ChangeNotifier {
           : taskWithFinalLog.shortSummary,
       turnStatus: NativeOutputTurnStatus.completedByUser,
       userDecision: 'completed',
+      loopActionKind: LoopUserActionKind.markCompleted,
+      loopActionSource: rawVoiceText.trim().isEmpty ? 'text' : 'voice',
     );
     await _cleanupTaskSession(_latestTask(task.id) ?? taskWithFinalLog);
   }
@@ -1146,6 +1159,8 @@ class ArminAppState extends ChangeNotifier {
           : taskWithFinalLog.shortSummary,
       turnStatus: NativeOutputTurnStatus.failedByUser,
       userDecision: 'failed',
+      loopActionKind: LoopUserActionKind.markFailed,
+      loopActionSource: rawVoiceText.trim().isEmpty ? 'text' : 'voice',
     );
     await _cleanupTaskSession(_latestTask(task.id) ?? taskWithFinalLog);
   }
@@ -1547,6 +1562,8 @@ Apply this decision to the pending approval request.
     String eventType = 'runtime_control',
     NativeOutputTurnStatus? turnStatus,
     String? userDecision,
+    LoopUserActionKind? loopActionKind,
+    String loopActionSource = 'text',
   }) async {
     final now = DateTime.now();
     final logLine = '$logMessage\n';
@@ -1558,32 +1575,79 @@ Apply this decision to the pending approval request.
             userDecision: userDecision,
             now: now,
           );
+    final taskForSave = loopActionKind == null
+        ? taskWithTurn
+        : _taskWithLoopUserAction(
+            taskWithTurn,
+            kind: loopActionKind,
+            targetTurn: taskWithTurn.turns.lastOrNull,
+            source: loopActionSource,
+            status: status,
+            now: now,
+          );
     await saveTask(
-      taskWithTurn.copyWith(
+      taskForSave.copyWith(
         status: status,
-        rawLog: '${taskWithTurn.rawLog}$logLine',
+        rawLog: '${taskForSave.rawLog}$logLine',
         updatedAt: now,
-        completedAt: completed ? now : taskWithTurn.completedAt,
+        completedAt: completed ? now : taskForSave.completedAt,
         shortSummary: shortSummary ??
             (status == TaskStatus.stopped
                 ? '用户已停止任务'
-                : taskWithTurn.shortSummary),
+                : taskForSave.shortSummary),
         executionLogs: [
-          ...taskWithTurn.executionLogs,
+          ...taskForSave.executionLogs,
           ExecutionLog(
             id: 'log-${now.microsecondsSinceEpoch}',
-            taskId: taskWithTurn.id,
+            taskId: taskForSave.id,
             rawOutput: logLine,
             createdAt: now,
           ),
         ],
         metricEvents: _metricEventsWithCreated(
-          taskWithTurn.metricEvents,
-          taskId: taskWithTurn.id,
+          taskForSave.metricEvents,
+          taskId: taskForSave.id,
           eventType: eventType,
           payloadJson: '{"status":"${status.name}"}',
           now: now,
         ),
+      ),
+    );
+  }
+
+  TaskSession _taskWithLoopUserAction(
+    TaskSession task, {
+    required LoopUserActionKind kind,
+    required NativeOutputTurn? targetTurn,
+    NativeOutputTurn? nextTurn,
+    int instructionLength = 0,
+    String source = 'text',
+    TaskStatus? status,
+    required DateTime now,
+  }) {
+    if (targetTurn == null) {
+      return task;
+    }
+    final action = LoopUserAction(
+      id: 'loop-action-${now.microsecondsSinceEpoch}',
+      taskId: task.id,
+      kind: kind,
+      createdAt: now,
+      turnId: targetTurn.id,
+      turnIndex: targetTurn.turnIndex,
+      status: (status ?? task.status).name,
+      nextTurnId: nextTurn?.id,
+      nextTurnIndex: nextTurn?.turnIndex,
+      instructionLength: instructionLength,
+      source: source,
+    );
+    return task.copyWith(
+      metricEvents: _metricEventsWithCreated(
+        task.metricEvents,
+        taskId: task.id,
+        eventType: LoopUserAction.metricEventType,
+        payloadJson: jsonEncode(action.toJson()),
+        now: now,
       ),
     );
   }
@@ -1900,6 +1964,13 @@ Apply this decision to the pending approval request.
         hasDeliverable: deliverable != null,
       ),
     );
+  }
+
+  NativeOutputTurn? _turnBeforeLast(TaskSession task) {
+    if (task.turns.length < 2) {
+      return task.turns.lastOrNull;
+    }
+    return task.turns[task.turns.length - 2];
   }
 
   int _approvalCountForTurn(TaskSession task, NativeOutputTurn turn) {

@@ -10,6 +10,7 @@ import 'package:armin/features/hosts/models/host_config.dart';
 import 'package:armin/features/projects/models/project_path_config.dart';
 import 'package:armin/features/runtime/models/approval_state.dart';
 import 'package:armin/features/runtime/models/runtime_task_snapshot.dart';
+import 'package:armin/features/runtime/models/work_state.dart';
 import 'package:armin/features/runtime/services/bridge_runtime.dart';
 import 'package:armin/features/runtime/services/runtime_event_bus.dart';
 import 'package:armin/features/runtime/services/runtime_task_store.dart';
@@ -1521,6 +1522,18 @@ Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdo
     expect(store.task!.turns, hasLength(2));
     expect(store.task!.turns.last.turnIndex, 2);
     expect(store.task!.turns.last.userInput, '只输出 pets 名字');
+    final loopActionEvent = store.task!.metricEvents.lastWhere(
+      (event) => event.eventType == LoopUserAction.metricEventType,
+    );
+    final loopAction = LoopUserAction.fromJson(
+      jsonDecode(loopActionEvent.payloadJson) as Map<String, Object?>,
+    );
+    expect(loopAction.kind, LoopUserActionKind.continueTask);
+    expect(loopAction.taskId, store.task!.id);
+    expect(loopAction.turnIndex, 1);
+    expect(loopAction.nextTurnIndex, 2);
+    expect(loopAction.instructionLength, '只输出 pets 名字'.length);
+    expect(loopAction.source, 'text');
   });
 
   test('sendFollowUp preserves fast observer attention update', () async {
@@ -2288,6 +2301,16 @@ Model · ctx ░░░░░░░░░░ 2%
       NativeOutputTurnStatus.completedByUser,
     );
     expect(store.task!.turns.single.userDecision, 'completed');
+    final loopAction = LoopUserAction.fromJson(
+      jsonDecode(store.task!.metricEvents
+          .lastWhere(
+            (event) => event.eventType == LoopUserAction.metricEventType,
+          )
+          .payloadJson) as Map<String, Object?>,
+    );
+    expect(loopAction.kind, LoopUserActionKind.markCompleted);
+    expect(loopAction.turnId, store.task!.turns.single.id);
+    expect(loopAction.status, TaskStatus.userCompleted.name);
   });
 
   test('user marked failed updates current turn', () async {
@@ -2314,6 +2337,16 @@ Model · ctx ░░░░░░░░░░ 2%
       NativeOutputTurnStatus.failedByUser,
     );
     expect(store.task!.turns.single.userDecision, 'failed');
+    final loopAction = LoopUserAction.fromJson(
+      jsonDecode(store.task!.metricEvents
+          .lastWhere(
+            (event) => event.eventType == LoopUserAction.metricEventType,
+          )
+          .payloadJson) as Map<String, Object?>,
+    );
+    expect(loopAction.kind, LoopUserActionKind.markFailed);
+    expect(loopAction.turnId, store.task!.turns.single.id);
+    expect(loopAction.status, TaskStatus.userFailed.name);
   });
 
   test('cleanup failure is visible and terminal task can retry cleanup',
@@ -2519,6 +2552,103 @@ Model · ctx ░░░░░░░░░░ 2%
       jsonDecode(loopEvent.payloadJson) as Map<String, Object?>,
       isNot(contains('nextActions')),
     );
+  });
+
+  test('load restores deliverable and loop facts without auto speech',
+      () async {
+    final task = _task(status: TaskStatus.running);
+    final store = _TaskStore(task);
+    final firstState = ArminAppState(
+      store: store,
+      agentSessionService: _BufferedThenIdleAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+    await firstState.load();
+    firstState.startTaskExecution(
+      task,
+      const AgentExecutionRequest(prompt: 'Task'),
+    );
+    await _waitUntil(
+      () =>
+          store.task?.turns.isNotEmpty == true &&
+          store.task?.turns.last.deliverable != null &&
+          store.task!.metricEvents.any(
+            (event) => event.eventType == LoopEvaluation.metricEventType,
+          ),
+      timeout: const Duration(seconds: 1),
+    );
+    firstState.dispose();
+
+    final voice = _CapturingVoiceService();
+    final restoredState = ArminAppState(
+      store: store,
+      agentSessionService: _ControlAgent(),
+      voiceService: voice,
+    );
+    await restoredState.load();
+
+    final restoredTask = restoredState.tasks.single;
+    final restoredTurn = restoredTask.turns.single;
+    final loopEvent = restoredTask.metricEvents.lastWhere(
+      (event) => event.eventType == LoopEvaluation.metricEventType,
+    );
+    final evaluation = LoopEvaluation.fromJson(
+      jsonDecode(loopEvent.payloadJson) as Map<String, Object?>,
+    );
+    expect(restoredTask.status, TaskStatus.turnIdle);
+    expect(restoredTurn.deliverable?.displaySummary, contains('倒计时小部件'));
+    expect(evaluation.taskId, restoredTask.id);
+    expect(evaluation.turnId, restoredTurn.id);
+    expect(evaluation.metrics.hasDeliverable, isTrue);
+    expect(voice.spokenSummaries, isEmpty);
+  });
+
+  test('load restores approval work state from durable runtime store',
+      () async {
+    final approval = _nativeApproval(question: 'Apply this change?');
+    final task = _task(status: TaskStatus.needApproval).copyWith(
+      shortSummary: approval.question,
+      nativeApproval: approval,
+      nativeApprovalRequests: [approval],
+    );
+    final store = _TaskStore(task);
+    final runtimeStore = InMemoryRuntimeTaskStore();
+    final firstRuntime = BridgeRuntime(
+      taskStore: runtimeStore,
+      eventBus: RuntimeEventBus(),
+    );
+    final firstState = ArminAppState(
+      store: store,
+      agentSessionService: _ControlAgent(),
+      voiceService: const _SilentVoiceService(),
+      bridgeRuntime: firstRuntime,
+    );
+    await firstState.load();
+
+    expect(firstState.workState(task.id)?.phase, WorkPhase.needsApproval);
+    expect(
+      firstState.workState(task.id)?.approval?.question,
+      'Apply this change?',
+    );
+
+    final restoredRuntime = BridgeRuntime(
+      taskStore: runtimeStore,
+      eventBus: RuntimeEventBus(),
+    );
+    final restoredState = ArminAppState(
+      store: store,
+      agentSessionService: _ControlAgent(),
+      voiceService: const _SilentVoiceService(),
+      bridgeRuntime: restoredRuntime,
+    );
+    await restoredState.load();
+
+    final workState = restoredState.workState(task.id);
+    expect(workState?.phase, WorkPhase.needsApproval);
+    expect(workState?.approval?.question, 'Apply this change?');
+    expect(workState?.approval?.options.first.label, 'Allow once');
+    expect((await runtimeStore.loadTask(task.id))?.workState?.approval?.id,
+        approval.id);
   });
 
   test('same turn deliverable updates when refreshed evidence changes',

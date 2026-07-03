@@ -347,10 +347,21 @@ Thinking
     await eventBus.dispose();
   });
 
-  test('bridge runtime restores durable work state and event history',
+  test('bridge runtime restores durable work state, approval and event history',
       () async {
     final store = InMemoryRuntimeTaskStore();
     final now = DateTime(2026, 6, 7, 10);
+    final approval = NativeTerminalApproval(
+      id: 'approval-1',
+      taskId: 'task-1',
+      question: 'Apply this change?',
+      options: const [
+        NativeApprovalOption(key: '1', label: 'Allow once'),
+        NativeApprovalOption(key: '4', label: 'No'),
+      ],
+      state: ApprovalState.pending,
+      createdAt: now,
+    );
     final firstRuntime = BridgeRuntime(
       taskStore: store,
       eventBus: RuntimeEventBus(),
@@ -376,6 +387,11 @@ Thinking
       summary: 'Needs your instruction',
       now: now.add(const Duration(seconds: 2)),
     );
+    firstRuntime.notifyApprovalRequested(
+      'task-1',
+      approval: approval,
+      now: now.add(const Duration(seconds: 3)),
+    );
     await Future<void>.delayed(Duration.zero);
 
     final restoredRuntime = BridgeRuntime(
@@ -386,13 +402,17 @@ Thinking
 
     expect(
       restoredRuntime.workState('task-1')?.phase,
-      WorkPhase.turnIdle,
+      WorkPhase.needsApproval,
+    );
+    expect(
+      restoredRuntime.workState('task-1')?.approval?.question,
+      'Apply this change?',
     );
     expect(
       restoredRuntime.diagnostics('task-1')?.lastRuntimeEventType,
-      RuntimeEventType.taskWaitingUser.wireName,
+      RuntimeEventType.approvalRequested.wireName,
     );
-    expect(await store.loadEvents(taskId: 'task-1'), hasLength(4));
+    expect(await store.loadEvents(taskId: 'task-1'), hasLength(5));
   });
 
   test('bridge runtime returns reconcile decision for attention probe',

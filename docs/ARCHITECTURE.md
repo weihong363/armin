@@ -218,7 +218,7 @@ Armin 不解释或重写 Agent 的执行逻辑。`SelectableOutputSummaryProvide
 
 Loop Engineering 在 Armin 中的边界是单任务闭环优化：更清楚地计划任务、更可靠地观察执行、更早发现偏离、更低成本地追加上下文和验收结果。它不应变成复杂工作流系统、自动 fork/join runtime 或多 Agent 调度器。
 
-Phase 3 的起步实现见 [Phase 3 Loop Runtime 前置设计](runtime/phase-3-loop-runtime-prep.md)。架构上只新增 task/turn 级 loop facts、有限下一步建议和恢复验证；执行、状态、审批、结果和 TTS 继续走 Phase 2.6/2.7 已验证的 RuntimeEventBus、WorkState、ApprovalState 与 `TurnDeliverable` 主路径。
+Phase 3 的起步实现见 [Phase 3 Loop Runtime 前置设计](runtime/phase-3-loop-runtime-prep.md)。架构上先新增 task/turn 级 loop facts 和恢复验证；执行、状态、审批、结果和 TTS 继续走 Phase 2.6/2.7 已验证的 RuntimeEventBus、WorkState、ApprovalState 与 `TurnDeliverable` 主路径。过渡阶段的规则型验收辅助建议只能消费 latest deliverable、用户目标、约束和 loop facts，并生成用户确认后才能发送的 follow-up 草稿。
 
 ## Phase 2.6 结果迁移架构
 

@@ -190,9 +190,9 @@ MVP 记录指标事件但没有仪表板。目标字段涵盖任务持续时间�
 
 这些指标用于提升用户每次交互的效率：减少无效输出、减少 prompt echo / thinking / CLI chrome 污染、减少不必要的返工，并帮助下一轮任务提示更聚焦。它们不改变 Codex/Qoder 的执行逻辑，也不要求 Agent 返回私有结构化协议。
 
-Armin 的 Loop Engineering 边界是单任务循环：Plan → Execute → Observe → Evaluate → Adjust → Verify。Runtime 负责观察和归约状态；评估层记录本轮循环的成本、结果质量和用户后续动作；UI 只暴露对用户有帮助的下一步。该循环不等同于多 Agent workflow、自动调度器或通用任务依赖图。
+Armin 的 Loop Engineering 边界是单任务循环：Plan → Execute → Observe → Evaluate → Adjust → Verify。Runtime 负责观察和归约状态；评估层记录本轮循环的成本、结果质量和用户后续动作；UI 先暴露事实状态和现有用户操作。过渡阶段可以提供规则型验收辅助建议，但建议必须指出具体缺口或风险，并生成可编辑 follow-up 草稿，不能只是重复状态或按钮。该循环不等同于多 Agent workflow、自动调度器或通用任务依赖图。
 
-Phase 3 起步以 [Phase 3 Loop Runtime 前置设计](runtime/phase-3-loop-runtime-prep.md) 为准。第一批只记录 task/turn 级 loop facts、恢复现有 Runtime 状态、展示有限下一步建议，并继续复用 RuntimeEventBus、WorkState、ApprovalState 和 latest turn `TurnDeliverable`。它不自动执行下一步、不替用户验收结果、不引入多 Agent 调度，也不把日历触发和完整 scheduler 提前做成核心依赖。
+Phase 3 起步以 [Phase 3 Loop Runtime 前置设计](runtime/phase-3-loop-runtime-prep.md) 为准。第一批只记录 task/turn 级 loop facts、恢复现有 Runtime 状态、展示事实状态，并继续复用 RuntimeEventBus、WorkState、ApprovalState 和 latest turn `TurnDeliverable`。它不自动执行下一步、不替用户验收结果、不引入多 Agent 调度，也不把日历触发和完整 scheduler 提前做成核心依赖。
 
 ## Phase 2.6 迁移收口边界
 

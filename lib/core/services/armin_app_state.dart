@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 
@@ -22,6 +23,7 @@ import '../../features/runtime/services/runtime_event_bus.dart';
 import '../../features/runtime/services/runtime_task_store.dart';
 import '../../features/runtime/services/sqlite_runtime_persistence_store.dart';
 import '../../features/tasks/models/execution_log.dart';
+import '../../features/tasks/models/loop_evaluation.dart';
 import '../../features/tasks/models/metric_event.dart';
 import '../../features/tasks/models/native_output_turn.dart';
 import '../../features/tasks/models/task_constraint.dart';
@@ -1850,13 +1852,71 @@ Apply this decision to the pending approval request.
     final turns = List<NativeOutputTurn>.of(task.turns);
     final index = turns.indexWhere((turn) => turn.id == turnId);
     if (index < 0) return;
+    final now = DateTime.now();
     turns[index] = turns[index].copyWith(deliverable: deliverable);
-    final updated = task.copyWith(turns: turns, updatedAt: DateTime.now());
+    final evaluated = task.copyWith(turns: turns, updatedAt: now);
+    final updated = evaluated.copyWith(
+      metricEvents: _metricEventsWithCreated(
+        evaluated.metricEvents,
+        taskId: evaluated.id,
+        eventType: LoopEvaluation.metricEventType,
+        payloadJson: jsonEncode(
+          _loopEvaluationForTurn(
+            evaluated,
+            turns[index],
+            now: now,
+          ).toJson(),
+        ),
+        now: now,
+      ),
+    );
     await _store.saveTask(updated);
     final updatedTasks = [...tasks]..removeWhere((item) => item.id == task.id);
     tasks = [updated, ...updatedTasks];
     _updateTaskSnapshot(updated);
     _updateHomeSnapshot();
+  }
+
+  LoopEvaluation _loopEvaluationForTurn(
+    TaskSession task,
+    NativeOutputTurn turn, {
+    required DateTime now,
+  }) {
+    final deliverable = turn.deliverable;
+    final duration = turn.lastOutputAt.difference(turn.startedAt);
+    return LoopEvaluation(
+      id: 'loop-${turn.id}-${now.microsecondsSinceEpoch}',
+      taskId: task.id,
+      turnId: turn.id,
+      turnIndex: turn.turnIndex,
+      status: task.status.name,
+      createdAt: now,
+      metrics: LoopTurnMetrics(
+        inputLength: turn.userInput.trim().length,
+        outputSummaryLength: deliverable?.displaySummary.trim().length ?? 0,
+        approvalCount: _approvalCountForTurn(task, turn),
+        retryCount: _retryCountForTurn(task, turn),
+        waitMs: duration.isNegative ? 0 : duration.inMilliseconds,
+        hasDeliverable: deliverable != null,
+      ),
+    );
+  }
+
+  int _approvalCountForTurn(TaskSession task, NativeOutputTurn turn) {
+    final startedAt = turn.startedAt;
+    final endedAt = turn.idleDetectedAt ?? turn.lastOutputAt;
+    return task.nativeApprovalRequests.where((approval) {
+      return !approval.createdAt.isBefore(startedAt) &&
+          !approval.createdAt.isAfter(endedAt);
+    }).length;
+  }
+
+  int _retryCountForTurn(TaskSession task, NativeOutputTurn turn) {
+    final retryEvents = task.metricEvents.where((event) {
+      return event.eventType.toLowerCase().contains('retry') &&
+          event.createdAt.isAfter(turn.startedAt);
+    });
+    return retryEvents.length;
   }
 
   Future<TaskSession> _appendRawLog(TaskSession task, String rawOutput) async {
@@ -2776,30 +2836,28 @@ Apply this decision to the pending approval request.
       return;
     }
     _seenDeliverableSpeechKeys.add(key);
-    _speechQueue = _speechQueue
-        .then((_) async {
-          if (_activeDetailTaskId != task.id) {
-            return;
-          }
-          final decision = await _taskSpeechPolicy.decide(
-            previous: task,
-            current: task,
-            settings: speechSettings,
-            approval: bridgeRuntime.workState(task.id)?.approval,
-          );
-          if (!decision.shouldSpeak) {
-            return;
-          }
-          final speechHash = '$key:${decision.hash}';
-          if (_lastSpokenHashes[task.id] == speechHash) {
-            return;
-          }
-          _lastSpokenHashes[task.id] = speechHash;
-          await voiceService.speakSummary(decision.text);
-        })
-        .catchError((Object error) {
-          debugPrint('Fresh deliverable speech failed: $error');
-        });
+    _speechQueue = _speechQueue.then((_) async {
+      if (_activeDetailTaskId != task.id) {
+        return;
+      }
+      final decision = await _taskSpeechPolicy.decide(
+        previous: task,
+        current: task,
+        settings: speechSettings,
+        approval: bridgeRuntime.workState(task.id)?.approval,
+      );
+      if (!decision.shouldSpeak) {
+        return;
+      }
+      final speechHash = '$key:${decision.hash}';
+      if (_lastSpokenHashes[task.id] == speechHash) {
+        return;
+      }
+      _lastSpokenHashes[task.id] = speechHash;
+      await voiceService.speakSummary(decision.text);
+    }).catchError((Object error) {
+      debugPrint('Fresh deliverable speech failed: $error');
+    });
   }
 
   /// Listens to EventBus for fresh deliverable events. Existing/persisted

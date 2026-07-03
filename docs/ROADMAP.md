@@ -171,7 +171,7 @@ Phase 2.7 验收门禁：
 
 Phase 3 的优先级不变，核心是 “Loops > Prompts”：Loop Engine、日历触发执行、任务调度、任务恢复与 resume、审批工作流、自动摘要、长任务管理、结果追踪和通知。
 
-Phase 3 起步必须遵守 [Phase 3 Loop Runtime 前置设计](runtime/phase-3-loop-runtime-prep.md)：先做单任务 Loop Runtime 的事实记录、下一步建议和恢复能力，不直接进入多 Agent 调度、通用 workflow engine 或完整 scheduler。
+Phase 3 起步必须遵守 [Phase 3 Loop Runtime 前置设计](runtime/phase-3-loop-runtime-prep.md)：先做单任务 Loop Runtime 的事实记录、事实状态视图和恢复能力，不直接进入多 Agent 调度、通用 workflow engine 或完整 scheduler。过渡阶段可以做规则型验收辅助建议，但必须基于 latest deliverable、用户目标、约束和 loop facts，不能用低价值状态按钮建议替代。
 
 - Runtime 持久化边界收敛到 SQLite：任务、turn、runtime event、work state、approval state、session binding、watcher offset 和 deliverable 可恢复
 - Flutter 内 Bridge Runtime 作为过渡实现，支持 App 重启后的状态重建
@@ -180,7 +180,7 @@ Phase 3 起步必须遵守 [Phase 3 Loop Runtime 前置设计](runtime/phase-3-l
 - 历史任务延续
 - 任务级上下文延续
 - Loop 事实记录：输入长度、输出摘要长度、等待时间、审批次数、重试次数、用户后续动作
-- 下一步建议：继续、验收、重做、补充上下文、标记完成/失败
+- 规则型验收辅助建议：基于 latest turn deliverable、用户目标、约束和可验证信号生成可编辑 follow-up 草稿；不接 AI、不自动执行
 - 手动子任务组织
 - 委托质量和注意力成本指标
 - token 消耗、结果符合预期程度和用户返工次数的综合评估

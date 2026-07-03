@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:armin/core/models/task_status.dart';
 import 'package:armin/core/services/armin_app_state.dart';
@@ -12,6 +13,7 @@ import 'package:armin/features/runtime/models/runtime_task_snapshot.dart';
 import 'package:armin/features/runtime/services/bridge_runtime.dart';
 import 'package:armin/features/runtime/services/runtime_event_bus.dart';
 import 'package:armin/features/runtime/services/runtime_task_store.dart';
+import 'package:armin/features/tasks/models/loop_evaluation.dart';
 import 'package:armin/features/tasks/models/native_output_turn.dart';
 import 'package:armin/features/tasks/models/task_constraint.dart';
 import 'package:armin/features/tasks/models/task_session.dart';
@@ -2497,6 +2499,26 @@ Model · ctx ░░░░░░░░░░ 2%
     expect(latestTurn.deliverable?.displaySummary, contains('倒计时小部件'));
     expect(
         latestTurn.deliverable?.displaySummary, isNot(contains('Model · ctx')));
+    final loopEvent = store.task!.metricEvents.lastWhere(
+      (event) => event.eventType == LoopEvaluation.metricEventType,
+    );
+    final evaluation = LoopEvaluation.fromJson(
+      jsonDecode(loopEvent.payloadJson) as Map<String, Object?>,
+    );
+    expect(evaluation.taskId, store.task!.id);
+    expect(evaluation.turnId, latestTurn.id);
+    expect(evaluation.turnIndex, latestTurn.turnIndex);
+    expect(evaluation.status, TaskStatus.turnIdle.name);
+    expect(evaluation.metrics.inputLength, latestTurn.userInput.length);
+    expect(evaluation.metrics.hasDeliverable, isTrue);
+    expect(
+      evaluation.metrics.outputSummaryLength,
+      latestTurn.deliverable!.displaySummary.length,
+    );
+    expect(
+      jsonDecode(loopEvent.payloadJson) as Map<String, Object?>,
+      isNot(contains('nextActions')),
+    );
   });
 
   test('same turn deliverable updates when refreshed evidence changes',

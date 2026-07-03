@@ -21,13 +21,14 @@ Plan -> Execute -> Observe -> Evaluate -> Adjust -> Verify
 
 ## Phase 3 起步范围
 
-第一批只做单任务 Loop Runtime 的可恢复事实记录和下一步建议：
+第一批只做单任务 Loop Runtime 的可恢复事实记录和状态可见性：
 
 1. Loop 事实记录：每个 turn 记录输入长度、输出摘要长度、等待时间、审批次数、重试次数、结果是否存在、用户后续动作。
 2. Loop 状态视图：在任务详情中展示当前任务处于“执行中、等待审批、等待用户继续、需要验证、已由用户收尾”等阶段。
-3. 下一步建议：基于最新 `TurnDeliverable` 和用户动作，给出继续、验收、重做、补充上下文、标记完成/失败等有限选项。
-4. 恢复能力：App 重启后从 SQLite 恢复 task、turn、runtime event、work state、approval 和 deliverable，不从旧 pane 重新猜结果。
-5. 通知入口：只在长任务需要用户动作、产生 fresh deliverable 或运行时丢失时通知；不把每个 output chunk 变成通知。
+3. 恢复能力：App 重启后从 SQLite 恢复 task、turn、runtime event、work state、approval 和 deliverable，不从旧 pane 重新猜结果。
+4. 通知入口：只在长任务需要用户动作、产生 fresh deliverable 或运行时丢失时通知；不把每个 output chunk 变成通知。
+
+“下一步建议”在过渡阶段可以先做规则型验收辅助，但不能做状态按钮重复。状态型建议（继续、验收、完成、失败、处理审批）只是现有操作按钮的重复，产品价值不足。高价值规则建议必须基于最新 `TurnDeliverable`、用户原始目标、约束和 loop facts，指出具体缺口或风险，并给出可直接发送的 follow-up 草稿；不得基于 thinking、prompt echo、TUI chrome、旧 turn 或 reconnect snapshot。
 
 ## 复用现有主路径
 
@@ -74,8 +75,85 @@ Loop Runtime 的新增数据必须满足：
 
 建议按以下顺序进入 Phase 3：
 
-1. 定义 Loop 事实模型：`LoopTurnMetrics` / `LoopEvaluation` / `LoopNextAction`，仅记录事实和建议，不执行自动化。
+1. 定义 Loop 事实模型：`LoopTurnMetrics` / `LoopEvaluation`，仅记录事实，不执行自动化。
 2. 在现有 task/turn 保存路径中写入轻量指标，避免新增并行状态管线。
-3. 在任务详情增加“下一步”语义，不改变现有继续、标记完成、标记失败按钮。
+3. 在任务详情增加 Loop 状态视图，不改变现有继续、标记完成、标记失败按钮。
 4. 增加 App 重启恢复测试，确认 WorkState、approval、deliverable 和 loop facts 一致。
-5. 再评估是否进入调度、提醒或通知，而不是直接做完整 scheduler。
+5. 再评估是否进入规则型验收辅助建议、AI follow-up 草稿、提醒或通知，而不是直接做完整 scheduler。
+
+## 当前落地状态
+
+- 已定义 `LoopTurnMetrics`、`LoopEvaluation`，表达单 turn 的事实和评估结果；当前代码不包含下一步建议字段。
+- 已在 latest turn deliverable 保存点写入 `loop_evaluated` metric event；事实与结果卡片同源，避免 prompt echo、thinking、旧 turn 或 reconnect snapshot 参与评估。
+- 当前写入复用 `TaskSession.metricEvents`，随现有 task 持久化路径保存和恢复；不新增数据库表、不新增并行状态管线。
+- 已补充单元测试，覆盖 turn settle 后生成 deliverable 时同步写入 loop facts，并确认当前 payload 不包含下一步建议。
+- 尚未启用自动下一步执行、规则型验收辅助建议、AI follow-up 草稿、scheduler 或通知策略；下一步进入任务详情 Loop 状态视图与 App 重启恢复门禁。
+
+## 当前可执行部分
+
+当前可以继续执行的内容：
+
+1. 完善 Loop facts：补充用户动作事件，例如继续、标记完成、标记失败、拒绝/重做。
+2. 任务详情 Loop 状态视图：只展示事实状态，例如执行中、等待审批、等待用户验证、运行时丢失、用户已收尾。
+3. App 重启恢复测试：确认 task、turn、approval、deliverable、loop facts 从 SQLite 恢复后一致。
+4. 指标门禁：确认 loop facts 写入不会影响 Tab 切换、状态自动刷新、结果卡片和 TTS。
+5. 规则型验收辅助建议设计：定义高价值建议规则、输入边界和安全门禁；不接 AI、不自动发送。
+
+## Phase 2.7 指标门禁
+
+Loop facts 属于 Phase 2.7 收尾与 Phase 3 前置数据，不得改变 Phase 2.6/2.7 主链路。每次修改后至少确认：
+
+- 状态同步：任务执行完成后自动进入 `turnIdle`，不需要手动刷新；执行中不得提前 waiting。
+- 结果卡片：仍只读取 latest turn `TurnDeliverable`，不能从 loop facts、`summary`、prompt echo 或 raw snapshot 补造结果。
+- TTS：自动 TTS 仍只在 fresh deliverable 首次出现时播报一次；loop facts 写入不得触发播报。
+- UI 性能：loop facts 写入不得增加同步 UI 路径中的全文扫描、摘要、TTS 清洗或大字符串解析。
+- 持久化：loop facts 复用 task 保存路径，不能新增并行状态管线或双重持久化。
+
+建议执行的自动化验证：
+
+- `flutter test test/core/armin_app_state_task_control_test.dart`
+- `flutter test test/features/voice/services/task_speech_policy_test.dart`
+- `flutter analyze`
+- `git diff --check`
+
+真机或模拟器抽样只用于补充确认真实 qodercli 路径没有回归，不能替代上述代码级门禁。
+
+## 规则型验收辅助建议设计
+
+规则型建议的目标不是解释状态，也不是重复按钮，而是帮助用户快速判断本轮结果是否可验收、下一轮应补什么证据。建议必须同时满足：
+
+- 来源可信：只读取用户原始目标、约束、latest turn `TurnDeliverable`、loop facts 和可验证状态。
+- 指向明确：必须指出具体缺口、风险或验收动作，不能输出“可以继续/可以完成”这类空泛建议。
+- 可直接发送：建议应包含一段可编辑 follow-up 草稿，用户确认后才能发送。
+- 可忽略：不改变任务状态，不自动执行，不隐藏原有继续、完成、失败按钮。
+- 可测试：每条规则必须有 fixture，验证触发条件、非触发条件和跨 turn 隔离。
+
+建议优先覆盖以下高价值规则：
+
+| 触发信号 | 建议意图 | follow-up 草稿示例 |
+| --- | --- | --- |
+| 结果没有测试命令、测试结果或验证证据 | 补验证 | `请运行与本次修改相关的最小测试，并输出测试命令、结果和仍未覆盖的风险。` |
+| 结果出现 blocked、auth、permission、cannot、failed 等阻塞词 | 先收敛阻塞 | `请先说明当前阻塞原因、最小解除步骤，以及是否需要我确认或提供信息。不要扩大任务范围。` |
+| 结果很短，或只描述项目/计划，没有交付内容 | 区分已完成与未完成 | `请明确列出已完成内容、未完成内容、下一步最小动作，以及当前是否可验收。` |
+| 结果提到修改/实现，但没有文件清单 | 补审计证据 | `请输出本轮修改的文件列表、每个文件的作用，以及如何验证这些修改。` |
+| 多轮连续继续但没有完成判断 | 收敛剩余工作 | `请基于当前状态列出剩余 TODO，按优先级给出下一步，并说明完成标准。` |
+| 用户约束包含“不修改文件/只读/不要提交”，但结果暗示执行实现或修改 | 校验约束 | `请确认本轮是否修改了文件、是否提交了 Git，以及是否违反我给出的约束。` |
+| 结果中有“应该/可能/建议”但没有实际执行证据 | 要求落地证据 | `请把建议转成已执行动作或明确的未执行原因，并给出可验证结果。` |
+
+明确禁止的建议：
+
+- `当前已完成，可以继续或标记完成。`
+- `需要审批，请处理审批。`
+- `任务失败，可以重试。`
+- 任何只复述 `TaskStatus` 或现有按钮的文案。
+- 任何自动发送、自动继续、自动标记完成/失败的行为。
+
+## AI 建议前置边界
+
+AI 下一步建议不是规则型过渡层的前提。未来开启前必须先满足：
+
+- 输入边界：只能读取用户原始目标、约束、latest turn `TurnDeliverable`、loop facts 和可验证状态；不得读取 thinking、prompt echo、旧 turn deliverable、TUI chrome 或 reconnect snapshot。
+- 输出边界：只能生成可编辑的 follow-up 草稿或验收提示，不得改变任务状态，不得自动发送，不得自动标记完成或失败。
+- 质量边界：建议必须提供建设性判断，例如缺少测试、结果不完整、阻塞未解决、范围扩大、需要验收证据；不能只是重复现有按钮。
+- 安全边界：涉及高风险操作、提交、删除、发布、凭证、远程执行扩权时，建议只能要求用户明确确认。
+- 验证边界：AI 建议上线前必须有 fixture 测试，覆盖完整结果、部分完成、失败阻塞、无测试证据、跨 turn 隔离和 prompt echo 污染。

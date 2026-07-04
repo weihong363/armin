@@ -2920,11 +2920,10 @@ Apply this decision to the pending approval request.
       if (!decision.shouldSpeak) {
         return;
       }
-      final speechHash = '$key:${decision.hash}';
-      if (_lastSpokenHashes[task.id] == speechHash) {
+      if (_lastSpokenHashes[task.id] == decision.hash) {
         return;
       }
-      _lastSpokenHashes[task.id] = speechHash;
+      _lastSpokenHashes[task.id] = decision.hash;
       await voiceService.speakSummary(decision.text);
     }).catchError((Object error) {
       debugPrint('Fresh deliverable speech failed: $error');

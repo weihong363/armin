@@ -22,6 +22,7 @@ import '../../tasks/models/native_output_turn.dart';
 import '../../tasks/models/task_session.dart';
 import '../../tasks/models/voice_input.dart';
 import '../../tasks/screens/task_draft_screen.dart';
+import '../../tasks/services/loop_follow_up_advisor.dart';
 import '../../tasks/services/semantic_snippet_builder.dart';
 import '../../tasks/services/turn_output_slicer.dart';
 import '../../tasks/services/voice_task_command_processor.dart';
@@ -1222,11 +1223,15 @@ class _TimelinePanelState extends State<_TimelinePanel> {
   late _TimelineViewModel _viewModel;
 
   static String _computeSignature(TaskSession task) {
+    final latestTurn = task.turns.lastOrNull;
     return '${task.id}:${task.status.name}:${task.shortSummary}:'
         '${task.updatedAt.microsecondsSinceEpoch}:'
         '${task.completedAt?.microsecondsSinceEpoch}:'
         '${task.voiceInputs.length}:${task.turns.length}:'
-        '${task.metricEvents.length}';
+        '${task.metricEvents.length}:'
+        '${latestTurn?.status.name}:'
+        '${latestTurn?.deliverable?.evidenceFingerprint}:'
+        '${latestTurn?.deliverable?.displaySummary.hashCode}';
   }
 
   static _TimelineViewModel _timelineViewModelFor(TaskSession task) {
@@ -1277,9 +1282,22 @@ class _TimelinePanelState extends State<_TimelinePanel> {
       visibleItems: allItems.reversed.take(3).toList(growable: false),
       hasTurns: task.turns.isNotEmpty,
       hasLoopFacts: _LoopFactsSummary.fromTask(task).hasFacts,
+      followUpSuggestions: _followUpSuggestionsFor(task),
     );
     _cacheTimeline(signature, model);
     return model;
+  }
+
+  static List<LoopFollowUpSuggestion> _followUpSuggestionsFor(
+    TaskSession task,
+  ) {
+    final latestTurn = task.turns.lastOrNull;
+    if (task.status != TaskStatus.turnIdle ||
+        latestTurn?.status != NativeOutputTurnStatus.turnIdle ||
+        latestTurn?.deliverable == null) {
+      return const [];
+    }
+    return const LoopFollowUpAdvisor().suggest(task);
   }
 
   @override
@@ -1308,6 +1326,7 @@ class _TimelinePanelState extends State<_TimelinePanel> {
       padding: const EdgeInsets.all(20),
       itemCount: _viewModel.visibleItems.length +
           (_viewModel.hasLoopFacts ? 1 : 0) +
+          (_viewModel.followUpSuggestions.isNotEmpty ? 1 : 0) +
           (_viewModel.hasTurns ? 1 : 0),
       separatorBuilder: (_, __) => const SizedBox(height: 12),
       itemBuilder: (context, index) {
@@ -1318,12 +1337,37 @@ class _TimelinePanelState extends State<_TimelinePanel> {
           }
           itemIndex -= 1;
         }
+        if (_viewModel.followUpSuggestions.isNotEmpty) {
+          if (itemIndex == 0) {
+            return _FollowUpSuggestionsCard(
+              suggestions: _viewModel.followUpSuggestions,
+              onUseDraft: _showSuggestedFollowUpSheet,
+            );
+          }
+          itemIndex -= 1;
+        }
         if (itemIndex < _viewModel.visibleItems.length) {
           return _TimelineItem.fromData(_viewModel.visibleItems[itemIndex]);
         }
         return _InfoCard(
           title: '\u4efb\u52a1\u8f93\u51fa\u5386\u53f2',
           child: _TurnSummaryList(task: widget.task),
+        );
+      },
+    );
+  }
+
+  void _showSuggestedFollowUpSheet(LoopFollowUpSuggestion suggestion) {
+    AddContextSheet.show(
+      context,
+      task: widget.task,
+      title: suggestion.title,
+      hintText: suggestion.reason,
+      initialInstruction: suggestion.draft,
+      onSubmit: (sheetContext, instruction, command) async {
+        await AppStateScope.read(sheetContext).sendFollowUp(
+          widget.task,
+          instruction,
         );
       },
     );
@@ -2252,11 +2296,13 @@ class _TimelineViewModel {
     required this.visibleItems,
     required this.hasTurns,
     required this.hasLoopFacts,
+    required this.followUpSuggestions,
   });
 
   final List<_TimelineItemData> visibleItems;
   final bool hasTurns;
   final bool hasLoopFacts;
+  final List<LoopFollowUpSuggestion> followUpSuggestions;
 }
 
 class _LoopFactsCard extends StatelessWidget {
@@ -2291,6 +2337,89 @@ class _LoopFactsCard extends StatelessWidget {
               value: _elapsedLabel(Duration(milliseconds: summary.lastWaitMs)),
             ),
         ],
+      ),
+    );
+  }
+}
+
+class _FollowUpSuggestionsCard extends StatelessWidget {
+  const _FollowUpSuggestionsCard({
+    required this.suggestions,
+    required this.onUseDraft,
+  });
+
+  final List<LoopFollowUpSuggestion> suggestions;
+  final ValueChanged<LoopFollowUpSuggestion> onUseDraft;
+
+  @override
+  Widget build(BuildContext context) {
+    return _InfoCard(
+      title: '建议后续指令',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          for (var index = 0; index < suggestions.length; index++) ...[
+            if (index > 0) const SizedBox(height: 10),
+            _FollowUpSuggestionTile(
+              suggestion: suggestions[index],
+              onUseDraft: onUseDraft,
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _FollowUpSuggestionTile extends StatelessWidget {
+  const _FollowUpSuggestionTile({
+    required this.suggestion,
+    required this.onUseDraft,
+  });
+
+  final LoopFollowUpSuggestion suggestion;
+  final ValueChanged<LoopFollowUpSuggestion> onUseDraft;
+
+  @override
+  Widget build(BuildContext context) {
+    final textTheme = Theme.of(context).textTheme;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        border: Border.all(color: ArminTheme.primary.withValues(alpha: 0.14)),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: Text(
+                    suggestion.title,
+                    style: textTheme.titleSmall,
+                  ),
+                ),
+                TextButton.icon(
+                  onPressed: () => onUseDraft(suggestion),
+                  icon: const Icon(Icons.edit_note_outlined, size: 18),
+                  label: const Text('使用草稿'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(suggestion.reason, style: textTheme.bodySmall),
+            const SizedBox(height: 8),
+            Text(
+              suggestion.draft,
+              maxLines: 3,
+              overflow: TextOverflow.ellipsis,
+              style: textTheme.bodyMedium?.copyWith(color: ArminTheme.ink),
+            ),
+          ],
+        ),
       ),
     );
   }

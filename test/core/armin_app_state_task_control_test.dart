@@ -1832,6 +1832,58 @@ Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdo
     expect(voice.spokenSummaries.single, contains('项目简介已输出'));
   });
 
+  test('fresh deliverable speech ignores evidence-only refreshes', () async {
+    final now = DateTime(2026, 5, 18);
+    final baseTask = _task(status: TaskStatus.turnIdle);
+    final turn = NativeOutputTurn(
+      id: 'turn-task-1-1',
+      taskId: 'task-1',
+      turnIndex: 1,
+      userInput: '输出项目简介',
+      rawOutput: '项目简介已输出',
+      cleanedOutput: '项目简介已输出',
+      startedAt: now,
+      lastOutputAt: now,
+      status: NativeOutputTurnStatus.turnIdle,
+      deliverable: const TurnDeliverable(
+        displaySummary: '项目简介已输出',
+        speechSummary: '项目简介已输出',
+        evidenceFingerprint: 'fresh-result-a',
+      ),
+    );
+    final store = _TaskStore(baseTask);
+    final voice = _CapturingVoiceService();
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: _ControlAgent(),
+      voiceService: voice,
+    );
+    await state.load();
+    state.setActiveDetailTaskId(baseTask.id);
+    await state.saveTask(baseTask.copyWith(turns: [turn]));
+    await state.drainForTest();
+    await _waitUntil(() => voice.spokenSummaries.isNotEmpty);
+
+    await state.saveTask(
+      store.task!.copyWith(
+        turns: [
+          turn.copyWith(
+            deliverable: const TurnDeliverable(
+              displaySummary: '项目简介已输出',
+              speechSummary: '项目简介已输出',
+              evidenceFingerprint: 'fresh-result-b',
+            ),
+          ),
+        ],
+      ),
+    );
+    await state.drainForTest();
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    expect(voice.spokenSummaries, hasLength(1));
+    expect(voice.spokenSummaries.single, contains('项目简介已输出'));
+  });
+
   test('waiting user event does not auto speak existing result', () async {
     final task = _task(status: TaskStatus.turnIdle);
     final store = _TaskStore(task);

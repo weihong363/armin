@@ -114,6 +114,8 @@ Survey / 社区验证方向：
 
 当前结果卡片、手动朗读和自动 TTS 只使用持久化的 current-turn `TurnDeliverable`；没有 evidence 时不从 `summary` / `shortSummary` 补造结果。`DELIVERABLE_UPDATED` 在结果持久化后发布并携带 turn id 与 evidence fingerprint，高频 `OUTPUT_UPDATED` 经过节流且只在内存分发。Watcher event replay 归入 Phase 3。
 
+真实 qodercli 验收状态：`emulator-5554` 已完成真实 `$HOME/.local/bin/qodercli` smoke、项目简介、final sync、同 session Turn 2 和长任务/回归抽样验证。已确认远端最终输出返回后 Armin 可自动进入 `turnIdle`，结果卡片来自最新 turn，不需要手动刷新即可继续输入下一轮；自动 TTS 绑定 fresh deliverable，一轮新结果只触发一次，重复事件和重进详情不重播旧结果。
+
 所有阶段的核心功能变更统一受 [Armin 核心行为与性能基线](runtime/core-behavior-performance-baseline.md) 约束。状态自动刷新、任务控制、审批、每 turn 结果、朗读同源、Tab 响应、高频输出成本和有界数据增长均属于不可因迁移、重构或架构升级而退化的能力；不满足基线的实现必须暂停并重新评估，而不是继续推进或清理旧路径。
 
 交互效率评估继续记录：
@@ -123,9 +125,53 @@ Survey / 社区验证方向：
 - 观察 token 消耗和有效产出之间的关系，避免为了更长输出牺牲用户每次交互效率
 - 引入轻量 Loop Engineering 视角：Plan → Execute → Observe → Evaluate → Adjust → Verify，但只用于任务级评估和提示改进，不做通用 workflow engine
 
+### Phase 2.7：任务体验修整与真实长任务验收
+
+Phase 2.7 不新增 Runtime 架构、不引入多 Agent 编排、不提前实现 Phase 3 Loop Engine。目标是在 Phase 2.6 已收口的单任务主链路上，打磨真实使用中的结果可读性、状态一致性、TTS 体验和长任务观察体验。
+
+当前状态：Phase 2.7 的核心体验修整已经完成一轮可验收收口。真实 qodercli 路径覆盖了短任务 smoke、项目简介、Turn 2 连续输入和长任务抽样；自动化覆盖了 Runtime Gate、结果/TTS 去重、Tab 响应和 AppState 状态控制。后续同类问题应作为回归处理，而不是重新拆出迁移分支。
+
+低成本 Agent 或外部执行者跑回归时，必须使用 [低可靠 Agent 验收模板](runtime/low-reliability-agent-verification-template.md)。模板固定 `emulator-5554`、真实 qodercli、禁止改配置、禁止把 `qodercli-test` 当真实验收，并要求输出结构化 JSON 报告。
+
+优先级：
+
+1. 结果卡片完整性：结果卡片必须完整呈现 latest turn deliverable 的关键内容，不丢首段、尾段或最终结论；不得混入 prompt echo、thinking、TUI chrome、旧 turn 或 reconnect snapshot。
+2. 状态展示一致性：任务列表卡片、详情状态卡、动态 timeline、结果页和底部操作区必须消费同一任务状态语义；`running`、`turnIdle`、`needApproval`、`paused`、`userCompleted`、`userFailed` 不得互相矛盾。
+3. TTS 自动播报体验：自动 TTS 只在本轮新 deliverable 首次生成时播报一次；进入详情页、切 Tab、手动刷新、重连或恢复旧任务不得重播旧结果。手动朗读继续使用同一 latest turn deliverable source。
+4. 长任务观察体验：真实 qodercli / aggressive 模式下，3-5 分钟任务执行期间不得提前进入 waiting；完成后无需手动刷新即可继续输入下一轮；动态页展示有意义进展但不被 spinner / thinking 高频刷屏污染。
+5. UI 性能门禁：任何展示完整结果、状态统一或 TTS 调整都不得牺牲 Tab 响应和任务控制可用性；不得把 summary、TTS 清洗或全文扫描放回同步 UI 路径。
+
+Phase 2.7 验收门禁：
+
+- P27-R01：结果卡片完整显示 latest turn deliverable，包含最终输出关键段落。
+- P27-R02：多 turn 结果不串轮，Turn 2/3 不显示旧 turn 结果。
+- P27-S01：列表、详情、timeline、结果页和操作区状态一致。
+- P27-S02：完成后无需手动刷新即可继续输入下一轮。
+- P27-TTS01：自动 TTS 每个 turn 的新结果只播报一次。
+- P27-TTS02：进入详情页、重连、切 Tab 或手动刷新不重播旧结果。
+- P27-LT01：真实 qodercli 长任务 3-5 分钟内不提前 waiting，完成后自动收敛。
+- P27-PERF01：动态 / 产出 / 高级 Tab 连续切换无明显卡顿，无 ANR。
+
+用户路径验收已经按以下主链路收口：
+
+1. 新建任务：选择真实 host、项目和 qodercli 后，任务进入 `running`，任务列表、详情状态卡、timeline 和操作区显示一致。
+2. 执行中：远端仍在工作时 Armin 保持 `running` / `needApproval` / `needAttention` 等真实状态，不因 prompt echo、thinking、pane 静默或 reconnect snapshot 提前进入 waiting。
+3. 结果生成：当前 turn 出现有效 evidence 后异步生成 `TurnDeliverable`，结果卡片显示最新 turn 的 display summary，自动 TTS 只在 fresh deliverable 首次出现时播报一次。
+4. 继续输入：`turnIdle` 表示本轮等待用户继续，不等于任务完成；用户可直接发送 Turn 2，复用同一 `armin-*` session，Turn 2 结果不得显示 Turn 1 的 deliverable。
+5. 用户收尾：标记完成、标记失败、停止、暂停/恢复、断开/重新监听均保留既有任务控制语义；终态 cleanup 不影响已持久化结果。
+
+长任务体验基线：
+
+- 长任务执行期间，首页和详情页都必须优先表达“远端仍在运行”，不能为了更快显示结果而提前进入 waiting。
+- 动态页可以展示原始 timeline、thinking 和 TUI chrome 作为审计信息，但结果卡片和 TTS 只能消费 resolved `TurnDeliverable`。
+- 完成后应在无需手动刷新的情况下自动收敛到 `turnIdle`，并允许继续输入下一轮。
+- 结果摘要、TTS 清洗和全文扫描不得进入同步 UI 路径；Tab 切换和任务控制响应优先级高于展示更长原文。
+
 ## 第三阶段
 
 Phase 3 的优先级不变，核心是 “Loops > Prompts”：Loop Engine、日历触发执行、任务调度、任务恢复与 resume、审批工作流、自动摘要、长任务管理、结果追踪和通知。
+
+Phase 3 起步必须遵守 [Phase 3 Loop Runtime 前置设计](runtime/phase-3-loop-runtime-prep.md)：先做单任务 Loop Runtime 的事实记录、事实状态视图和恢复能力，不直接进入多 Agent 调度、通用 workflow engine 或完整 scheduler。过渡阶段可以做规则型验收辅助建议，但必须基于 latest deliverable、用户目标、约束和 loop facts，不能用低价值状态按钮建议替代。
 
 - Runtime 持久化边界收敛到 SQLite：任务、turn、runtime event、work state、approval state、session binding、watcher offset 和 deliverable 可恢复
 - Flutter 内 Bridge Runtime 作为过渡实现，支持 App 重启后的状态重建
@@ -133,6 +179,8 @@ Phase 3 的优先级不变，核心是 “Loops > Prompts”：Loop Engine、日
 - `tmux capture-pane` 长期降级为观察输入，不再作为 turn 完成、结果可见或审批已解决的唯一权威；Phase 2.6 过渡期仍保留为自动 reconcile 输入，直到 Runtime event / watcher offset 覆盖迁移前能力
 - 历史任务延续
 - 任务级上下文延续
+- Loop 事实记录：输入长度、输出摘要长度、等待时间、审批次数、重试次数、用户后续动作
+- 规则型验收辅助建议：基于 latest turn deliverable、用户目标、约束和可验证信号生成可编辑 follow-up 草稿；不接 AI、不自动执行
 - 手动子任务组织
 - 委托质量和注意力成本指标
 - token 消耗、结果符合预期程度和用户返工次数的综合评估

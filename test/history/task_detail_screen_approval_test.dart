@@ -990,6 +990,111 @@ Thinking
     expect(find.textContaining('让我确认一下当前代码状态'), findsNothing);
   });
 
+  testWidgets('loop suggestions prefill a follow-up draft after latest result',
+      (tester) async {
+    tester.view.physicalSize = const Size(430, 1600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final now = DateTime(2026, 5, 18);
+    final task = _task().copyWith(
+      status: TaskStatus.turnIdle,
+      turns: [
+        NativeOutputTurn(
+          id: 'turn-task-1-1',
+          taskId: 'task-1',
+          turnIndex: 1,
+          userInput: '修复 API',
+          rawOutput: '',
+          cleanedOutput: '已修复 lib/api.dart，但还没有运行测试。',
+          startedAt: now,
+          lastOutputAt: now,
+          status: NativeOutputTurnStatus.turnIdle,
+          deliverable: _deliverable('已修复 lib/api.dart。'),
+        ),
+      ],
+    );
+    final agent = _CapturingAgent();
+    final state = ArminAppState(
+      store: _TaskStore(task),
+      agentSessionService: agent,
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await tester.pumpWidget(
+      AppStateScope(
+        state: state,
+        child: const MaterialApp(home: TaskDetailScreen(taskId: 'task-1')),
+      ),
+    );
+    await _tapDetailTab(tester, '时间线');
+
+    expect(find.text('建议后续指令'), findsOneWidget);
+    expect(find.text('补充测试证据'), findsOneWidget);
+
+    await tester.tap(find.text('使用草稿').first);
+    await tester.pumpAndSettle();
+
+    final editable = tester.widget<EditableText>(find.byType(EditableText));
+    expect(editable.controller.text, contains('请运行与本次修改相关的最小测试'));
+
+    await tester.tap(find.text('发送'));
+    await tester.pumpAndSettle();
+
+    expect(agent.lastFollowUp, contains('请运行与本次修改相关的最小测试'));
+  });
+
+  testWidgets('loop suggestions stay hidden while a new turn is running',
+      (tester) async {
+    final now = DateTime(2026, 5, 18);
+    final task = _task().copyWith(
+      status: TaskStatus.running,
+      turns: [
+        NativeOutputTurn(
+          id: 'turn-task-1-1',
+          taskId: 'task-1',
+          turnIndex: 1,
+          userInput: '修复 API',
+          rawOutput: '',
+          cleanedOutput: '已修复 lib/api.dart。',
+          startedAt: now,
+          lastOutputAt: now,
+          status: NativeOutputTurnStatus.turnIdle,
+          deliverable: _deliverable('已修复 lib/api.dart。'),
+        ),
+        NativeOutputTurn(
+          id: 'turn-task-1-2',
+          taskId: 'task-1',
+          turnIndex: 2,
+          userInput: '继续验证',
+          rawOutput: 'Thinking...',
+          cleanedOutput: 'Thinking...',
+          startedAt: now,
+          lastOutputAt: now,
+          status: NativeOutputTurnStatus.running,
+        ),
+      ],
+    );
+    final state = ArminAppState(
+      store: _TaskStore(task),
+      agentSessionService: const _NoopAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await tester.pumpWidget(
+      AppStateScope(
+        state: state,
+        child: const MaterialApp(home: TaskDetailScreen(taskId: 'task-1')),
+      ),
+    );
+    await _tapDetailTab(tester, '时间线');
+
+    expect(find.text('建议后续指令'), findsNothing);
+    expect(find.text('补充测试证据'), findsNothing);
+  });
+
   testWidgets('result omits turns waiting for terminal interaction',
       (tester) async {
     tester.view.physicalSize = const Size(430, 1600);

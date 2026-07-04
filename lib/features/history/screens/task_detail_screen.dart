@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -16,10 +17,12 @@ import '../../runtime/models/approval_state.dart';
 import '../../runtime/models/runtime_task_snapshot.dart';
 import '../../runtime/models/work_state.dart';
 import '../../runtime/services/runtime_event_bus.dart';
+import '../../tasks/models/loop_evaluation.dart';
 import '../../tasks/models/native_output_turn.dart';
 import '../../tasks/models/task_session.dart';
 import '../../tasks/models/voice_input.dart';
 import '../../tasks/screens/task_draft_screen.dart';
+import '../../tasks/services/loop_follow_up_advisor.dart';
 import '../../tasks/services/semantic_snippet_builder.dart';
 import '../../tasks/services/turn_output_slicer.dart';
 import '../../tasks/services/voice_task_command_processor.dart';
@@ -820,7 +823,7 @@ class _TaskHeaderState extends State<_TaskHeader> {
                   key: const Key('runtime-control-state-badge'),
                   label: _detailStatusLabel(task.status, widget.workState),
                   color: statusColor,
-                  animate: _workPhaseFor(widget.workState) ==
+                  animate: _workPhaseFor(widget.workState, task.status) ==
                       WorkPhase.working,
                 ),
                 _TaskTimingText(task: task),
@@ -1192,7 +1195,7 @@ class _CurrentSituationCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final text = progressSnapshot != null &&
-            _workPhaseFor(workState) == WorkPhase.working
+            _workPhaseFor(workState, task.status) == WorkPhase.working
         ? _progressSituationText(task, progressSnapshot!)
         : _currentSituationText(task, workState);
     return _InfoCard(
@@ -1220,10 +1223,15 @@ class _TimelinePanelState extends State<_TimelinePanel> {
   late _TimelineViewModel _viewModel;
 
   static String _computeSignature(TaskSession task) {
+    final latestTurn = task.turns.lastOrNull;
     return '${task.id}:${task.status.name}:${task.shortSummary}:'
         '${task.updatedAt.microsecondsSinceEpoch}:'
         '${task.completedAt?.microsecondsSinceEpoch}:'
-        '${task.voiceInputs.length}:${task.turns.length}';
+        '${task.voiceInputs.length}:${task.turns.length}:'
+        '${task.metricEvents.length}:'
+        '${latestTurn?.status.name}:'
+        '${latestTurn?.deliverable?.evidenceFingerprint}:'
+        '${latestTurn?.deliverable?.displaySummary.hashCode}';
   }
 
   static _TimelineViewModel _timelineViewModelFor(TaskSession task) {
@@ -1273,9 +1281,23 @@ class _TimelinePanelState extends State<_TimelinePanel> {
     final model = _TimelineViewModel(
       visibleItems: allItems.reversed.take(3).toList(growable: false),
       hasTurns: task.turns.isNotEmpty,
+      hasLoopFacts: _LoopFactsSummary.fromTask(task).hasFacts,
+      followUpSuggestions: _followUpSuggestionsFor(task),
     );
     _cacheTimeline(signature, model);
     return model;
+  }
+
+  static List<LoopFollowUpSuggestion> _followUpSuggestionsFor(
+    TaskSession task,
+  ) {
+    final latestTurn = task.turns.lastOrNull;
+    if (task.status != TaskStatus.turnIdle ||
+        latestTurn?.status != NativeOutputTurnStatus.turnIdle ||
+        latestTurn?.deliverable == null) {
+      return const [];
+    }
+    return const LoopFollowUpAdvisor().suggest(task);
   }
 
   @override
@@ -1302,15 +1324,50 @@ class _TimelinePanelState extends State<_TimelinePanel> {
           PageStorageKey<String>('task-detail-timeline-list-${widget.task.id}'),
       physics: _taskDetailTabScrollPhysics,
       padding: const EdgeInsets.all(20),
-      itemCount: _viewModel.visibleItems.length + (_viewModel.hasTurns ? 1 : 0),
+      itemCount: _viewModel.visibleItems.length +
+          (_viewModel.hasLoopFacts ? 1 : 0) +
+          (_viewModel.followUpSuggestions.isNotEmpty ? 1 : 0) +
+          (_viewModel.hasTurns ? 1 : 0),
       separatorBuilder: (_, __) => const SizedBox(height: 12),
       itemBuilder: (context, index) {
-        if (index < _viewModel.visibleItems.length) {
-          return _TimelineItem.fromData(_viewModel.visibleItems[index]);
+        var itemIndex = index;
+        if (_viewModel.hasLoopFacts) {
+          if (itemIndex == 0) {
+            return _LoopFactsCard(task: widget.task);
+          }
+          itemIndex -= 1;
+        }
+        if (_viewModel.followUpSuggestions.isNotEmpty) {
+          if (itemIndex == 0) {
+            return _FollowUpSuggestionsCard(
+              suggestions: _viewModel.followUpSuggestions,
+              onUseDraft: _showSuggestedFollowUpSheet,
+            );
+          }
+          itemIndex -= 1;
+        }
+        if (itemIndex < _viewModel.visibleItems.length) {
+          return _TimelineItem.fromData(_viewModel.visibleItems[itemIndex]);
         }
         return _InfoCard(
           title: '\u4efb\u52a1\u8f93\u51fa\u5386\u53f2',
           child: _TurnSummaryList(task: widget.task),
+        );
+      },
+    );
+  }
+
+  void _showSuggestedFollowUpSheet(LoopFollowUpSuggestion suggestion) {
+    AddContextSheet.show(
+      context,
+      task: widget.task,
+      title: suggestion.title,
+      hintText: suggestion.reason,
+      initialInstruction: suggestion.draft,
+      onSubmit: (sheetContext, instruction, command) async {
+        await AppStateScope.read(sheetContext).sendFollowUp(
+          widget.task,
+          instruction,
         );
       },
     );
@@ -2238,10 +2295,248 @@ class _TimelineViewModel {
   const _TimelineViewModel({
     required this.visibleItems,
     required this.hasTurns,
+    required this.hasLoopFacts,
+    required this.followUpSuggestions,
   });
 
   final List<_TimelineItemData> visibleItems;
   final bool hasTurns;
+  final bool hasLoopFacts;
+  final List<LoopFollowUpSuggestion> followUpSuggestions;
+}
+
+class _LoopFactsCard extends StatelessWidget {
+  const _LoopFactsCard({required this.task});
+
+  final TaskSession task;
+
+  @override
+  Widget build(BuildContext context) {
+    final summary = _LoopFactsSummary.fromTask(task);
+    return _InfoCard(
+      title: 'Loop 事实',
+      child: Wrap(
+        spacing: 8,
+        runSpacing: 8,
+        children: [
+          _FactChip(label: 'Turn', value: '${summary.turnCount}'),
+          if (summary.lastTurnIndex > 0)
+            _FactChip(label: '最近', value: 'Turn ${summary.lastTurnIndex}'),
+          _FactChip(label: '结果', value: summary.deliverableCount.toString()),
+          _FactChip(label: '继续', value: summary.continueCount.toString()),
+          _FactChip(label: '完成', value: summary.completedCount.toString()),
+          _FactChip(label: '失败', value: summary.failedCount.toString()),
+          if (summary.lastOutputSummaryLength > 0)
+            _FactChip(
+              label: '摘要',
+              value: '${summary.lastOutputSummaryLength} 字',
+            ),
+          if (summary.lastWaitMs > 0)
+            _FactChip(
+              label: '耗时',
+              value: _elapsedLabel(Duration(milliseconds: summary.lastWaitMs)),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _FollowUpSuggestionsCard extends StatelessWidget {
+  const _FollowUpSuggestionsCard({
+    required this.suggestions,
+    required this.onUseDraft,
+  });
+
+  final List<LoopFollowUpSuggestion> suggestions;
+  final ValueChanged<LoopFollowUpSuggestion> onUseDraft;
+
+  @override
+  Widget build(BuildContext context) {
+    return _InfoCard(
+      title: '建议后续指令',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          for (var index = 0; index < suggestions.length; index++) ...[
+            if (index > 0) const SizedBox(height: 10),
+            _FollowUpSuggestionTile(
+              suggestion: suggestions[index],
+              onUseDraft: onUseDraft,
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _FollowUpSuggestionTile extends StatelessWidget {
+  const _FollowUpSuggestionTile({
+    required this.suggestion,
+    required this.onUseDraft,
+  });
+
+  final LoopFollowUpSuggestion suggestion;
+  final ValueChanged<LoopFollowUpSuggestion> onUseDraft;
+
+  @override
+  Widget build(BuildContext context) {
+    final textTheme = Theme.of(context).textTheme;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        border: Border.all(color: ArminTheme.primary.withValues(alpha: 0.14)),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: Text(
+                    suggestion.title,
+                    style: textTheme.titleSmall,
+                  ),
+                ),
+                TextButton.icon(
+                  onPressed: () => onUseDraft(suggestion),
+                  icon: const Icon(Icons.edit_note_outlined, size: 18),
+                  label: const Text('使用草稿'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(suggestion.reason, style: textTheme.bodySmall),
+            const SizedBox(height: 8),
+            Text(
+              suggestion.draft,
+              maxLines: 3,
+              overflow: TextOverflow.ellipsis,
+              style: textTheme.bodyMedium?.copyWith(color: ArminTheme.ink),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+Map<String, Object?> _metricPayload(String payloadJson) {
+  try {
+    final decoded = jsonDecode(payloadJson);
+    if (decoded is Map<String, dynamic>) {
+      return decoded;
+    }
+    if (decoded is Map) {
+      return decoded.map((key, value) => MapEntry(key.toString(), value));
+    }
+  } catch (_) {
+    return const {};
+  }
+  return const {};
+}
+
+class _FactChip extends StatelessWidget {
+  const _FactChip({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: ArminTheme.primary.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+        child: Text(
+          '$label $value',
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: ArminTheme.ink,
+              ),
+        ),
+      ),
+    );
+  }
+}
+
+class _LoopFactsSummary {
+  const _LoopFactsSummary({
+    required this.turnCount,
+    required this.lastTurnIndex,
+    required this.deliverableCount,
+    required this.continueCount,
+    required this.completedCount,
+    required this.failedCount,
+    required this.lastOutputSummaryLength,
+    required this.lastWaitMs,
+  });
+
+  final int turnCount;
+  final int lastTurnIndex;
+  final int deliverableCount;
+  final int continueCount;
+  final int completedCount;
+  final int failedCount;
+  final int lastOutputSummaryLength;
+  final int lastWaitMs;
+
+  bool get hasFacts {
+    return turnCount > 0 ||
+        deliverableCount > 0 ||
+        continueCount > 0 ||
+        completedCount > 0 ||
+        failedCount > 0;
+  }
+
+  factory _LoopFactsSummary.fromTask(TaskSession task) {
+    var deliverableCount = 0;
+    var continueCount = 0;
+    var completedCount = 0;
+    var failedCount = 0;
+    var lastOutputSummaryLength = 0;
+    var lastWaitMs = 0;
+    for (final event in task.metricEvents) {
+      final payload = _metricPayload(event.payloadJson);
+      if (event.eventType == LoopEvaluation.metricEventType) {
+        final evaluation = LoopEvaluation.fromJson(payload);
+        if (evaluation.metrics.hasDeliverable) {
+          deliverableCount += 1;
+        }
+        lastOutputSummaryLength = evaluation.metrics.outputSummaryLength;
+        lastWaitMs = evaluation.metrics.waitMs;
+      }
+      if (event.eventType == LoopUserAction.metricEventType) {
+        final action = LoopUserAction.fromJson(payload);
+        switch (action.kind) {
+          case LoopUserActionKind.continueTask:
+            continueCount += 1;
+          case LoopUserActionKind.markCompleted:
+            completedCount += 1;
+          case LoopUserActionKind.markFailed:
+            failedCount += 1;
+          case LoopUserActionKind.rejectOrRedo:
+            failedCount += 1;
+        }
+      }
+    }
+    return _LoopFactsSummary(
+      turnCount: task.turns.length,
+      lastTurnIndex: task.turns.lastOrNull?.turnIndex ?? 0,
+      deliverableCount: deliverableCount,
+      continueCount: continueCount,
+      completedCount: completedCount,
+      failedCount: failedCount,
+      lastOutputSummaryLength: lastOutputSummaryLength,
+      lastWaitMs: lastWaitMs,
+    );
+  }
 }
 
 class _TimelineItemData {
@@ -3522,8 +3817,25 @@ class _NextAction {
   final Color color;
 }
 
-WorkPhase _workPhaseFor(WorkState? workState) {
-  return workState?.phase ?? WorkPhase.idle;
+WorkPhase _workPhaseFor(WorkState? workState, [TaskStatus? status]) {
+  final phase = workState?.phase;
+  if (phase != null) {
+    return phase;
+  }
+  return switch (status) {
+    TaskStatus.draft || TaskStatus.pending || null => WorkPhase.idle,
+    TaskStatus.running => WorkPhase.working,
+    TaskStatus.paused || TaskStatus.observerDetached => WorkPhase.quieting,
+    TaskStatus.turnIdle => WorkPhase.turnIdle,
+    TaskStatus.needApproval => WorkPhase.needsApproval,
+    TaskStatus.needAttention => WorkPhase.needsInstruction,
+    TaskStatus.completed || TaskStatus.userCompleted => WorkPhase.completed,
+    TaskStatus.failed ||
+    TaskStatus.userFailed ||
+    TaskStatus.runtimeLost =>
+      WorkPhase.failed,
+    TaskStatus.stopped => WorkPhase.stopped,
+  };
 }
 
 WorkState? _effectiveWorkStateFor(TaskSession task, WorkState? workState) {
@@ -3538,7 +3850,7 @@ String _detailStatusLabel(TaskStatus status, [WorkState? workState]) {
   if (workState != null && workState.headline.trim().isNotEmpty) {
     return workState.headline.trim();
   }
-  switch (_workPhaseFor(workState)) {
+  switch (_workPhaseFor(workState, status)) {
     case WorkPhase.idle:
       return '等待开始';
     case WorkPhase.working:
@@ -3565,7 +3877,7 @@ String _detailStatusLabel(TaskStatus status, [WorkState? workState]) {
 }
 
 Color _detailStatusColor(TaskStatus status, [WorkState? workState]) {
-  return switch (_workPhaseFor(workState)) {
+  return switch (_workPhaseFor(workState, status)) {
     WorkPhase.needsApproval ||
     WorkPhase.needsDecision ||
     WorkPhase.needsReview ||
@@ -3641,13 +3953,13 @@ String _cleanSnippet(String value, {int maxChars = 160}) {
       .trim();
 }
 
-String _currentSituationText(TaskSession _, [WorkState? workState]) {
+String _currentSituationText(TaskSession task, [WorkState? workState]) {
   if (workState == null) {
     return '正在同步任务状态。';
   }
   final statusText = workState.statusText.trim();
   if (statusText.isNotEmpty) return statusText;
-  return switch (workState.phase) {
+  return switch (_workPhaseFor(workState, task.status)) {
     WorkPhase.idle => '等待开始。',
     WorkPhase.working => '此任务仍在工作中。',
     WorkPhase.quieting => '更新已暂停。',
@@ -3696,7 +4008,7 @@ String _progressActionText(String value) {
 }
 
 _NextAction _nextActionForTask(TaskStatus status, [WorkState? workState]) {
-  switch (_workPhaseFor(workState)) {
+  switch (_workPhaseFor(workState, status)) {
     case WorkPhase.needsApproval:
       return _NextAction(
         title: '需要你决定',
@@ -3765,7 +4077,7 @@ _PrimaryTaskAction? _primaryTaskActionFor(
   TaskStatus status, [
   WorkState? workState,
 ]) {
-  switch (_workPhaseFor(workState)) {
+  switch (_workPhaseFor(workState, status)) {
     case WorkPhase.needsApproval:
       return const _PrimaryTaskAction(
         label: '查看',

@@ -13,6 +13,7 @@ class AddContextSheet extends StatelessWidget {
     required this.hintText,
     required this.onSubmit,
     this.approval,
+    this.initialInstruction,
     this.interpretVoiceCommand,
     super.key,
   });
@@ -21,6 +22,7 @@ class AddContextSheet extends StatelessWidget {
   final String title;
   final String hintText;
   final NativeTerminalApproval? approval;
+  final String? initialInstruction;
   final VoiceTaskCommandResult? Function(String text, TaskStatus status)?
       interpretVoiceCommand;
   final Future<void> Function(
@@ -35,6 +37,7 @@ class AddContextSheet extends StatelessWidget {
     String title = '继续任务',
     String hintText = '接下来需要做什么？',
     NativeTerminalApproval? approval,
+    String? initialInstruction,
     VoiceTaskCommandResult? Function(String text, TaskStatus status)?
         interpretVoiceCommand,
     required Future<void> Function(
@@ -52,6 +55,7 @@ class AddContextSheet extends StatelessWidget {
         title: title,
         hintText: hintText,
         approval: approval,
+        initialInstruction: initialInstruction,
         interpretVoiceCommand: interpretVoiceCommand,
         onSubmit: onSubmit,
       ),
@@ -66,6 +70,7 @@ class AddContextSheet extends StatelessWidget {
         title: title,
         hintText: hintText,
         approval: approval,
+        initialInstruction: initialInstruction,
         controller: controller,
         interpretVoiceCommand: interpretVoiceCommand,
         onSubmit: onSubmit,
@@ -82,6 +87,7 @@ class _AddContextSheetBody extends StatefulWidget {
     required this.controller,
     required this.onSubmit,
     this.approval,
+    this.initialInstruction,
     this.interpretVoiceCommand,
   });
 
@@ -90,6 +96,7 @@ class _AddContextSheetBody extends StatefulWidget {
   final String hintText;
   final TextEditingController controller;
   final NativeTerminalApproval? approval;
+  final String? initialInstruction;
   final VoiceTaskCommandResult? Function(String text, TaskStatus status)?
       interpretVoiceCommand;
   final Future<void> Function(
@@ -112,6 +119,16 @@ class _AddContextSheetBodyState extends State<_AddContextSheetBody> {
   bool _showTextInput = false;
 
   bool get _hasRecognizedText => _recognizedText.trim().isNotEmpty;
+
+  @override
+  void initState() {
+    super.initState();
+    final initial = widget.initialInstruction?.trim();
+    if (initial != null && initial.isNotEmpty) {
+      widget.controller.text = initial;
+      _showTextInput = true;
+    }
+  }
 
   @override
   Widget build(BuildContext context) {

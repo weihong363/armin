@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 
@@ -22,6 +23,7 @@ import '../../features/runtime/services/runtime_event_bus.dart';
 import '../../features/runtime/services/runtime_task_store.dart';
 import '../../features/runtime/services/sqlite_runtime_persistence_store.dart';
 import '../../features/tasks/models/execution_log.dart';
+import '../../features/tasks/models/loop_evaluation.dart';
 import '../../features/tasks/models/metric_event.dart';
 import '../../features/tasks/models/native_output_turn.dart';
 import '../../features/tasks/models/task_constraint.dart';
@@ -253,7 +255,11 @@ class ArminAppState extends ChangeNotifier {
       await Future.wait(_runtimeSyncChains.values.toList(growable: false));
     }
 
-    // 3. Allow a microtask tick for any remaining callbacks to flush.
+    // 3. Wait for queued speech callbacks that may have been triggered by
+    // fresh deliverables.
+    await _speechQueue;
+
+    // 4. Allow a microtask tick for any remaining callbacks to flush.
     await Future<void>.delayed(Duration.zero);
   }
 
@@ -586,8 +592,19 @@ class ArminAppState extends ChangeNotifier {
       userInput: instruction.trim(),
       now: inputAt,
     );
-    await _saveControlledTask(
+    final taskWithLoopAction = _taskWithLoopUserAction(
       taskWithNewTurn,
+      kind: LoopUserActionKind.continueTask,
+      targetTurn: taskWithVoiceInput.turns.lastOrNull ??
+          _turnBeforeLast(taskWithNewTurn),
+      nextTurn: taskWithNewTurn.turns.lastOrNull,
+      instructionLength: instruction.trim().length,
+      source: rawVoiceText.trim().isEmpty ? 'text' : 'voice',
+      status: TaskStatus.running,
+      now: inputAt,
+    );
+    await _saveControlledTask(
+      taskWithLoopAction,
       status: TaskStatus.running,
       logMessage: 'User sent follow-up instruction.',
       eventType:
@@ -1114,6 +1131,8 @@ class ArminAppState extends ChangeNotifier {
           : taskWithFinalLog.shortSummary,
       turnStatus: NativeOutputTurnStatus.completedByUser,
       userDecision: 'completed',
+      loopActionKind: LoopUserActionKind.markCompleted,
+      loopActionSource: rawVoiceText.trim().isEmpty ? 'text' : 'voice',
     );
     await _cleanupTaskSession(_latestTask(task.id) ?? taskWithFinalLog);
   }
@@ -1140,6 +1159,8 @@ class ArminAppState extends ChangeNotifier {
           : taskWithFinalLog.shortSummary,
       turnStatus: NativeOutputTurnStatus.failedByUser,
       userDecision: 'failed',
+      loopActionKind: LoopUserActionKind.markFailed,
+      loopActionSource: rawVoiceText.trim().isEmpty ? 'text' : 'voice',
     );
     await _cleanupTaskSession(_latestTask(task.id) ?? taskWithFinalLog);
   }
@@ -1248,8 +1269,7 @@ class ArminAppState extends ChangeNotifier {
           await _cleanupTaskSession(finalTask);
           return;
         }
-        // Stream completion only ends this observer. Durable task state is
-        // reconciled by periodic remote probes instead of a one-shot guess.
+        await _captureAndApplyRemoteSnapshot(latest, allowSettled: true);
       },
     );
     _runningExecutions[initialTask.id] = subscription;
@@ -1542,6 +1562,8 @@ Apply this decision to the pending approval request.
     String eventType = 'runtime_control',
     NativeOutputTurnStatus? turnStatus,
     String? userDecision,
+    LoopUserActionKind? loopActionKind,
+    String loopActionSource = 'text',
   }) async {
     final now = DateTime.now();
     final logLine = '$logMessage\n';
@@ -1553,32 +1575,79 @@ Apply this decision to the pending approval request.
             userDecision: userDecision,
             now: now,
           );
+    final taskForSave = loopActionKind == null
+        ? taskWithTurn
+        : _taskWithLoopUserAction(
+            taskWithTurn,
+            kind: loopActionKind,
+            targetTurn: taskWithTurn.turns.lastOrNull,
+            source: loopActionSource,
+            status: status,
+            now: now,
+          );
     await saveTask(
-      taskWithTurn.copyWith(
+      taskForSave.copyWith(
         status: status,
-        rawLog: '${taskWithTurn.rawLog}$logLine',
+        rawLog: '${taskForSave.rawLog}$logLine',
         updatedAt: now,
-        completedAt: completed ? now : taskWithTurn.completedAt,
+        completedAt: completed ? now : taskForSave.completedAt,
         shortSummary: shortSummary ??
             (status == TaskStatus.stopped
                 ? '用户已停止任务'
-                : taskWithTurn.shortSummary),
+                : taskForSave.shortSummary),
         executionLogs: [
-          ...taskWithTurn.executionLogs,
+          ...taskForSave.executionLogs,
           ExecutionLog(
             id: 'log-${now.microsecondsSinceEpoch}',
-            taskId: taskWithTurn.id,
+            taskId: taskForSave.id,
             rawOutput: logLine,
             createdAt: now,
           ),
         ],
         metricEvents: _metricEventsWithCreated(
-          taskWithTurn.metricEvents,
-          taskId: taskWithTurn.id,
+          taskForSave.metricEvents,
+          taskId: taskForSave.id,
           eventType: eventType,
           payloadJson: '{"status":"${status.name}"}',
           now: now,
         ),
+      ),
+    );
+  }
+
+  TaskSession _taskWithLoopUserAction(
+    TaskSession task, {
+    required LoopUserActionKind kind,
+    required NativeOutputTurn? targetTurn,
+    NativeOutputTurn? nextTurn,
+    int instructionLength = 0,
+    String source = 'text',
+    TaskStatus? status,
+    required DateTime now,
+  }) {
+    if (targetTurn == null) {
+      return task;
+    }
+    final action = LoopUserAction(
+      id: 'loop-action-${now.microsecondsSinceEpoch}',
+      taskId: task.id,
+      kind: kind,
+      createdAt: now,
+      turnId: targetTurn.id,
+      turnIndex: targetTurn.turnIndex,
+      status: (status ?? task.status).name,
+      nextTurnId: nextTurn?.id,
+      nextTurnIndex: nextTurn?.turnIndex,
+      instructionLength: instructionLength,
+      source: source,
+    );
+    return task.copyWith(
+      metricEvents: _metricEventsWithCreated(
+        task.metricEvents,
+        taskId: task.id,
+        eventType: LoopUserAction.metricEventType,
+        payloadJson: jsonEncode(action.toJson()),
+        now: now,
       ),
     );
   }
@@ -1819,6 +1888,11 @@ Apply this decision to the pending approval request.
       ),
     );
     final syncedLatest = _latestTask(task.id) ?? latest;
+    _queueFreshDeliverableSpeech(
+      syncedLatest,
+      turnId: resolved.provenance.turnId,
+      evidenceFingerprint: resolved.provenance.evidenceFingerprint,
+    );
     await _enqueueRuntimeSync(syncedLatest);
     _publishedDeliverableFingerprints[publishKey] = evidence.fingerprint;
     _runtimeDiag(
@@ -1842,13 +1916,78 @@ Apply this decision to the pending approval request.
     final turns = List<NativeOutputTurn>.of(task.turns);
     final index = turns.indexWhere((turn) => turn.id == turnId);
     if (index < 0) return;
+    final now = DateTime.now();
     turns[index] = turns[index].copyWith(deliverable: deliverable);
-    final updated = task.copyWith(turns: turns, updatedAt: DateTime.now());
+    final evaluated = task.copyWith(turns: turns, updatedAt: now);
+    final updated = evaluated.copyWith(
+      metricEvents: _metricEventsWithCreated(
+        evaluated.metricEvents,
+        taskId: evaluated.id,
+        eventType: LoopEvaluation.metricEventType,
+        payloadJson: jsonEncode(
+          _loopEvaluationForTurn(
+            evaluated,
+            turns[index],
+            now: now,
+          ).toJson(),
+        ),
+        now: now,
+      ),
+    );
     await _store.saveTask(updated);
     final updatedTasks = [...tasks]..removeWhere((item) => item.id == task.id);
     tasks = [updated, ...updatedTasks];
     _updateTaskSnapshot(updated);
     _updateHomeSnapshot();
+  }
+
+  LoopEvaluation _loopEvaluationForTurn(
+    TaskSession task,
+    NativeOutputTurn turn, {
+    required DateTime now,
+  }) {
+    final deliverable = turn.deliverable;
+    final duration = turn.lastOutputAt.difference(turn.startedAt);
+    return LoopEvaluation(
+      id: 'loop-${turn.id}-${now.microsecondsSinceEpoch}',
+      taskId: task.id,
+      turnId: turn.id,
+      turnIndex: turn.turnIndex,
+      status: task.status.name,
+      createdAt: now,
+      metrics: LoopTurnMetrics(
+        inputLength: turn.userInput.trim().length,
+        outputSummaryLength: deliverable?.displaySummary.trim().length ?? 0,
+        approvalCount: _approvalCountForTurn(task, turn),
+        retryCount: _retryCountForTurn(task, turn),
+        waitMs: duration.isNegative ? 0 : duration.inMilliseconds,
+        hasDeliverable: deliverable != null,
+      ),
+    );
+  }
+
+  NativeOutputTurn? _turnBeforeLast(TaskSession task) {
+    if (task.turns.length < 2) {
+      return task.turns.lastOrNull;
+    }
+    return task.turns[task.turns.length - 2];
+  }
+
+  int _approvalCountForTurn(TaskSession task, NativeOutputTurn turn) {
+    final startedAt = turn.startedAt;
+    final endedAt = turn.idleDetectedAt ?? turn.lastOutputAt;
+    return task.nativeApprovalRequests.where((approval) {
+      return !approval.createdAt.isBefore(startedAt) &&
+          !approval.createdAt.isAfter(endedAt);
+    }).length;
+  }
+
+  int _retryCountForTurn(TaskSession task, NativeOutputTurn turn) {
+    final retryEvents = task.metricEvents.where((event) {
+      return event.eventType.toLowerCase().contains('retry') &&
+          event.createdAt.isAfter(turn.startedAt);
+    });
+    return retryEvents.length;
   }
 
   Future<TaskSession> _appendRawLog(TaskSession task, String rawOutput) async {
@@ -2440,7 +2579,7 @@ Apply this decision to the pending approval request.
             ? latest.rawOutput
             : latest.cleanedOutput)
         .trim();
-    if (summary.isEmpty) {
+    if (summary.isEmpty || !_hasSettledRemoteResultEvidence(summary)) {
       return synced;
     }
     turns[turns.length - 1] = latest.copyWith(
@@ -2456,6 +2595,40 @@ Apply this decision to the pending approval request.
       shortSummary: summary,
       clearNativeApproval: true,
     );
+  }
+
+  bool _hasSettledRemoteResultEvidence(String output) {
+    final lines = output
+        .split('\n')
+        .map((line) => line.trim())
+        .where((line) => line.isNotEmpty);
+    for (final line in lines) {
+      final lower = line.toLowerCase();
+      if (RegExp(r'\barmin_[a-z0-9_]*_begin\b.*\barmin_[a-z0-9_]*_end\b')
+          .hasMatch(lower)) {
+        return true;
+      }
+      if (!line.startsWith('▪')) {
+        continue;
+      }
+      final content = line.replaceFirst(RegExp(r'^▪\s*'), '').trim();
+      final contentLower = content.toLowerCase();
+      if (content.isEmpty ||
+          contentLower.startsWith('let me ') ||
+          contentLower.startsWith("i'll ") ||
+          contentLower.startsWith('i will ') ||
+          contentLower.startsWith('first, ') ||
+          contentLower.startsWith('now ') ||
+          contentLower.startsWith('next, ') ||
+          RegExp(
+            r'^(?:Read|Write|Edit|MultiEdit|Glob|Grep|Bash|List|LS|Cat)\s*\(',
+            caseSensitive: false,
+          ).hasMatch(content)) {
+        continue;
+      }
+      return true;
+    }
+    return false;
   }
 
   TaskSession _taskWithCurrentTurnDecision(
@@ -2720,6 +2893,43 @@ Apply this decision to the pending approval request.
     return '$taskId:$normalizedTurnId:$normalizedFingerprint';
   }
 
+  void _queueFreshDeliverableSpeech(
+    TaskSession task, {
+    required String? turnId,
+    required String? evidenceFingerprint,
+  }) {
+    final key = _deliverableSpeechKey(
+      taskId: task.id,
+      turnId: turnId,
+      evidenceFingerprint: evidenceFingerprint,
+    );
+    if (key.isEmpty || _seenDeliverableSpeechKeys.contains(key)) {
+      return;
+    }
+    _seenDeliverableSpeechKeys.add(key);
+    _speechQueue = _speechQueue.then((_) async {
+      if (_activeDetailTaskId != task.id) {
+        return;
+      }
+      final decision = await _taskSpeechPolicy.decide(
+        previous: task,
+        current: task,
+        settings: speechSettings,
+        approval: bridgeRuntime.workState(task.id)?.approval,
+      );
+      if (!decision.shouldSpeak) {
+        return;
+      }
+      if (_lastSpokenHashes[task.id] == decision.hash) {
+        return;
+      }
+      _lastSpokenHashes[task.id] = decision.hash;
+      await voiceService.speakSummary(decision.text);
+    }).catchError((Object error) {
+      debugPrint('Fresh deliverable speech failed: $error');
+    });
+  }
+
   /// Listens to EventBus for fresh deliverable events. Existing/persisted
   /// results are marked as seen during load so opening a task never replays
   /// old output.
@@ -2734,18 +2944,15 @@ Apply this decision to the pending approval request.
     final task = _latestTask(event.taskId);
     if (task == null) return;
     if (event.type == RuntimeEventType.deliverableUpdated) {
-      final key = _deliverableSpeechKey(
-        taskId: event.taskId,
+      _queueFreshDeliverableSpeech(
+        task,
         turnId: event.turnId,
         evidenceFingerprint: event.evidenceFingerprint,
       );
-      if (key.isEmpty || _seenDeliverableSpeechKeys.contains(key)) {
-        return;
-      }
-      _seenDeliverableSpeechKeys.add(key);
+      return;
     }
-    // For deliverable updates, use the task itself (previous==current
-    // still triggers first-speech decisions).
+    // Approval events use the task itself; the speech policy reads the current
+    // WorkState approval payload for the spoken prompt.
     _queueTaskSpeech(task, task);
   }
 

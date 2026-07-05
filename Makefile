@@ -1,5 +1,5 @@
 .PHONY: emulator-start emulator-ready emulator-check-network emulator-install emulator-smoke-test emulator-reset emulator-seed
-.PHONY: analyze test test-fast coverage ci-check integration-test
+.PHONY: analyze test test-fast coverage ci-check integration-test approval-workflow-gate
 
 # ── Static Analysis ──────────────────────────────────────────────
 
@@ -58,4 +58,10 @@ integration-test: emulator-seed
 	flutter drive \
 		--driver=test_driver/integration_test.dart \
 		--target=integration_test/runtime_gate_test.dart \
+		-d emulator-5554
+
+approval-workflow-gate: emulator-seed
+	flutter drive \
+		--driver=test_driver/integration_test.dart \
+		--target=integration_test/approval_workflow_gate_test.dart \
 		-d emulator-5554

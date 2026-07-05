@@ -30,6 +30,7 @@ class TaskSession {
     required this.rawLog,
     this.approvalMode = AgentApprovalMode.balanced,
     this.startedAt,
+    this.scheduledFor,
     this.completedAt,
     this.parentTaskId,
     this.workerLabel,
@@ -53,6 +54,7 @@ class TaskSession {
   final DateTime createdAt;
   final DateTime updatedAt;
   final DateTime? startedAt;
+  final DateTime? scheduledFor;
   final DateTime? completedAt;
   final String? parentTaskId;
   final String? workerLabel;
@@ -96,6 +98,7 @@ class TaskSession {
       createdAt: _date(json['createdAt']),
       updatedAt: _date(json['updatedAt']),
       startedAt: _nullableDate(json['startedAt']),
+      scheduledFor: _nullableDate(json['scheduledFor']),
       completedAt: _nullableDate(json['completedAt']),
       parentTaskId: json['parentTaskId'] as String?,
       workerLabel: json['workerLabel'] as String?,
@@ -139,6 +142,7 @@ class TaskSession {
     DateTime? createdAt,
     DateTime? updatedAt,
     DateTime? startedAt,
+    DateTime? scheduledFor,
     DateTime? completedAt,
     String? parentTaskId,
     String? workerLabel,
@@ -163,6 +167,7 @@ class TaskSession {
     List<Subtask>? subtasks,
     List<NativeOutputTurn>? turns,
     bool clearNativeApproval = false,
+    bool clearScheduledFor = false,
   }) {
     return TaskSession(
       id: id ?? this.id,
@@ -172,6 +177,8 @@ class TaskSession {
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
       startedAt: startedAt ?? this.startedAt,
+      scheduledFor:
+          clearScheduledFor ? null : scheduledFor ?? this.scheduledFor,
       completedAt: completedAt ?? this.completedAt,
       parentTaskId: parentTaskId ?? this.parentTaskId,
       workerLabel: workerLabel ?? this.workerLabel,
@@ -238,6 +245,7 @@ class TaskSession {
       'createdAt': createdAt.toIso8601String(),
       'updatedAt': updatedAt.toIso8601String(),
       'startedAt': startedAt?.toIso8601String(),
+      'scheduledFor': scheduledFor?.toIso8601String(),
       'completedAt': completedAt?.toIso8601String(),
       'parentTaskId': parentTaskId,
       'workerLabel': workerLabel,

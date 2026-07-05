@@ -13,6 +13,7 @@ import '../../features/agent/services/native_output_observer.dart';
 import '../../features/agent/services/runtime_policy.dart';
 import '../../features/agent/services/ssh_agent_session_service.dart';
 import '../../features/hosts/models/host_config.dart';
+import '../../features/notifications/services/task_notification_service.dart';
 import '../../features/projects/models/project_path_config.dart';
 import '../../features/runtime/models/approval_state.dart';
 import '../../features/runtime/models/runtime_diagnostics.dart';
@@ -49,6 +50,7 @@ class ArminAppState extends ChangeNotifier {
     required TaskHistoryStore store,
     required this.agentSessionService,
     required this.voiceService,
+    TaskNotificationService? taskNotificationService,
     TaskSpeechPolicy? taskSpeechPolicy,
     OutputSummaryProvider? outputSummaryProvider,
     this.speechSettings = const TaskSpeechSettings(),
@@ -59,6 +61,8 @@ class ArminAppState extends ChangeNotifier {
     Duration remoteSnapshotPollInterval = const Duration(seconds: 5),
   })  : _store = store,
         _taskSpeechPolicy = taskSpeechPolicy ?? const TaskSpeechPolicy(),
+        taskNotificationService =
+            taskNotificationService ?? const NoopTaskNotificationService(),
         outputSummaryProvider =
             outputSummaryProvider ?? SelectableOutputSummaryProvider(),
         _enableRemoteReconcile = enableRemoteReconcile,
@@ -79,6 +83,7 @@ class ArminAppState extends ChangeNotifier {
     TaskHistoryStore? store,
     AgentSessionService? agentSessionService,
     VoiceService? voiceService,
+    TaskNotificationService? taskNotificationService,
     OutputSummaryProvider? outputSummaryProvider,
   })  : _store = store ??
             (() {
@@ -87,6 +92,8 @@ class ArminAppState extends ChangeNotifier {
             })(),
         agentSessionService = agentSessionService ?? SSHAgentSessionService(),
         voiceService = voiceService ?? DeviceVoiceService(),
+        taskNotificationService =
+            taskNotificationService ?? const NoopTaskNotificationService(),
         _taskSpeechPolicy = const TaskSpeechPolicy(),
         outputSummaryProvider =
             outputSummaryProvider ?? SelectableOutputSummaryProvider(),
@@ -108,6 +115,7 @@ class ArminAppState extends ChangeNotifier {
   final TaskHistoryStore _store;
   final AgentSessionService agentSessionService;
   final VoiceService voiceService;
+  final TaskNotificationService taskNotificationService;
   final TaskSpeechPolicy _taskSpeechPolicy;
   final OutputSummaryProvider outputSummaryProvider;
   final SecretRedactor _secretRedactor = const SecretRedactor();
@@ -165,10 +173,13 @@ class ArminAppState extends ChangeNotifier {
   final Map<String, StreamSubscription<AgentExecutionUpdate>>
       _runningExecutions = {};
   final Map<String, Timer> _autoDetachTimers = {};
+  final Map<String, Timer> _scheduledTaskTimers = {};
   final Map<String, String> _lastSpokenHashes = {};
   final Set<String> _seenDeliverableSpeechKeys = {};
+  final Set<String> _seenTaskNotificationKeys = {};
   final Map<String, StringBuffer> _progressOutputMap = {};
   Future<void> _speechQueue = Future<void>.value();
+  Future<void> _notificationQueue = Future<void>.value();
   String? _activeDetailTaskId;
   final bool _enableRemoteReconcile;
   final Duration _remoteReconcileInterval;
@@ -180,6 +191,7 @@ class ArminAppState extends ChangeNotifier {
   Timer? _remoteSnapshotPollTimer;
   bool _remoteSnapshotPollRunning = false;
   StreamSubscription<RuntimeEvent>? _speechEventSubscription;
+  StreamSubscription<RuntimeEvent>? _notificationEventSubscription;
 
   Future<void> load() async {
     await bridgeRuntime.restoreDurableState();
@@ -190,6 +202,7 @@ class ArminAppState extends ChangeNotifier {
     hosts = await _store.loadHosts();
     tasks = await _loadDedupedTasks();
     _markExistingDeliverablesSeen(tasks);
+    _markExistingDeliverableNotificationsSeen(tasks);
     projectPaths = await _store.loadProjectPaths();
     ready = true;
     for (final task in tasks) {
@@ -207,7 +220,9 @@ class ArminAppState extends ChangeNotifier {
     _updateHomeSnapshot(force: true);
     _startRemoteReconcileLoop();
     _startRemoteSnapshotPollLoop();
+    _syncScheduledTaskTimers();
     _speechEventSubscription = runtimeEvents.listen(_onSpeechEvent);
+    _notificationEventSubscription = runtimeEvents.listen(_onNotificationEvent);
     notifyListeners();
   }
 
@@ -221,7 +236,11 @@ class ArminAppState extends ChangeNotifier {
     bridgeRuntime.stopReconcileLoop();
     _remoteSnapshotPollTimer?.cancel();
     _speechEventSubscription?.cancel();
+    _notificationEventSubscription?.cancel();
     for (final timer in _autoDetachTimers.values) {
+      timer.cancel();
+    }
+    for (final timer in _scheduledTaskTimers.values) {
       timer.cancel();
     }
     for (final subscription in _runningExecutions.values) {
@@ -247,6 +266,10 @@ class ArminAppState extends ChangeNotifier {
     }
     _autoDetachTimers.values.toList(growable: false).forEach((t) => t.cancel());
     _autoDetachTimers.clear();
+    _scheduledTaskTimers.values
+        .toList(growable: false)
+        .forEach((timer) => timer.cancel());
+    _scheduledTaskTimers.clear();
     _remoteSnapshotPollTimer?.cancel();
     _remoteSnapshotPollTimer = null;
 
@@ -259,7 +282,10 @@ class ArminAppState extends ChangeNotifier {
     // fresh deliverables.
     await _speechQueue;
 
-    // 4. Allow a microtask tick for any remaining callbacks to flush.
+    // 4. Wait for queued notification callbacks.
+    await _notificationQueue;
+
+    // 5. Allow a microtask tick for any remaining callbacks to flush.
     await Future<void>.delayed(Duration.zero);
   }
 
@@ -304,7 +330,10 @@ class ArminAppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> saveTask(TaskSession task) async {
+  Future<void> saveTask(
+    TaskSession task, {
+    bool publishDeliverable = true,
+  }) async {
     final previous = _latestTask(task.id);
     await _store.saveTask(task);
     final updatedTasks = [...tasks];
@@ -312,6 +341,7 @@ class ArminAppState extends ChangeNotifier {
     updatedTasks.removeWhere((item) => item.id == task.id);
     updatedTasks.insert(0, task);
     tasks = updatedTasks;
+    _syncScheduledTaskTimer(task);
     // Reset reconcile backoff when task status changes.
     _reconcileMissStreak.remove(task.id);
     final statusChanged = previous?.status != task.status;
@@ -327,12 +357,16 @@ class ArminAppState extends ChangeNotifier {
           _updateHomeSnapshot(force: true);
         }),
       );
-      unawaited(_publishDeliverableIfAvailable(task));
+      if (publishDeliverable) {
+        unawaited(_publishDeliverableIfAvailable(task));
+      }
       return;
     }
     _updateTaskSnapshot(task);
     _updateHomeSnapshot();
-    unawaited(_publishDeliverableIfAvailable(task));
+    if (publishDeliverable) {
+      unawaited(_publishDeliverableIfAvailable(task));
+    }
   }
 
   Future<void> refreshTasks() async {
@@ -527,6 +561,75 @@ class ArminAppState extends ChangeNotifier {
     await saveTask(updated);
   }
 
+  Future<void> scheduleTask(TaskSession task, DateTime scheduledFor) async {
+    final latest = _latestTask(task.id) ?? task;
+    if (_isTerminalTask(latest) || latest.status == TaskStatus.running) {
+      throw StateError('Only inactive tasks can be scheduled.');
+    }
+    final now = DateTime.now();
+    final scheduled = latest.copyWith(
+      status: TaskStatus.pending,
+      scheduledFor: scheduledFor,
+      updatedAt: now,
+      metricEvents: _metricEventsWithCreated(
+        latest.metricEvents,
+        taskId: latest.id,
+        eventType: 'task_scheduled',
+        payloadJson: jsonEncode({
+          'scheduledFor': scheduledFor.toIso8601String(),
+        }),
+        now: now,
+      ),
+    );
+    await saveTask(scheduled, publishDeliverable: false);
+  }
+
+  Future<void> rescheduleTask(
+    TaskSession task,
+    DateTime scheduledFor,
+  ) async {
+    final latest = _latestTask(task.id) ?? task;
+    if (latest.status != TaskStatus.pending || latest.scheduledFor == null) {
+      throw StateError('Only scheduled pending tasks can be rescheduled.');
+    }
+    final now = DateTime.now();
+    final rescheduled = latest.copyWith(
+      scheduledFor: scheduledFor,
+      updatedAt: now,
+      metricEvents: _metricEventsWithCreated(
+        latest.metricEvents,
+        taskId: latest.id,
+        eventType: 'task_rescheduled',
+        payloadJson: jsonEncode({
+          'scheduledFor': scheduledFor.toIso8601String(),
+        }),
+        now: now,
+      ),
+    );
+    await saveTask(rescheduled, publishDeliverable: false);
+  }
+
+  Future<void> cancelScheduledTask(TaskSession task) async {
+    final latest = _latestTask(task.id) ?? task;
+    if (latest.status != TaskStatus.pending || latest.scheduledFor == null) {
+      throw StateError('Only scheduled pending tasks can be canceled.');
+    }
+    final now = DateTime.now();
+    final canceled = latest.copyWith(
+      status: TaskStatus.draft,
+      updatedAt: now,
+      clearScheduledFor: true,
+      metricEvents: _metricEventsWithCreated(
+        latest.metricEvents,
+        taskId: latest.id,
+        eventType: 'task_schedule_canceled',
+        payloadJson: '{"status":"draft"}',
+        now: now,
+      ),
+    );
+    await saveTask(canceled, publishDeliverable: false);
+  }
+
   Future<void> saveProjectPath(ProjectPathConfig projectPath) async {
     final existingPaths = projectPaths
         .where((p) => p.id == projectPath.id)
@@ -658,8 +761,32 @@ class ArminAppState extends ChangeNotifier {
             nativeApproval: nativeApproval,
             selectedOptionKey: option.key,
           );
-    await _saveControlledTask(
+    final approvalEventKind = approvalDecision == null
+        ? LoopApprovalEventKind.optionSelected
+        : approvalDecision
+            ? LoopApprovalEventKind.approved
+            : LoopApprovalEventKind.rejected;
+    final taskWithApprovalFact = _taskWithApprovalEvent(
       taskForSave,
+      approval: nativeApproval,
+      kind: approvalEventKind,
+      status: TaskStatus.running,
+      selectedOptionKey: option.key,
+      customResponseLength: trimmedResponse.length,
+      now: DateTime.now(),
+    );
+    await _saveControlledTask(
+      trimmedResponse.isEmpty
+          ? taskWithApprovalFact
+          : _taskWithApprovalEvent(
+              taskWithApprovalFact,
+              approval: nativeApproval,
+              kind: LoopApprovalEventKind.customResponse,
+              status: TaskStatus.running,
+              selectedOptionKey: option.key,
+              customResponseLength: trimmedResponse.length,
+              now: DateTime.now(),
+            ),
       status: TaskStatus.running,
       logMessage: 'Terminal option selected by user: ${option.key}.',
       eventType: 'terminal_prompt_resolved',
@@ -1165,6 +1292,22 @@ class ArminAppState extends ChangeNotifier {
     await _cleanupTaskSession(_latestTask(task.id) ?? taskWithFinalLog);
   }
 
+  Future<void> acceptLatestResult(TaskSession task) async {
+    await _recordLoopUserAction(
+      task,
+      kind: LoopUserActionKind.acceptResult,
+      eventType: 'loop_result_accepted',
+    );
+  }
+
+  Future<void> rejectOrRedoLatestResult(TaskSession task) async {
+    await _recordLoopUserAction(
+      task,
+      kind: LoopUserActionKind.rejectOrRedo,
+      eventType: 'loop_result_rejected',
+    );
+  }
+
   Future<void> cleanupRemoteSession(TaskSession task) async {
     final latest = _latestTask(task.id) ?? task;
     final request = await _controlRequest(latest);
@@ -1553,6 +1696,28 @@ Apply this decision to the pending approval request.
     );
   }
 
+  AgentExecutionRequest _executionRequest(TaskSession task) {
+    final host = _controlHost(task);
+    return AgentExecutionRequest(
+      prompt: task.finalPrompt,
+      hostId: host.id,
+      host: host.host,
+      port: host.port,
+      username: host.username,
+      projectPath: task.host.projectPath,
+      tmuxSessionName: task.host.tmuxSessionName,
+      agentCommand: host.agentCommand,
+      tmuxCommand: host.tmuxCommand,
+      pathPrepend: host.pathPrepend,
+      shellWrapper: host.shellWrapper,
+      password: host.password,
+      approvalConfig: AgentApprovalConfig(
+        agentType: AgentTypeDetection.detect(host.agentCommand),
+        mode: task.approvalMode,
+      ),
+    );
+  }
+
   Future<void> _saveControlledTask(
     TaskSession task, {
     required TaskStatus status,
@@ -1649,6 +1814,136 @@ Apply this decision to the pending approval request.
         payloadJson: jsonEncode(action.toJson()),
         now: now,
       ),
+    );
+  }
+
+  Future<void> _recordLoopUserAction(
+    TaskSession task, {
+    required LoopUserActionKind kind,
+    required String eventType,
+  }) async {
+    final latest = _latestTask(task.id) ?? task;
+    final now = DateTime.now();
+    final updated = _taskWithLoopUserAction(
+      latest,
+      kind: kind,
+      targetTurn: latest.turns.lastOrNull,
+      status: latest.status,
+      now: now,
+    );
+    await saveTask(
+      updated.copyWith(
+        updatedAt: now,
+        metricEvents: _metricEventsWithCreated(
+          updated.metricEvents,
+          taskId: updated.id,
+          eventType: eventType,
+          payloadJson: '{"status":"${latest.status.name}"}',
+          now: now,
+        ),
+      ),
+      publishDeliverable: false,
+    );
+  }
+
+  TaskSession _taskWithApprovalEvent(
+    TaskSession task, {
+    NativeTerminalApproval? approval,
+    required LoopApprovalEventKind kind,
+    required TaskStatus status,
+    required DateTime now,
+    String? selectedOptionKey,
+    int customResponseLength = 0,
+  }) {
+    final targetTurn = task.turns.lastOrNull;
+    final event = LoopApprovalEvent(
+      id: 'loop-approval-${approval?.id ?? 'manual'}-${kind.name}-${now.microsecondsSinceEpoch}',
+      taskId: task.id,
+      approvalId: approval?.id ?? '',
+      kind: kind,
+      createdAt: now,
+      turnId: targetTurn?.id ?? '',
+      turnIndex: targetTurn?.turnIndex ?? 0,
+      status: status.name,
+      questionLength: approval?.question.trim().length ?? 0,
+      optionCount: approval?.options.length ?? 0,
+      selectedOptionKey: selectedOptionKey,
+      customResponseLength: customResponseLength,
+    );
+    return task.copyWith(
+      metricEvents: _metricEventsWithCreated(
+        task.metricEvents,
+        taskId: task.id,
+        eventType: LoopApprovalEvent.metricEventType,
+        payloadJson: jsonEncode(event.toJson()),
+        now: now,
+      ),
+    );
+  }
+
+  void _syncScheduledTaskTimers() {
+    final activeIds = tasks.map((task) => task.id).toSet();
+    for (final id in _scheduledTaskTimers.keys.toList(growable: false)) {
+      if (!activeIds.contains(id)) {
+        _scheduledTaskTimers.remove(id)?.cancel();
+      }
+    }
+    for (final task in tasks) {
+      _syncScheduledTaskTimer(task);
+    }
+  }
+
+  void _syncScheduledTaskTimer(TaskSession task) {
+    _scheduledTaskTimers.remove(task.id)?.cancel();
+    if (_disposed ||
+        task.status != TaskStatus.pending ||
+        task.scheduledFor == null) {
+      return;
+    }
+    final delay = task.scheduledFor!.difference(DateTime.now());
+    if (delay <= Duration.zero) {
+      scheduleMicrotask(() => unawaited(_startScheduledTask(task.id)));
+      return;
+    }
+    _scheduledTaskTimers[task.id] = Timer(
+      delay,
+      () => unawaited(_startScheduledTask(task.id)),
+    );
+  }
+
+  Future<void> _startScheduledTask(String taskId) async {
+    if (_disposed) {
+      return;
+    }
+    final latest = _latestTask(taskId);
+    if (latest == null ||
+        latest.status != TaskStatus.pending ||
+        latest.scheduledFor == null) {
+      return;
+    }
+    _scheduledTaskTimers.remove(taskId)?.cancel();
+    final now = DateTime.now();
+    final running = latest.copyWith(
+      status: TaskStatus.running,
+      startedAt: latest.startedAt ?? now,
+      updatedAt: now,
+      metricEvents: _metricEventsWithCreated(
+        latest.metricEvents,
+        taskId: latest.id,
+        eventType: 'task_scheduled_started',
+        payloadJson: jsonEncode({
+          'scheduledFor': latest.scheduledFor!.toIso8601String(),
+        }),
+        now: now,
+      ),
+    );
+    await saveTask(running, publishDeliverable: false);
+    if (_disposed) {
+      return;
+    }
+    startTaskExecution(
+      _latestTask(taskId) ?? running,
+      _executionRequest(running),
     );
   }
 
@@ -1919,7 +2214,7 @@ Apply this decision to the pending approval request.
     final now = DateTime.now();
     turns[index] = turns[index].copyWith(deliverable: deliverable);
     final evaluated = task.copyWith(turns: turns, updatedAt: now);
-    final updated = evaluated.copyWith(
+    final withEvaluation = evaluated.copyWith(
       metricEvents: _metricEventsWithCreated(
         evaluated.metricEvents,
         taskId: evaluated.id,
@@ -1928,6 +2223,20 @@ Apply this decision to the pending approval request.
           _loopEvaluationForTurn(
             evaluated,
             turns[index],
+            now: now,
+          ).toJson(),
+        ),
+        now: now,
+      ),
+    );
+    final updated = withEvaluation.copyWith(
+      metricEvents: _metricEventsWithCreated(
+        withEvaluation.metricEvents,
+        taskId: withEvaluation.id,
+        eventType: LoopResultSummary.metricEventType,
+        payloadJson: jsonEncode(
+          _loopResultSummaryForTask(
+            withEvaluation,
             now: now,
           ).toJson(),
         ),
@@ -1964,6 +2273,93 @@ Apply this decision to the pending approval request.
         hasDeliverable: deliverable != null,
       ),
     );
+  }
+
+  LoopResultSummary _loopResultSummaryForTask(
+    TaskSession task, {
+    required DateTime now,
+  }) {
+    final resultTurns = task.turns
+        .where((turn) => turn.deliverable != null)
+        .toList(growable: false);
+    final latestTurn = resultTurns.lastOrNull;
+    final latestDeliverable = latestTurn?.deliverable;
+    final userActions = _loopUserActionsFor(task);
+    return LoopResultSummary(
+      id: 'loop-result-${task.id}-${now.microsecondsSinceEpoch}',
+      taskId: task.id,
+      createdAt: now,
+      latestTurnId: latestTurn?.id ?? '',
+      latestTurnIndex: latestTurn?.turnIndex ?? 0,
+      latestEvidenceFingerprint: latestDeliverable?.evidenceFingerprint ?? '',
+      resultCount: resultTurns.length,
+      acceptedCount: userActions
+          .where((action) => action.kind == LoopUserActionKind.acceptResult)
+          .length,
+      redoCount: userActions
+          .where((action) => action.kind == LoopUserActionKind.rejectOrRedo)
+          .length,
+      completedCount: userActions
+          .where((action) => action.kind == LoopUserActionKind.markCompleted)
+          .length,
+      failedCount: userActions
+          .where((action) => action.kind == LoopUserActionKind.markFailed)
+          .length,
+      summaryText: _loopResultSummaryText(resultTurns),
+      results: [
+        for (final turn in resultTurns)
+          LoopResultReference(
+            turnId: turn.id,
+            turnIndex: turn.turnIndex,
+            summaryLength: turn.deliverable!.displaySummary.trim().length,
+            evidenceFingerprint: turn.deliverable!.evidenceFingerprint,
+          ),
+      ],
+    );
+  }
+
+  List<LoopUserAction> _loopUserActionsFor(TaskSession task) {
+    final actions = <LoopUserAction>[];
+    for (final event in task.metricEvents) {
+      if (event.eventType != LoopUserAction.metricEventType) {
+        continue;
+      }
+      try {
+        final decoded = jsonDecode(event.payloadJson);
+        if (decoded is Map<String, Object?>) {
+          actions.add(LoopUserAction.fromJson(decoded));
+        }
+      } catch (_) {}
+    }
+    return actions;
+  }
+
+  String _loopResultSummaryText(List<NativeOutputTurn> resultTurns) {
+    if (resultTurns.isEmpty) {
+      return '';
+    }
+    final latestTurn = resultTurns.last;
+    final latestSummary = _summaryExcerpt(
+      latestTurn.deliverable!.displaySummary,
+      maxChars: 180,
+    );
+    if (resultTurns.length == 1) {
+      return 'Turn ${latestTurn.turnIndex}: $latestSummary';
+    }
+    return '共 ${resultTurns.length} 轮正式结果，最新 Turn ${latestTurn.turnIndex}: $latestSummary';
+  }
+
+  String _summaryExcerpt(String value, {required int maxChars}) {
+    final singleLine = value
+        .trim()
+        .split('\n')
+        .map((line) => line.trim())
+        .where((line) => line.isNotEmpty)
+        .join(' ');
+    if (singleLine.length <= maxChars) {
+      return singleLine;
+    }
+    return '${singleLine.substring(0, maxChars)}...';
   }
 
   NativeOutputTurn? _turnBeforeLast(TaskSession task) {
@@ -2224,29 +2620,36 @@ Apply this decision to the pending approval request.
           clearNativeApproval: true,
         );
       }
-      return taskWithTurn.copyWith(
-        status: TaskStatus.needApproval,
-        rawLog: rawLog,
-        nativeApproval: approval,
-        nativeApprovalRequests: reopenResolvedApproval
-            ? _nativeApprovalRequestsWithReopenedApproval(
-                taskWithTurn.nativeApprovalRequests,
-                approval,
-              )
-            : [
-                ...taskWithTurn.nativeApprovalRequests,
-                approval,
-              ],
-        executionLogs: executionLogs,
-        updatedAt: updateAt,
-        shortSummary: approval.question,
-        metricEvents: _metricEventsWithCreated(
-          taskWithTurn.metricEvents,
-          taskId: task.id,
-          eventType: 'approval_requested',
-          payloadJson: '{"options":${approval.options.length}}',
-          now: updateAt,
+      final approvalEvents = _metricEventsWithCreated(
+        taskWithTurn.metricEvents,
+        taskId: task.id,
+        eventType: 'approval_requested',
+        payloadJson: '{"options":${approval.options.length}}',
+        now: updateAt,
+      );
+      return _taskWithApprovalEvent(
+        taskWithTurn.copyWith(
+          status: TaskStatus.needApproval,
+          rawLog: rawLog,
+          nativeApproval: approval,
+          nativeApprovalRequests: reopenResolvedApproval
+              ? _nativeApprovalRequestsWithReopenedApproval(
+                  taskWithTurn.nativeApprovalRequests,
+                  approval,
+                )
+              : [
+                  ...taskWithTurn.nativeApprovalRequests,
+                  approval,
+                ],
+          executionLogs: executionLogs,
+          updatedAt: updateAt,
+          shortSummary: approval.question,
+          metricEvents: approvalEvents,
         ),
+        approval: approval,
+        kind: LoopApprovalEventKind.requested,
+        status: TaskStatus.needApproval,
+        now: updateAt,
       );
     }
 
@@ -2878,6 +3281,24 @@ Apply this decision to the pending approval request.
     }
   }
 
+  void _markExistingDeliverableNotificationsSeen(Iterable<TaskSession> source) {
+    for (final task in source) {
+      for (final turn in task.turns) {
+        final deliverable = turn.deliverable;
+        if (deliverable == null) {
+          continue;
+        }
+        final key = _taskNotificationKey(
+          taskId: task.id,
+          kind: TaskNotificationKind.resultReady,
+          turnId: turn.id,
+          evidenceFingerprint: deliverable.evidenceFingerprint,
+        );
+        _seenTaskNotificationKeys.add(key);
+      }
+    }
+  }
+
   String _deliverableSpeechKey({
     required String taskId,
     required String? turnId,
@@ -2956,6 +3377,222 @@ Apply this decision to the pending approval request.
     _queueTaskSpeech(task, task);
   }
 
+  void _onNotificationEvent(RuntimeEvent event) {
+    final task = _latestTask(event.taskId);
+    if (task == null) return;
+    final notification = _notificationForRuntimeEvent(event, task);
+    if (notification == null) return;
+    final key = _taskNotificationKey(
+      taskId: notification.taskId,
+      kind: notification.kind,
+      turnId: notification.turnId,
+      evidenceFingerprint: notification.evidenceFingerprint,
+    );
+    if (!_seenTaskNotificationKeys.add(key)) {
+      return;
+    }
+    _notificationQueue = _notificationQueue.then((_) {
+      return taskNotificationService.show(notification);
+    }).catchError((Object error) {
+      debugPrint('Task notification failed: $error');
+    });
+  }
+
+  TaskNotification? _notificationForRuntimeEvent(
+    RuntimeEvent event,
+    TaskSession task,
+  ) {
+    final createdAt = event.createdAt;
+    return switch (event.type) {
+      RuntimeEventType.approvalRequested =>
+        _approvalNotification(task, createdAt),
+      RuntimeEventType.deliverableUpdated =>
+        _resultReadyNotification(event, task, createdAt),
+      RuntimeEventType.taskWaitingUser ||
+      RuntimeEventType.waitingForInstruction =>
+        _needsInstructionNotification(task, createdAt),
+      RuntimeEventType.connectionLost => _runtimeLostNotification(
+          task,
+          createdAt,
+        ),
+      RuntimeEventType.taskPaused when task.status == TaskStatus.runtimeLost =>
+        _runtimeLostNotification(task, createdAt),
+      RuntimeEventType.taskCompleted => _terminalNotification(
+          task,
+          kind: TaskNotificationKind.taskCompleted,
+          title: '任务已完成',
+          createdAt: createdAt,
+        ),
+      RuntimeEventType.taskFailed => _terminalNotification(
+          task,
+          kind: TaskNotificationKind.taskFailed,
+          title: '任务失败',
+          createdAt: createdAt,
+        ),
+      _ => null,
+    };
+  }
+
+  TaskNotification? _approvalNotification(
+    TaskSession task,
+    DateTime createdAt,
+  ) {
+    final approval = _nativeApprovalForTask(task);
+    if (approval == null) return null;
+    return TaskNotification(
+      id: _taskNotificationId(
+        taskId: task.id,
+        kind: TaskNotificationKind.approvalRequired,
+        turnId: task.turns.lastOrNull?.id,
+        evidenceFingerprint: approval.id,
+      ),
+      taskId: task.id,
+      kind: TaskNotificationKind.approvalRequired,
+      title: '需要审批',
+      body: _notificationBody(approval.question),
+      createdAt: createdAt,
+      turnId: task.turns.lastOrNull?.id,
+      evidenceFingerprint: approval.id,
+    );
+  }
+
+  TaskNotification? _resultReadyNotification(
+    RuntimeEvent event,
+    TaskSession task,
+    DateTime createdAt,
+  ) {
+    final turn = task.turns.where((item) => item.id == event.turnId).lastOrNull;
+    final deliverable = turn?.deliverable;
+    final fingerprint = event.evidenceFingerprint?.trim() ?? '';
+    if (turn == null ||
+        deliverable == null ||
+        fingerprint.isEmpty ||
+        deliverable.evidenceFingerprint != fingerprint) {
+      return null;
+    }
+    return TaskNotification(
+      id: _taskNotificationId(
+        taskId: task.id,
+        kind: TaskNotificationKind.resultReady,
+        turnId: turn.id,
+        evidenceFingerprint: fingerprint,
+      ),
+      taskId: task.id,
+      kind: TaskNotificationKind.resultReady,
+      title: '结果已准备好',
+      body: _notificationBody(deliverable.displaySummary),
+      createdAt: createdAt,
+      turnId: turn.id,
+      evidenceFingerprint: fingerprint,
+    );
+  }
+
+  TaskNotification? _needsInstructionNotification(
+    TaskSession task,
+    DateTime createdAt,
+  ) {
+    if (task.status == TaskStatus.needApproval) return null;
+    if (task.status != TaskStatus.needAttention &&
+        task.status != TaskStatus.turnIdle) {
+      return null;
+    }
+    final latestTurn = task.turns.lastOrNull;
+    if (latestTurn?.deliverable != null) {
+      return null;
+    }
+    return TaskNotification(
+      id: _taskNotificationId(
+        taskId: task.id,
+        kind: TaskNotificationKind.needsInstruction,
+        turnId: latestTurn?.id,
+        evidenceFingerprint: task.status.name,
+      ),
+      taskId: task.id,
+      kind: TaskNotificationKind.needsInstruction,
+      title: '等待你的指示',
+      body: _notificationBody(task.shortSummary),
+      createdAt: createdAt,
+      turnId: latestTurn?.id,
+      evidenceFingerprint: task.status.name,
+    );
+  }
+
+  TaskNotification? _runtimeLostNotification(
+    TaskSession task,
+    DateTime createdAt,
+  ) {
+    if (task.status != TaskStatus.runtimeLost) return null;
+    return _terminalNotification(
+      task,
+      kind: TaskNotificationKind.runtimeLost,
+      title: '连接已暂停',
+      createdAt: createdAt,
+    );
+  }
+
+  TaskNotification _terminalNotification(
+    TaskSession task, {
+    required TaskNotificationKind kind,
+    required String title,
+    required DateTime createdAt,
+  }) {
+    final turnId = task.turns.lastOrNull?.id;
+    return TaskNotification(
+      id: _taskNotificationId(
+        taskId: task.id,
+        kind: kind,
+        turnId: turnId,
+        evidenceFingerprint: task.status.name,
+      ),
+      taskId: task.id,
+      kind: kind,
+      title: title,
+      body: _notificationBody(task.shortSummary),
+      createdAt: createdAt,
+      turnId: turnId,
+      evidenceFingerprint: task.status.name,
+    );
+  }
+
+  String _taskNotificationKey({
+    required String taskId,
+    required TaskNotificationKind kind,
+    String? turnId,
+    String? evidenceFingerprint,
+  }) {
+    return _taskNotificationId(
+      taskId: taskId,
+      kind: kind,
+      turnId: turnId,
+      evidenceFingerprint: evidenceFingerprint,
+    );
+  }
+
+  String _taskNotificationId({
+    required String taskId,
+    required TaskNotificationKind kind,
+    String? turnId,
+    String? evidenceFingerprint,
+  }) {
+    return [
+      taskId.trim(),
+      kind.name,
+      turnId?.trim() ?? '',
+      evidenceFingerprint?.trim() ?? '',
+    ].join(':');
+  }
+
+  String _notificationBody(String text) {
+    final cleaned = const AgentOutputCleaner().clean(text).trim();
+    if (cleaned.isEmpty) {
+      return '打开任务查看详情';
+    }
+    if (cleaned.length <= 80) {
+      return cleaned;
+    }
+    return '${cleaned.substring(0, 80)}...';
+  }
+
   bool _isTerminal(TaskStatus status) {
     return status == TaskStatus.stopped ||
         status == TaskStatus.runtimeLost ||
@@ -2996,16 +3633,26 @@ Apply this decision to the pending approval request.
     final decision = approved ? 'approved' : 'rejected';
     final logLine = 'Approval $decision by user.\n';
     final resolvedTask = _taskWithApprovalDecision(task, approved: approved);
+    final resolvedTaskWithFact = _taskWithApprovalEvent(
+      resolvedTask,
+      approval: task.nativeApproval,
+      kind: approved
+          ? LoopApprovalEventKind.approved
+          : LoopApprovalEventKind.rejected,
+      status: TaskStatus.running,
+      selectedOptionKey: approved ? 'approve' : 'reject',
+      now: now,
+    );
     await saveTask(
-      resolvedTask.copyWith(
+      resolvedTaskWithFact.copyWith(
         status: TaskStatus.running,
-        rawLog: '${resolvedTask.rawLog}$logLine',
+        rawLog: '${resolvedTaskWithFact.rawLog}$logLine',
         updatedAt: now,
         executionLogs: [
-          ...resolvedTask.executionLogs,
+          ...resolvedTaskWithFact.executionLogs,
           ExecutionLog(
             id: 'log-${now.microsecondsSinceEpoch}',
-            taskId: resolvedTask.id,
+            taskId: resolvedTaskWithFact.id,
             rawOutput: logLine,
             createdAt: now,
           ),

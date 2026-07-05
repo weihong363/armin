@@ -284,6 +284,9 @@ class _FeaturedTaskCardState extends State<_FeaturedTaskCard> {
 }
 
 String _readableSummary(TaskSession task) {
+  if (task.status == TaskStatus.pending && task.scheduledFor != null) {
+    return _scheduledTaskLabel(task.scheduledFor!);
+  }
   final summary = const AgentOutputCleaner().clean(task.shortSummary);
   final text = summary.isEmpty ? task.userText : summary;
   return const SemanticSnippetBuilder()
@@ -371,6 +374,9 @@ String _timeLabel(DateTime value) {
 }
 
 String _durationLabel(TaskSession task) {
+  if (task.status == TaskStatus.pending && task.scheduledFor != null) {
+    return _timeLabel(task.scheduledFor!);
+  }
   final startedAt = task.startedAt ?? task.createdAt;
   final endedAt = task.completedAt ?? DateTime.now();
   final duration = endedAt.difference(startedAt);
@@ -412,6 +418,9 @@ String _progressLabel(TaskStatus status, [WorkState? workState]) {
 }
 
 String _durationPrefix(TaskSession task, [WorkState? workState]) {
+  if (task.status == TaskStatus.pending && task.scheduledFor != null) {
+    return '计划于';
+  }
   if (task.completedAt == null &&
       switch (_workPhaseFor(workState, task.status)) {
         WorkPhase.idle ||
@@ -428,6 +437,14 @@ String _durationPrefix(TaskSession task, [WorkState? workState]) {
     return '已运行';
   }
   return '总耗时';
+}
+
+String _scheduledTaskLabel(DateTime scheduledFor) {
+  final now = DateTime.now();
+  if (!scheduledFor.isAfter(now)) {
+    return '计划已到点，正在准备启动';
+  }
+  return '计划于 ${_timeLabel(scheduledFor)} 执行';
 }
 
 String _hostLabel(TaskSession task) {

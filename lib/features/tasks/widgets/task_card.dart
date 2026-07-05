@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../../../core/models/task_status.dart';
 import '../../../shared/theme/armin_theme.dart';
 import '../../agent/services/agent_output_cleaner.dart';
+import '../../runtime/models/resolved_runtime_state.dart';
 import '../../runtime/models/work_state.dart';
 import '../models/task_session.dart';
 import '../services/semantic_snippet_builder.dart';
@@ -12,6 +13,7 @@ import '../services/semantic_snippet_builder.dart';
 class TaskCard extends StatelessWidget {
   const TaskCard({
     required this.task,
+    required this.status,
     required this.onTap,
     this.featured = false,
     this.workState,
@@ -19,16 +21,23 @@ class TaskCard extends StatelessWidget {
   });
 
   final TaskSession task;
+  final TaskStatus status;
   final VoidCallback onTap;
   final bool featured;
   final WorkState? workState;
 
   @override
   Widget build(BuildContext context) {
-    final effectiveWorkState = _effectiveWorkStateFor(task, workState);
+    final runtime = resolveRuntimeState(
+      task,
+      taskStatus: status,
+      workState: workState,
+    );
+    final effectiveWorkState = runtime.toWorkState(task.id);
     if (featured) {
       return _FeaturedTaskCard(
         task: task,
+        status: status,
         workState: effectiveWorkState,
         onTap: onTap,
       );
@@ -59,10 +68,10 @@ class TaskCard extends StatelessWidget {
                 ],
               ),
               const SizedBox(height: 8),
-              _StatusPill(status: task.status, workState: effectiveWorkState),
+              _StatusPill(status: status, workState: effectiveWorkState),
               const SizedBox(height: 8),
               Text(
-                _readableSummary(task),
+                _readableSummary(task, status),
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
                 style: Theme.of(context).textTheme.bodySmall,
@@ -85,11 +94,13 @@ class TaskCard extends StatelessWidget {
 class _FeaturedTaskCard extends StatefulWidget {
   const _FeaturedTaskCard({
     required this.task,
+    required this.status,
     required this.workState,
     required this.onTap,
   });
 
   final TaskSession task;
+  final TaskStatus status;
   final WorkState? workState;
   final VoidCallback onTap;
 
@@ -109,7 +120,7 @@ class _FeaturedTaskCardState extends State<_FeaturedTaskCard> {
   @override
   void didUpdateWidget(covariant _FeaturedTaskCard oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.task.status != widget.task.status ||
+    if (oldWidget.status != widget.status ||
         oldWidget.workState?.phase != widget.workState?.phase ||
         oldWidget.task.completedAt != widget.task.completedAt) {
       _syncTimer();
@@ -137,8 +148,13 @@ class _FeaturedTaskCardState extends State<_FeaturedTaskCard> {
   @override
   Widget build(BuildContext context) {
     final task = widget.task;
-    final workState = widget.workState;
-    final progressValue = _progressValue(task.status, workState);
+    final runtime = resolveRuntimeState(
+      task,
+      taskStatus: widget.status,
+      workState: widget.workState,
+    );
+    final workState = runtime.toWorkState(task.id);
+    final progressValue = _progressValue(runtime.phase);
     return Container(
       margin: const EdgeInsets.only(bottom: 20),
       decoration: BoxDecoration(
@@ -166,10 +182,11 @@ class _FeaturedTaskCardState extends State<_FeaturedTaskCard> {
             children: [
               Row(
                 children: [
-                  _DarkBadge(status: task.status, workState: workState),
+                  _DarkBadge(status: widget.status, workState: workState),
                   const Spacer(),
                   Text(
-                    '${_durationPrefix(task, workState)} ${_durationLabel(task)}',
+                    '${_durationPrefix(task, widget.status, runtime)} '
+                    '${_durationLabel(task, widget.status)}',
                     style: const TextStyle(color: Colors.white, fontSize: 12),
                   ),
                 ],
@@ -187,7 +204,7 @@ class _FeaturedTaskCardState extends State<_FeaturedTaskCard> {
               ),
               const SizedBox(height: 8),
               Text(
-                _readableSummary(task),
+                _readableSummary(task, widget.status),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
@@ -207,7 +224,7 @@ class _FeaturedTaskCardState extends State<_FeaturedTaskCard> {
                   ),
                   const Spacer(),
                   Text(
-                    _progressLabel(task.status, workState),
+                    _progressLabel(runtime),
                     style: const TextStyle(
                       color: Colors.white,
                       fontSize: 12,
@@ -221,9 +238,7 @@ class _FeaturedTaskCardState extends State<_FeaturedTaskCard> {
                 borderRadius: BorderRadius.circular(999),
                 child: LinearProgressIndicator(
                   value:
-                      _workPhaseFor(workState, task.status) == WorkPhase.working
-                          ? null
-                          : progressValue,
+                      runtime.phase == WorkPhase.working ? null : progressValue,
                   minHeight: 8,
                   color: ArminTheme.mint,
                   backgroundColor: Colors.white.withValues(alpha: 0.22),
@@ -268,7 +283,11 @@ class _FeaturedTaskCardState extends State<_FeaturedTaskCard> {
 
   bool _isLiveTask(TaskSession task) {
     return task.completedAt == null &&
-        switch (_workPhaseFor(widget.workState, task.status)) {
+        switch (resolveRuntimeState(
+          task,
+          taskStatus: widget.status,
+          workState: widget.workState,
+        ).phase) {
           WorkPhase.idle ||
           WorkPhase.working ||
           WorkPhase.quieting ||
@@ -283,8 +302,8 @@ class _FeaturedTaskCardState extends State<_FeaturedTaskCard> {
   }
 }
 
-String _readableSummary(TaskSession task) {
-  if (task.status == TaskStatus.pending && task.scheduledFor != null) {
+String _readableSummary(TaskSession task, TaskStatus status) {
+  if (status == TaskStatus.pending && task.scheduledFor != null) {
     return _scheduledTaskLabel(task.scheduledFor!);
   }
   final summary = const AgentOutputCleaner().clean(task.shortSummary);
@@ -373,8 +392,8 @@ String _timeLabel(DateTime value) {
   return '$hour:$minute';
 }
 
-String _durationLabel(TaskSession task) {
-  if (task.status == TaskStatus.pending && task.scheduledFor != null) {
+String _durationLabel(TaskSession task, TaskStatus status) {
+  if (status == TaskStatus.pending && task.scheduledFor != null) {
     return _timeLabel(task.scheduledFor!);
   }
   final startedAt = task.startedAt ?? task.createdAt;
@@ -388,8 +407,8 @@ String _durationLabel(TaskSession task) {
   return '${minutes}m ${seconds}s';
 }
 
-double _progressValue(TaskStatus status, [WorkState? workState]) {
-  return switch (_workPhaseFor(workState, status)) {
+double _progressValue(WorkPhase phase) {
+  return switch (phase) {
     WorkPhase.idle => 0,
     WorkPhase.working => 0.34,
     WorkPhase.quieting => 0.5,
@@ -403,11 +422,12 @@ double _progressValue(TaskStatus status, [WorkState? workState]) {
   };
 }
 
-String _progressLabel(TaskStatus status, [WorkState? workState]) {
-  return switch (_workPhaseFor(workState, status)) {
+String _progressLabel(ResolvedRuntimeState runtime) {
+  return switch (runtime.phase) {
     WorkPhase.idle => '等待开始',
     WorkPhase.working => '运行中',
-    WorkPhase.quieting => status == TaskStatus.runtimeLost ? '连接暂停' : '更新暂停',
+    WorkPhase.quieting =>
+      runtime.taskStatus == TaskStatus.runtimeLost ? '连接暂停' : '更新暂停',
     WorkPhase.turnIdle => '等待继续',
     WorkPhase.needsApproval || WorkPhase.needsDecision => '等待确认',
     WorkPhase.needsReview || WorkPhase.needsInstruction => '需处理',
@@ -417,12 +437,16 @@ String _progressLabel(TaskStatus status, [WorkState? workState]) {
   };
 }
 
-String _durationPrefix(TaskSession task, [WorkState? workState]) {
-  if (task.status == TaskStatus.pending && task.scheduledFor != null) {
+String _durationPrefix(
+  TaskSession task,
+  TaskStatus status,
+  ResolvedRuntimeState runtime,
+) {
+  if (status == TaskStatus.pending && task.scheduledFor != null) {
     return '计划于';
   }
   if (task.completedAt == null &&
-      switch (_workPhaseFor(workState, task.status)) {
+      switch (runtime.phase) {
         WorkPhase.idle ||
         WorkPhase.working ||
         WorkPhase.quieting ||
@@ -455,37 +479,12 @@ String _hostLabel(TaskSession task) {
   return '${task.host.name} / $projectPath';
 }
 
-WorkPhase _workPhaseFor(WorkState? workState, TaskStatus status) {
-  final phase = workState?.phase;
-  if (phase != null) {
-    return phase;
-  }
-  return switch (status) {
-    TaskStatus.draft || TaskStatus.pending => WorkPhase.idle,
-    TaskStatus.running => WorkPhase.working,
-    TaskStatus.paused || TaskStatus.observerDetached => WorkPhase.quieting,
-    TaskStatus.turnIdle => WorkPhase.turnIdle,
-    TaskStatus.needApproval => WorkPhase.needsApproval,
-    TaskStatus.needAttention => WorkPhase.needsInstruction,
-    TaskStatus.completed || TaskStatus.userCompleted => WorkPhase.completed,
-    TaskStatus.failed ||
-    TaskStatus.userFailed ||
-    TaskStatus.runtimeLost =>
-      WorkPhase.failed,
-    TaskStatus.stopped => WorkPhase.stopped,
-  };
-}
-
-WorkState? _effectiveWorkStateFor(TaskSession task, WorkState? workState) {
-  return workState;
-}
-
 String _statusLabel(TaskStatus status, [WorkState? workState]) {
   final headline = workState?.headline.trim();
   if (headline != null && headline.isNotEmpty) {
     return headline;
   }
-  return switch (_workPhaseFor(workState, status)) {
+  return switch (runtimePhaseForTaskStatus(status)) {
     WorkPhase.idle => '等待中',
     WorkPhase.working => '运行中',
     WorkPhase.quieting => status == TaskStatus.runtimeLost ? '连接暂停' : '更新暂停',
@@ -500,7 +499,7 @@ String _statusLabel(TaskStatus status, [WorkState? workState]) {
 }
 
 Color _statusColor(TaskStatus status, [WorkState? workState]) {
-  return switch (_workPhaseFor(workState, status)) {
+  return switch (runtimePhaseForTaskStatus(status)) {
     WorkPhase.needsApproval ||
     WorkPhase.needsDecision ||
     WorkPhase.needsReview ||

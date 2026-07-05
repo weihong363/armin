@@ -79,24 +79,25 @@ class TaskSpeechPolicy {
   Future<TaskSpeechDecision> decide({
     required TaskSession previous,
     required TaskSession current,
+    TaskStatus currentStatus = TaskStatus.turnIdle,
     required TaskSpeechSettings settings,
     NativeTerminalApproval? approval,
   }) async {
     if (!settings.enabled) {
       return const TaskSpeechDecision.skip();
     }
-    final kind = _kindFor(current.status);
+    final kind = _kindFor(currentStatus);
     if (kind == null || !_isKindEnabled(kind, settings)) {
       return const TaskSpeechDecision.skip();
     }
-    final speechText = _speechTextFor(current, approval);
+    final speechText = _speechTextFor(current, currentStatus, approval);
     if (speechText.isEmpty) {
       return const TaskSpeechDecision.skip();
     }
     return TaskSpeechDecision(
       shouldSpeak: true,
       text: speechText,
-      hash: '${current.status.name}:'
+      hash: '${currentStatus.name}:'
           '${current.turns.isEmpty ? 'noturn' : current.turns.last.id}:'
           '${speechText.hashCode}',
       kind: kind,
@@ -107,35 +108,40 @@ class TaskSpeechPolicy {
 
   Future<String> buildSpeechText(
     TaskSession task, {
+    TaskStatus status = TaskStatus.turnIdle,
     NativeTerminalApproval? approval,
   }) async =>
-      _speechTextFor(task, approval);
+      _speechTextFor(task, status, approval);
 
-  String _speechTextFor(TaskSession task, NativeTerminalApproval? approval) {
-    if (task.status == TaskStatus.needApproval) {
+  String _speechTextFor(
+    TaskSession task,
+    TaskStatus status,
+    NativeTerminalApproval? approval,
+  ) {
+    if (status == TaskStatus.needApproval) {
       final approvalText = approval?.question.trim() ?? '';
-      return _decorate(task.status, approvalText).trim();
+      return _decorate(status, approvalText).trim();
     }
 
-    if (task.status == TaskStatus.runtimeLost ||
-        task.status == TaskStatus.observerDetached) {
-      return _decorate(task.status, '').trim();
+    if (status == TaskStatus.runtimeLost ||
+        status == TaskStatus.observerDetached) {
+      return _decorate(status, '').trim();
     }
 
-    if (task.status == TaskStatus.needAttention) {
+    if (status == TaskStatus.needAttention) {
       final promptText = approval?.question.trim() ?? '';
       if (promptText.isNotEmpty) {
-        return _decorate(task.status, promptText).trim();
+        return _decorate(status, promptText).trim();
       }
       final latestTurnText = _latestTurnSpeechText(task);
       return latestTurnText.isEmpty
           ? ''
-          : _decorate(task.status, latestTurnText).trim();
+          : _decorate(status, latestTurnText).trim();
     }
 
     final latestTurnText = _latestTurnSpeechText(task);
     if (latestTurnText.isNotEmpty) {
-      return _decorate(task.status, latestTurnText).trim();
+      return _decorate(status, latestTurnText).trim();
     }
     return '';
   }

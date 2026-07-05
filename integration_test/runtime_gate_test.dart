@@ -94,7 +94,7 @@ void main() {
         // Best-effort cleanup; preserve the original gate failure.
       }
       final latest = state.tasks.where((item) => item.id == taskId).firstOrNull;
-      if (latest != null && !_isTerminal(latest.status)) {
+      if (latest != null && !_isTerminal(state.taskStatus(latest))) {
         await state.updateTaskStatus(latest, TaskStatus.stopped);
       }
     }
@@ -133,7 +133,7 @@ void main() {
         description: 'B01 plain-final turnIdle',
         timeout: const Duration(seconds: 8),
         predicate: (task) =>
-            task.status == TaskStatus.turnIdle &&
+            state.taskStatus(task) == TaskStatus.turnIdle &&
             deliverableContains(task, marker),
       );
       stopwatch.stop();
@@ -162,7 +162,7 @@ void main() {
         description: 'B01 turnIdle with current-turn deliverable',
         timeout: const Duration(seconds: 8),
         predicate: (task) =>
-            task.status == TaskStatus.turnIdle &&
+            state.taskStatus(task) == TaskStatus.turnIdle &&
             deliverableContains(task, marker),
       );
       stopwatch.stop();
@@ -186,7 +186,7 @@ void main() {
         taskId,
         description: 'B02 first turn turnIdle (before deliverable check)',
         timeout: const Duration(seconds: 30),
-        predicate: (task) => task.status == TaskStatus.turnIdle,
+        predicate: (task) => state.taskStatus(task) == TaskStatus.turnIdle,
       );
 
       final first = await waitForDeliverable(
@@ -206,7 +206,8 @@ void main() {
         taskId,
         description: 'B02 second turn running',
         predicate: (task) =>
-            task.turns.length == 2 && task.status == TaskStatus.running,
+            task.turns.length == 2 &&
+            state.taskStatus(task) == TaskStatus.running,
       );
       final second = await waitForDeliverable(
         tester,
@@ -224,7 +225,7 @@ void main() {
       expect(await remoteOutput(state, second), contains(secondMarker));
 
       await tester.pump(const Duration(seconds: 3));
-      expect(currentTask(state, taskId).status, TaskStatus.turnIdle);
+      expect(state.taskStatus(currentTask(state, taskId)), TaskStatus.turnIdle);
     });
   });
 
@@ -248,7 +249,7 @@ void main() {
       // not treat that stability as turn completion or create a result card.
       await tester.pump(const Duration(seconds: 3));
       final duringWork = currentTask(state, taskId);
-      expect(duringWork.status, TaskStatus.running);
+      expect(state.taskStatus(duringWork), TaskStatus.running);
       expect(duringWork.turns.last.status, NativeOutputTurnStatus.running);
       expect(duringWork.turns.last.deliverable, isNull);
 
@@ -258,7 +259,7 @@ void main() {
         taskId,
         marker,
       );
-      expect(settled.status, TaskStatus.turnIdle);
+      expect(state.taskStatus(settled), TaskStatus.turnIdle);
       expect(settled.turns.last.deliverable?.displaySummary, contains(marker));
     });
   });
@@ -281,7 +282,7 @@ void main() {
           description: 'B03 ${mode.name} pending approval',
           timeout: const Duration(seconds: 60),
           predicate: (task) =>
-              task.status == TaskStatus.needApproval &&
+              state.taskStatus(task) == TaskStatus.needApproval &&
               state.workState(taskId)?.approval?.state == ApprovalState.pending,
         );
         final approval = state.workState(taskId)!.approval!;
@@ -355,7 +356,7 @@ void main() {
           await waitForTaskStatus(tester, state, taskId, TaskStatus.running);
 
       await state.stopTask(running);
-      expect(currentTask(state, taskId).status, TaskStatus.stopped);
+      expect(state.taskStatus(currentTask(state, taskId)), TaskStatus.stopped);
       expect((await probeTask(state, currentTask(state, taskId))).sessionExists,
           isFalse);
     });
@@ -378,7 +379,7 @@ void main() {
         }
         final expected =
             completed ? TaskStatus.userCompleted : TaskStatus.userFailed;
-        expect(currentTask(state, taskId).status, expected);
+        expect(state.taskStatus(currentTask(state, taskId)), expected);
         await waitForRemoteSessionExists(
           tester,
           state,
@@ -455,14 +456,16 @@ void main() {
         taskId,
         description: 'P06 follow-up status transition',
         predicate: (task) =>
-            task.turns.length == 2 && task.status == TaskStatus.running,
+            task.turns.length == 2 &&
+            state.taskStatus(task) == TaskStatus.running,
       );
       await runTabRounds(tester); // running status transition
 
       await tester.pageBack();
       await tester.pump();
       expect(find.text('Runtime gate task'), findsWidgets);
-      expect(currentTask(state, taskId).status, isNot(TaskStatus.failed));
+      expect(state.taskStatus(currentTask(state, taskId)),
+          isNot(TaskStatus.failed));
     });
   });
 }
@@ -478,13 +481,19 @@ Future<void> configureTestHost(ArminAppState state) async {
     );
   }
   final host = seeded ?? testSeedHost();
-  await state.saveHost(
-    host.copyWith(
-      agentCommand: _testAgentCommand,
-      password: password,
-      projectPath: _testProjectPath,
-    ),
-  );
+  final needsUpdate = seeded == null ||
+      seeded.agentCommand != _testAgentCommand ||
+      seeded.password != password ||
+      seeded.projectPath != _testProjectPath;
+  if (needsUpdate) {
+    await state.saveHost(
+      host.copyWith(
+        agentCommand: _testAgentCommand,
+        password: password,
+        projectPath: _testProjectPath,
+      ),
+    );
+  }
   if (!state.projectPaths.any((path) => path.path == _testProjectPath)) {
     await state.saveProjectPath(testProject());
   }
@@ -544,7 +553,6 @@ TaskSession buildTask({
     id: taskId,
     host: host,
     title: 'Runtime gate task',
-    status: TaskStatus.running,
     createdAt: now,
     updatedAt: now,
     startedAt: now,
@@ -657,7 +665,7 @@ Future<TaskSession> waitForTaskStatus(
     state,
     taskId,
     description: '$taskId status ${status.name}',
-    predicate: (task) => task.status == status,
+    predicate: (task) => state.taskStatus(task) == status,
   );
 }
 
@@ -674,7 +682,8 @@ Future<TaskSession> waitForDeliverable(
     description: '$taskId deliverable $marker',
     timeout: const Duration(seconds: 30),
     predicate: (task) =>
-        task.status == TaskStatus.turnIdle && deliverableContains(task, marker),
+        state.taskStatus(task) == TaskStatus.turnIdle &&
+        deliverableContains(task, marker),
   );
 }
 

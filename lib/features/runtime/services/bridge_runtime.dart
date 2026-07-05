@@ -107,6 +107,36 @@ class BridgeRuntime {
     return taskStore.loadTask(taskId);
   }
 
+  Future<RuntimeTaskSnapshot> projectTaskState({
+    required String taskId,
+    required RuntimeTaskStatus status,
+    required WorkState workState,
+    String summary = '',
+    DateTime? now,
+  }) async {
+    _validateTaskId(taskId);
+    final observedAt = now ?? DateTime.now();
+    final current = await _requireTask(taskId);
+    final projectedWorkState = workState.copyWith(updatedAt: observedAt);
+    final updated = current.copyWith(
+      status: status,
+      updatedAt: observedAt,
+      summary: summary.trim().isEmpty ? current.summary : summary.trim(),
+      workState: projectedWorkState,
+    );
+    await taskStore.saveTask(updated);
+    _workStates[taskId] = projectedWorkState;
+    await _saveWorkState(projectedWorkState);
+    _diagnosticsUpdate(
+      taskId,
+      (d) => d.copyWith(
+        workPhase: projectedWorkState.phase,
+        updatedAt: observedAt,
+      ),
+    );
+    return updated;
+  }
+
   Future<void> restoreDurableState() async {
     final store = taskStore;
     if (store is! RuntimePersistenceStore) {

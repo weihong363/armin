@@ -99,7 +99,7 @@ void main() {
         await state.agentSessionService.cleanup(controlRequest(state, task));
       } catch (_) {}
       final latest = state.tasks.where((t) => t.id == taskId).firstOrNull;
-      if (latest != null && !_isTerminal(latest.status)) {
+      if (latest != null && !_isTerminal(state.taskStatus(latest))) {
         await state.updateTaskStatus(latest, TaskStatus.stopped);
       }
     }
@@ -122,11 +122,11 @@ void main() {
         description: 'approval request pending',
         timeout: const Duration(seconds: 60),
         predicate: (task) =>
-            task.status == TaskStatus.needApproval &&
+            state.taskStatus(task) == TaskStatus.needApproval &&
             state.workState(taskId)?.approval?.state == ApprovalState.pending,
       );
 
-      expect(pending.status, TaskStatus.needApproval);
+      expect(state.taskStatus(pending), TaskStatus.needApproval);
       final wf = state.workState(taskId);
       expect(wf?.approval, isNotNull);
       expect(wf!.approval!.question, isNotEmpty);
@@ -156,7 +156,7 @@ void main() {
         description: 'approve gate pending approval',
         timeout: const Duration(seconds: 60),
         predicate: (task) =>
-            task.status == TaskStatus.needApproval &&
+            state.taskStatus(task) == TaskStatus.needApproval &&
             state.workState(taskId)?.approval?.state == ApprovalState.pending,
       );
 
@@ -173,7 +173,7 @@ void main() {
       );
 
       final after = currentTask(state, taskId);
-      expect(after.status, isNot(TaskStatus.needApproval));
+      expect(state.taskStatus(after), isNot(TaskStatus.needApproval));
 
       final approvalEvents = _approvalFacts(after);
       expect(
@@ -208,7 +208,7 @@ void main() {
         description: 'reject gate pending approval',
         timeout: const Duration(seconds: 60),
         predicate: (task) =>
-            task.status == TaskStatus.needApproval &&
+            state.taskStatus(task) == TaskStatus.needApproval &&
             state.workState(taskId)?.approval?.state == ApprovalState.pending,
       );
 
@@ -241,7 +241,7 @@ void main() {
         description: 'recovery gate pending approval',
         timeout: const Duration(seconds: 60),
         predicate: (task) =>
-            task.status == TaskStatus.needApproval &&
+            state.taskStatus(task) == TaskStatus.needApproval &&
             state.workState(taskId)?.approval?.state == ApprovalState.pending,
       );
 
@@ -254,7 +254,7 @@ void main() {
       await restartAppState(tester);
 
       final restored = currentTask(state, taskId);
-      expect(restored.status, TaskStatus.needApproval);
+      expect(state.taskStatus(restored), TaskStatus.needApproval);
       expect(state.workState(taskId)?.approval?.state, ApprovalState.pending);
 
       final restoredFacts = _approvalFacts(restored);
@@ -302,7 +302,7 @@ void main() {
         description: 'turn 1 pending approval',
         timeout: const Duration(seconds: 60),
         predicate: (task) =>
-            task.status == TaskStatus.needApproval &&
+            state.taskStatus(task) == TaskStatus.needApproval &&
             state.workState(taskId)?.approval?.state == ApprovalState.pending,
       );
       await state.resolveApproval(pending1, approved: true);
@@ -325,7 +325,7 @@ void main() {
         timeout: const Duration(seconds: 60),
         predicate: (task) =>
             task.turns.length == 2 &&
-            task.status == TaskStatus.needApproval &&
+            state.taskStatus(task) == TaskStatus.needApproval &&
             state.workState(taskId)?.approval?.state == ApprovalState.pending,
       );
       await state.resolveApproval(pending2, approved: true);
@@ -469,7 +469,6 @@ TaskSession buildTask({
     id: taskId,
     host: host,
     title: 'Approval workflow gate task',
-    status: TaskStatus.running,
     createdAt: now,
     updatedAt: now,
     startedAt: now,

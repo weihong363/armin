@@ -1,4 +1,3 @@
-import 'package:armin/core/models/task_status.dart';
 import 'package:armin/features/agent/models/agent_approval_config.dart';
 import 'package:armin/features/hosts/models/host_config.dart';
 import 'package:armin/features/tasks/models/native_output_turn.dart';
@@ -168,7 +167,6 @@ TaskSession _task({
       updatedAt: now,
     ),
     title: '测试任务',
-    status: TaskStatus.turnIdle,
     createdAt: now,
     updatedAt: now,
     startedAt: now,

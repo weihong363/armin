@@ -291,7 +291,7 @@ void main() {
     final agent = _CaptureAgentSessionService(
       waitBeforeResult: waitBeforeResult,
     );
-    await _pumpScreen(tester, store: store, agent: agent);
+    final state = await _pumpScreen(tester, store: store, agent: agent);
 
     await tester.enterText(find.byType(TextField).first, '执行真实任务');
     await tester.tap(find.text('发送任务'));
@@ -299,7 +299,7 @@ void main() {
 
     expect(find.text('任务详情'), findsOneWidget);
     expect(agent.lastRequest, isNotNull);
-    expect(store.savedTasks.last.status, TaskStatus.running);
+    expect(state.taskStatus(store.savedTasks.last), TaskStatus.running);
     expect(agent.lastRequest!.tmuxSessionName, startsWith('armin-'));
     expect(agent.lastRequest!.tmuxSessionName.length, lessThanOrEqualTo(14));
     expect(store.savedTasks.last.host.tmuxSessionName,
@@ -313,14 +313,14 @@ void main() {
       (tester) async {
     final store = _TaskStore(hosts: [_host(password: 'secret-password')]);
     final agent = _CaptureAgentSessionService(error: StateError('ssh failed'));
-    await _pumpScreen(tester, store: store, agent: agent);
+    final state = await _pumpScreen(tester, store: store, agent: agent);
 
     await tester.enterText(find.byType(TextField).first, '执行真实任务');
     await tester.tap(find.text('发送任务'));
     await tester.pumpAndSettle();
 
     expect(store.savedTasks, isNotEmpty);
-    expect(store.savedTasks.last.status, TaskStatus.failed);
+    expect(state.taskStatus(store.savedTasks.last), TaskStatus.failed);
     expect(store.savedTasks.last.rawLog, contains('ssh failed'));
     expect(store.savedTasks.last.shortSummary, contains('SSH 执行失败'));
   });
@@ -329,19 +329,19 @@ void main() {
       (tester) async {
     final store = _TaskStore(hosts: [_host(password: 'secret-password')]);
     final agent = _CaptureAgentSessionService(doneWithoutResult: true);
-    await _pumpScreen(tester, store: store, agent: agent);
+    final state = await _pumpScreen(tester, store: store, agent: agent);
 
     await tester.enterText(find.byType(TextField).first, '执行真实任务');
     await tester.tap(find.text('发送任务'));
     await tester.pumpAndSettle();
 
     expect(store.savedTasks, isNotEmpty);
-    expect(store.savedTasks.last.status, TaskStatus.turnIdle);
+    expect(state.taskStatus(store.savedTasks.last), TaskStatus.turnIdle);
     expect(store.savedTasks.last.completedAt, isNull);
   });
 }
 
-Future<void> _pumpScreen(
+Future<ArminAppState> _pumpScreen(
   WidgetTester tester, {
   required _TaskStore store,
   required _CaptureAgentSessionService agent,
@@ -360,6 +360,7 @@ Future<void> _pumpScreen(
     ),
   );
   await tester.pump();
+  return state;
 }
 
 TextEditingController _textFieldController(WidgetTester tester, Finder finder) {

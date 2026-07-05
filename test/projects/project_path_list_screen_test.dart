@@ -105,7 +105,6 @@ TaskSession _task({
     id: 'task-1',
     host: host,
     title: 'Active Task',
-    status: status,
     createdAt: now,
     updatedAt: now,
     startedAt: now,

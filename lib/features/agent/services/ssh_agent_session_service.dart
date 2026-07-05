@@ -10,6 +10,7 @@ import '../../tasks/services/agent_instruction_discovery.dart';
 import '../parsers/terminal_prompt.dart';
 import '../parsers/terminal_prompt_parser.dart';
 import 'agent_output_cleaner.dart';
+import 'agent_runtime_adapter.dart';
 import 'agent_runtime_config.dart';
 import 'agent_session_service.dart';
 import 'native_output_observer.dart';
@@ -18,7 +19,7 @@ import 'runtime_policy.dart';
 class SSHAgentSessionService
     implements AgentSessionService, RemoteTaskProbeService {
   static const _staleExitMarker = '__ARMIN_STALE_EXIT_MARKER__';
-  static const _monitorScriptVersion = 'phase2.6-settled-v4';
+  static const _monitorScriptVersion = 'phase2.6-settled-v8';
   static const _monitorDiagnosticsVerbose =
       bool.fromEnvironment('ARMIN_MONITOR_DIAG_VERBOSE');
   static const _controlCommandTimeout = Duration(seconds: 15);
@@ -141,6 +142,7 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
       final runtimePolicy = _runtimePolicyFor(request);
       final observer = NativeOutputObserver(
         cleaner: _cleaner,
+        runtimeAdapter: AgentRuntimeAdapter.forCommand(request.agentCommand),
         idleThreshold: runtimePolicy.idleThreshold,
         reconnectThreshold: runtimePolicy.reconnectThreshold,
       );
@@ -910,7 +912,15 @@ armin_pane_semantic() {
     s/\\e\\[[0-?]*[ -\\/]*[@-~]//g;
     s/[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F\\x7F]//g;
     for my \$line (split /\\n/) {
+      next if \$line =~ /[\\x{2800}-\\x{28ff}]/;
+      \$line =~ s/\\s*[\\x{2800}-\\x{28ff}]\\s+(?:Thinking|.{1,80}\\.\\.\\.).*\$//i;
+      \$line =~ s/\\s*\\b(?:Auto\\s+)?Model\\b.*\\bctx\\b.*\$//i;
+      \$line =~ s/\\s*\\bctx\\b\\s*[^\\s]*\\s*\\d+%.*\$//i;
       next if \$line =~ /\\besc to cancel\\b/i;
+      next if \$line =~ /\\b(?:Auto\\s+)?Model\\b.*\\bctx\\b/i;
+      next if \$line =~ /\\bctx\\b\\s*\\d+%/i;
+      next if \$line =~ /^\\s*[\\x{2800}-\\x{28ff}]\\s+.{1,80}\\.\\.\\.\\s*\$/;
+      next if \$line =~ /^\\s*[\\x{2800}-\\x{28ff}]?\\s*Thinking[. …]*(?:\\([^)]*\\))?\\s*\$/i;
       \$line =~ s/\\bType your message or \\@path\\/to\\/file\\b.*//i;
       \$line =~ s/(?:YOLO\\s+)?\\bShift\\+Tab to Auto(?:-accept Edits| Mode)?\\b.*//i;
       \$line =~ s/\\bAuto Model\\b.*//i;
@@ -1267,10 +1277,12 @@ fi
   List<AgentExecutionUpdate> streamingUpdatesForChunksForTest(
     List<String> chunks, {
     Duration idleThreshold = const Duration(milliseconds: 1),
+    String agentCommand = 'qodercli',
   }) {
     final output = _ExecutionOutputState();
     final observer = NativeOutputObserver(
       cleaner: _cleaner,
+      runtimeAdapter: AgentRuntimeAdapter.forCommand(agentCommand),
       idleThreshold: idleThreshold,
     );
     return chunks.map((chunk) {
@@ -1283,6 +1295,7 @@ fi
   AgentExecutionUpdate streamCompletionUpdateForTextForTest(
     String text, {
     Duration idleThreshold = const Duration(milliseconds: 1),
+    String agentCommand = 'qodercli',
   }) {
     final output = _ExecutionOutputState();
     output.write(
@@ -1292,6 +1305,7 @@ fi
     );
     final observer = NativeOutputObserver(
       cleaner: _cleaner,
+      runtimeAdapter: AgentRuntimeAdapter.forCommand(agentCommand),
       idleThreshold: idleThreshold,
     );
     observer.observe(output.observedText);

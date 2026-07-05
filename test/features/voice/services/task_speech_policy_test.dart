@@ -13,7 +13,6 @@ void main() {
   test('completed task speaks cleaned final result summary', () async {
     final previous = _task(status: TaskStatus.running);
     final current = previous.copyWith(
-      status: TaskStatus.completed,
       turns: [
         _turn(1).copyWith(rawOutput: '''
 已修复登录失败。
@@ -32,6 +31,7 @@ flutter test
     final decision = await policy.decide(
       previous: previous,
       current: current,
+      currentStatus: TaskStatus.completed,
       settings: settings,
     );
 
@@ -47,7 +47,6 @@ flutter test
   test('turn idle task speaks current output with continue prompt', () async {
     final previous = _task(status: TaskStatus.running);
     final current = previous.copyWith(
-      status: TaskStatus.turnIdle,
       turns: [_turn(1).copyWith(rawOutput: '已完成第一轮检查。')],
     );
 
@@ -63,7 +62,6 @@ flutter test
   test('turn idle speech excludes follow-up input echoed in output', () async {
     final previous = _task(status: TaskStatus.running);
     final current = previous.copyWith(
-      status: TaskStatus.turnIdle,
       summary: '输出 hello world\nhello',
       turns: [
         _turnWithInput(1, '检查当前项目'),
@@ -83,7 +81,6 @@ flutter test
   test('turn idle speech uses the full current turn output', () async {
     final previous = _task(status: TaskStatus.running);
     final current = previous.copyWith(
-      status: TaskStatus.turnIdle,
       turns: [
         _turnWithInput(1, '输出 runbook-copilot'),
         _turnWithInput(2, '继续').copyWith(
@@ -116,7 +113,6 @@ runbook-copilot 是面向工程团队的 RAG 事故排障助手，用于根据�
   test('auto speech uses the latest turn card output source', () async {
     final previous = _task(status: TaskStatus.running);
     final current = previous.copyWith(
-      status: TaskStatus.turnIdle,
       summary: '旧的整任务摘要，不应直接播报',
       turns: [
         _turnWithInput(1, '输出 hello'),
@@ -141,7 +137,6 @@ runbook-copilot 是面向工程团队的 RAG 事故排障助手，用于根据�
       () async {
     final previous = _task(status: TaskStatus.running);
     final current = previous.copyWith(
-      status: TaskStatus.turnIdle,
       summary: '旧摘要不应播报',
       turns: [
         _turnWithInput(1, '实现接口').copyWith(
@@ -184,7 +179,6 @@ Thinking
       ],
     );
     final current = previous.copyWith(
-      status: TaskStatus.turnIdle,
       summary: 'Turn 1 result',
       turns: [
         ...previous.turns,
@@ -211,7 +205,6 @@ Thinking
       turns: [_turnWithInput(1, '输出旧结果')],
     );
     final current = previous.copyWith(
-      status: TaskStatus.turnIdle,
       summary: '第二轮结果',
       turns: [
         ...previous.turns,
@@ -235,7 +228,6 @@ Thinking
   test('auto speech uses persisted deliverable speech summary', () async {
     final previous = _task(status: TaskStatus.running);
     final current = previous.copyWith(
-      status: TaskStatus.turnIdle,
       turns: [
         _turnWithInput(1, '输出 hello'),
         _turnWithInput(2, '继续').copyWith(
@@ -262,7 +254,6 @@ Thinking
       () async {
     final previous = _task(status: TaskStatus.running);
     final first = previous.copyWith(
-      status: TaskStatus.turnIdle,
       turns: [
         _turnWithInput(1, '输出项目名').copyWith(
           deliverable: const TurnDeliverable(
@@ -305,7 +296,6 @@ Thinking
       () async {
     final previous = _task(status: TaskStatus.running);
     final current = previous.copyWith(
-      status: TaskStatus.turnIdle,
       turns: [
         _turnWithInput(1, '生成长结果').copyWith(
           cleanedOutput: 'long result',
@@ -329,7 +319,6 @@ Thinking
   test('turn idle with prompt echo only stays silent', () async {
     final previous = _task(status: TaskStatus.running);
     final current = previous.copyWith(
-      status: TaskStatus.turnIdle,
       summary: '输出 hello world',
       turns: [
         _turnWithInput(1, '输出 hello world').copyWith(
@@ -353,13 +342,13 @@ Thinking
       () async {
     final previous = _task(status: TaskStatus.running);
     final current = previous.copyWith(
-      status: TaskStatus.needApproval,
       nativeApproval: _approval('删除临时构建产物，风险中等。'),
     );
 
     final decision = await policy.decide(
       previous: previous,
       current: current,
+      currentStatus: TaskStatus.needApproval,
       settings: settings,
       approval: current.nativeApproval,
     );
@@ -371,7 +360,6 @@ Thinking
       () async {
     final previous = _task(status: TaskStatus.running);
     final current = previous.copyWith(
-      status: TaskStatus.needApproval,
       summary: 'Turn 1 old result should not be spoken',
       nativeApproval:
           _approval('Turn 2 needs permission to inspect build output.'),
@@ -391,6 +379,7 @@ Thinking
     final decision = await policy.decide(
       previous: previous,
       current: current,
+      currentStatus: TaskStatus.needApproval,
       settings: settings,
       approval: current.nativeApproval,
     );
@@ -401,7 +390,6 @@ Thinking
   test('need approval speech can be disabled separately', () async {
     final previous = _task(status: TaskStatus.running);
     final current = previous.copyWith(
-      status: TaskStatus.needApproval,
       nativeApproval: _approval('请确认删除临时文件。'),
     );
 
@@ -417,11 +405,9 @@ Thinking
   test('settings can disable result and attention speech separately', () async {
     final previous = _task(status: TaskStatus.running);
     final completed = previous.copyWith(
-      status: TaskStatus.completed,
       shortSummary: '已完成',
     );
     final attention = previous.copyWith(
-      status: TaskStatus.needAttention,
       shortSummary: '需要用户处理',
     );
 
@@ -449,7 +435,6 @@ Thinking
       () async {
     final previous = _task(status: TaskStatus.running);
     final current = previous.copyWith(
-      status: TaskStatus.needAttention,
       summary: '初始提示词不应该被播报',
       shortSummary: '任务已创建底下的内容不应该被播报',
       turns: [
@@ -478,7 +463,6 @@ Thinking
   test('need attention speaks current terminal prompt only', () async {
     final previous = _task(status: TaskStatus.running);
     final current = previous.copyWith(
-      status: TaskStatus.needAttention,
       summary: '旧摘要不应该被播报',
       nativeApproval: _approval('Apply this change?'),
     );
@@ -486,6 +470,7 @@ Thinking
     final decision = await policy.decide(
       previous: previous,
       current: current,
+      currentStatus: TaskStatus.needAttention,
       settings: settings,
       approval: current.nativeApproval,
     );
@@ -530,7 +515,6 @@ Thinking
   test('speech policy ignores task summary without turn evidence', () async {
     final previous = _task(status: TaskStatus.running);
     final current = previous.copyWith(
-      status: TaskStatus.turnIdle,
       summary: '有用结果',
       rawLog: 'raw terminal log should not be summarized',
     );
@@ -563,7 +547,6 @@ TaskSession _task({required TaskStatus status}) {
       password: 'secret-password',
     ),
     title: 'Task',
-    status: status,
     createdAt: now,
     updatedAt: now,
     startedAt: now,

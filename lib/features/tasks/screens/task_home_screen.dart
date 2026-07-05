@@ -9,6 +9,7 @@ import '../../../shared/scroll/armin_scroll_behavior.dart';
 import '../../../shared/theme/armin_theme.dart';
 import '../../history/screens/task_detail_screen.dart';
 import '../../history/screens/task_history_screen.dart';
+import '../../runtime/models/resolved_runtime_state.dart';
 import '../../runtime/models/work_state.dart';
 import '../../settings/screens/settings_screen.dart';
 import '../models/task_session.dart';
@@ -56,15 +57,22 @@ class _TaskHomeScreenState extends State<TaskHomeScreen> {
 
   Widget _buildHomeBody(BuildContext context, HomeTaskSnapshot snapshot) {
     final state = AppStateScope.read(context);
+    TaskStatus statusFor(TaskSession task) => state.taskStatus(task);
     WorkState? workStateFor(TaskSession task) {
-      return _effectiveWorkStateFor(task, state.workState(task.id));
+      return resolveRuntimeState(
+        task,
+        taskStatus: statusFor(task),
+        workState: state.workState(task.id),
+      ).toWorkState(task.id);
     }
 
-    final groups = _groupTasks(snapshot.tasks, workStateFor);
-    final attentionEvents = _attentionEventsFor(snapshot.tasks, workStateFor);
-    final activityItems = _activityItemsFor(snapshot.tasks, workStateFor);
+    final groups = _groupTasks(snapshot.tasks, statusFor, workStateFor);
+    final attentionEvents =
+        _attentionEventsFor(snapshot.tasks, statusFor, workStateFor);
+    final activityItems =
+        _activityItemsFor(snapshot.tasks, statusFor, workStateFor);
     final completedCount = snapshot.tasks.length;
-    final activeCount = _activeTaskCount(snapshot.tasks);
+    final activeCount = _activeTaskCount(snapshot.tasks, statusFor);
     final maxActive = state.maxActiveTasks;
     final atLimit = activeCount >= maxActive;
 
@@ -259,11 +267,17 @@ class _TaskHomeScreenState extends State<TaskHomeScreen> {
 
   Future<void> _addContextFromHome(BuildContext context) async {
     final state = AppStateScope.read(context);
+    TaskStatus statusFor(TaskSession task) => state.taskStatus(task);
     WorkState? workStateFor(TaskSession task) {
-      return _effectiveWorkStateFor(task, state.workState(task.id));
+      return resolveRuntimeState(
+        task,
+        taskStatus: statusFor(task),
+        workState: state.workState(task.id),
+      ).toWorkState(task.id);
     }
 
-    final activeTasks = _activeContextTasks(state.tasks, workStateFor);
+    final activeTasks =
+        _activeContextTasks(state.tasks, statusFor, workStateFor);
     if (activeTasks.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('请先创建任务再添加上下文。')),
@@ -313,8 +327,12 @@ class _TaskHomeScreenState extends State<TaskHomeScreen> {
                   ),
                   subtitle: Text(
                     _humanStatusLabel(
-                      task.status,
-                      _effectiveWorkStateFor(task, state.workState(task.id)),
+                      state.taskStatus(task),
+                      resolveRuntimeState(
+                        task,
+                        taskStatus: state.taskStatus(task),
+                        workState: state.workState(task.id),
+                      ).toWorkState(task.id),
                     ),
                   ),
                   trailing: const Icon(Icons.chevron_right),
@@ -331,6 +349,7 @@ class _TaskHomeScreenState extends State<TaskHomeScreen> {
     AddContextSheet.show(
       context,
       task: task,
+      status: AppStateScope.read(context).taskStatus(task),
       onSubmit: (sheetContext, instruction, command) async {
         await AppStateScope.read(sheetContext).sendFollowUp(task, instruction);
         if (sheetContext.mounted) {
@@ -344,16 +363,17 @@ class _TaskHomeScreenState extends State<TaskHomeScreen> {
 
   List<TaskSession> _activeContextTasks(
     List<TaskSession> tasks,
+    TaskStatus Function(TaskSession task) statusFor,
     WorkState? Function(TaskSession task) workStateFor,
   ) {
     return [
       for (final task in tasks)
-        if (_isContextReady(task.status, workStateFor(task))) task,
+        if (_isContextReady(statusFor(task), workStateFor(task))) task,
     ];
   }
 
   bool _isContextReady(TaskStatus status, [WorkState? workState]) {
-    return switch (_workPhaseFor(workState, status)) {
+    return switch (workState?.phase ?? runtimePhaseForTaskStatus(status)) {
       WorkPhase.working ||
       WorkPhase.quieting ||
       WorkPhase.needsApproval ||
@@ -369,9 +389,12 @@ class _TaskHomeScreenState extends State<TaskHomeScreen> {
   /// Active tasks for the user-facing limit: excludes terminal AND
   /// disconnected/idle states (paused, observerDetached, runtimeLost)
   /// that still count for internal reconcile/bridge tracking.
-  static int _activeTaskCount(List<TaskSession> tasks) {
+  static int _activeTaskCount(
+    List<TaskSession> tasks,
+    TaskStatus Function(TaskSession task) statusFor,
+  ) {
     return tasks
-        .where((t) => switch (t.status) {
+        .where((task) => switch (statusFor(task)) {
               TaskStatus.completed ||
               TaskStatus.userCompleted ||
               TaskStatus.failed ||
@@ -396,7 +419,7 @@ class _TaskHomeScreenState extends State<TaskHomeScreen> {
 
   void _openNewTask(BuildContext context, {String initialTaskText = ''}) {
     final state = AppStateScope.read(context);
-    final activeCount = _activeTaskCount(state.tasks);
+    final activeCount = _activeTaskCount(state.tasks, state.taskStatus);
     if (activeCount >= state.maxActiveTasks) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -502,6 +525,7 @@ class _TaskHomeScreenState extends State<TaskHomeScreen> {
 
 _TaskInboxGroups _groupTasks(
   List<TaskSession> tasks,
+  TaskStatus Function(TaskSession task) statusFor,
   WorkState? Function(TaskSession task) workStateFor,
 ) {
   final needsAttention = <TaskSession>[];
@@ -509,7 +533,7 @@ _TaskInboxGroups _groupTasks(
   final recentlyCompleted = <TaskSession>[];
 
   for (final task in tasks) {
-    switch (_inboxGroupFor(task.status, workStateFor(task))) {
+    switch (_inboxGroupFor(statusFor(task), workStateFor(task))) {
       case _TaskInboxGroup.needsAttention:
         needsAttention.add(task);
       case _TaskInboxGroup.inProgress:
@@ -528,7 +552,7 @@ _TaskInboxGroups _groupTasks(
 
 // UI-only mapping: collapse runtime work phases into inbox sections.
 _TaskInboxGroup _inboxGroupFor(TaskStatus status, [WorkState? workState]) {
-  return switch (_workPhaseFor(workState, status)) {
+  return switch (workState?.phase ?? runtimePhaseForTaskStatus(status)) {
     WorkPhase.needsApproval ||
     WorkPhase.needsDecision ||
     WorkPhase.needsInstruction ||
@@ -617,12 +641,13 @@ class _ActivityItem {
 
 List<_AttentionEvent> _attentionEventsFor(
   List<TaskSession> tasks,
+  TaskStatus Function(TaskSession task) statusFor,
   WorkState? Function(TaskSession task) workStateFor,
 ) {
   final events = [
     for (final task in tasks)
-      if (_attentionEventFor(task, workStateFor(task)) != null)
-        _attentionEventFor(task, workStateFor(task))!,
+      if (_attentionEventFor(task, statusFor(task), workStateFor(task)) != null)
+        _attentionEventFor(task, statusFor(task), workStateFor(task))!,
   ];
   events.sort((a, b) {
     final priority = a.priority.compareTo(b.priority);
@@ -634,8 +659,12 @@ List<_AttentionEvent> _attentionEventsFor(
   return events;
 }
 
-_AttentionEvent? _attentionEventFor(TaskSession task, [WorkState? workState]) {
-  return switch (_workPhaseFor(workState, task.status)) {
+_AttentionEvent? _attentionEventFor(
+  TaskSession task,
+  TaskStatus status, [
+  WorkState? workState,
+]) {
+  return switch (workState?.phase ?? runtimePhaseForTaskStatus(status)) {
     WorkPhase.needsApproval => _AttentionEvent(
         task: task,
         reason: _workStateReason(workState, '这个任务需要你做决定'),
@@ -666,7 +695,7 @@ _AttentionEvent? _attentionEventFor(TaskSession task, [WorkState? workState]) {
         primaryAction: '检查问题',
         priority: 3,
       ),
-    WorkPhase.quieting when task.status == TaskStatus.paused => _AttentionEvent(
+    WorkPhase.quieting when status == TaskStatus.paused => _AttentionEvent(
         task: task,
         reason: '已暂停，等待你处理',
         primaryAction: '恢复',
@@ -685,18 +714,23 @@ String _needAttentionReason(WorkState? workState) {
 
 List<_ActivityItem> _activityItemsFor(
   List<TaskSession> tasks,
+  TaskStatus Function(TaskSession task) statusFor,
   WorkState? Function(TaskSession task) workStateFor,
 ) {
   final items = [
     for (final task in tasks)
-      if (_activityItemFor(task, workStateFor(task)) != null)
-        _activityItemFor(task, workStateFor(task))!,
+      if (_activityItemFor(task, statusFor(task), workStateFor(task)) != null)
+        _activityItemFor(task, statusFor(task), workStateFor(task))!,
   ]..sort((a, b) => b.task.updatedAt.compareTo(a.task.updatedAt));
   return items;
 }
 
-_ActivityItem? _activityItemFor(TaskSession task, [WorkState? workState]) {
-  final attention = _attentionEventFor(task, workState);
+_ActivityItem? _activityItemFor(
+  TaskSession task,
+  TaskStatus status, [
+  WorkState? workState,
+]) {
+  final attention = _attentionEventFor(task, status, workState);
   if (attention != null) {
     return _ActivityItem(
       task: task,
@@ -707,7 +741,7 @@ _ActivityItem? _activityItemFor(TaskSession task, [WorkState? workState]) {
       needsAttention: true,
     );
   }
-  return switch (_workPhaseFor(workState, task.status)) {
+  return switch (workState?.phase ?? runtimePhaseForTaskStatus(status)) {
     WorkPhase.completed => _ActivityItem(
         task: task,
         title: '任务已完成',
@@ -724,7 +758,7 @@ _ActivityItem? _activityItemFor(TaskSession task, [WorkState? workState]) {
         color: ArminTheme.primary,
         needsAttention: false,
       ),
-    WorkPhase.quieting when task.status == TaskStatus.observerDetached =>
+    WorkPhase.quieting when status == TaskStatus.observerDetached =>
       _ActivityItem(
         task: task,
         title: '更新已暂停',
@@ -733,8 +767,7 @@ _ActivityItem? _activityItemFor(TaskSession task, [WorkState? workState]) {
         color: Colors.blueGrey.shade700,
         needsAttention: false,
       ),
-    WorkPhase.quieting when task.status == TaskStatus.runtimeLost =>
-      _ActivityItem(
+    WorkPhase.quieting when status == TaskStatus.runtimeLost => _ActivityItem(
         task: task,
         title: '连接已暂停',
         description: '远端会话已不可用',
@@ -1274,10 +1307,12 @@ class _TaskListScreen extends StatelessWidget {
           separatorBuilder: (_, __) => const SizedBox(height: 10),
           itemBuilder: (context, index) {
             final task = tasks[index];
-            final workState = _effectiveWorkStateFor(
+            final status = state.taskStatus(task);
+            final workState = resolveRuntimeState(
               task,
-              state.workState(task.id),
-            );
+              taskStatus: status,
+              workState: state.workState(task.id),
+            ).toWorkState(task.id);
             return Card(
               margin: EdgeInsets.zero,
               child: ListTile(
@@ -1286,7 +1321,7 @@ class _TaskListScreen extends StatelessWidget {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                 ),
-                subtitle: Text(_humanStatusLabel(task.status, workState)),
+                subtitle: Text(_humanStatusLabel(status, workState)),
                 trailing: const Icon(Icons.chevron_right),
                 onTap: () => onOpenTask(context, task.id),
               ),
@@ -1413,14 +1448,6 @@ class _ActivityFeedItem extends StatelessWidget {
   }
 }
 
-WorkPhase _workPhaseFor(WorkState? workState, TaskStatus _) {
-  return workState?.phase ?? WorkPhase.idle;
-}
-
-WorkState? _effectiveWorkStateFor(TaskSession task, WorkState? workState) {
-  return workState;
-}
-
 String _workStateReason(WorkState? workState, String fallback) {
   final text = workState?.statusText.trim() ?? '';
   if (text.isEmpty) {
@@ -1434,7 +1461,7 @@ String _humanStatusLabel(TaskStatus status, [WorkState? workState]) {
   if (headline != null && headline.isNotEmpty) {
     return headline;
   }
-  return switch (_workPhaseFor(workState, status)) {
+  return switch (workState?.phase ?? runtimePhaseForTaskStatus(status)) {
     WorkPhase.idle => '排队中',
     WorkPhase.working => '工作中',
     WorkPhase.quieting => status == TaskStatus.runtimeLost ? '连接已暂停' : '更新已暂停',

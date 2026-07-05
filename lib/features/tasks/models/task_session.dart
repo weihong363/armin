@@ -1,4 +1,3 @@
-import '../../../core/models/task_status.dart';
 import '../../agent/models/agent_approval_config.dart';
 import '../../hosts/models/host_config.dart';
 import '../../runtime/models/approval_state.dart';
@@ -17,7 +16,6 @@ class TaskSession {
     required this.id,
     required this.host,
     required this.title,
-    required this.status,
     required this.createdAt,
     required this.updatedAt,
     required this.rawSttText,
@@ -50,7 +48,6 @@ class TaskSession {
   final String id;
   final HostConfig host;
   final String title;
-  final TaskStatus status;
   final DateTime createdAt;
   final DateTime updatedAt;
   final DateTime? startedAt;
@@ -94,7 +91,6 @@ class TaskSession {
       id: json['id'] as String? ?? '',
       host: HostConfig.fromJson(hostJson),
       title: json['title'] as String? ?? '',
-      status: _statusFromJson(json['status']),
       createdAt: _date(json['createdAt']),
       updatedAt: _date(json['updatedAt']),
       startedAt: _nullableDate(json['startedAt']),
@@ -138,7 +134,6 @@ class TaskSession {
     String? id,
     HostConfig? host,
     String? title,
-    TaskStatus? status,
     DateTime? createdAt,
     DateTime? updatedAt,
     DateTime? startedAt,
@@ -173,7 +168,6 @@ class TaskSession {
       id: id ?? this.id,
       host: host ?? this.host,
       title: title ?? this.title,
-      status: status ?? this.status,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
       startedAt: startedAt ?? this.startedAt,
@@ -241,7 +235,6 @@ class TaskSession {
       'id': id,
       'host': safeHost.toJson(),
       'title': title,
-      'status': status.name,
       'createdAt': createdAt.toIso8601String(),
       'updatedAt': updatedAt.toIso8601String(),
       'startedAt': startedAt?.toIso8601String(),
@@ -284,14 +277,6 @@ String _redactRuntimePassword(String value, String password) {
 
 DateTime _date(Object? value) {
   return DateTime.tryParse(value as String? ?? '') ?? DateTime.now();
-}
-
-TaskStatus _statusFromJson(Object? value) {
-  final name = value as String? ?? '';
-  return TaskStatus.values.firstWhere(
-    (status) => status.name == name,
-    orElse: () => TaskStatus.pending,
-  );
 }
 
 AgentApprovalMode _approvalModeFromJson(Object? value) {

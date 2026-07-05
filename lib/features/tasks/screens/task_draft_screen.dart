@@ -3,13 +3,15 @@ import 'package:flutter/material.dart';
 import '../../../app_state_scope.dart';
 import '../../../core/models/task_status.dart';
 import '../../../shared/theme/armin_theme.dart';
-import '../../agent/services/agent_session_service.dart';
 import '../../agent/models/agent_approval_config.dart';
-import '../../hosts/models/host_config.dart';
+import '../../agent/services/agent_session_service.dart';
 import '../../history/screens/task_detail_screen.dart';
+import '../../hosts/models/host_config.dart';
 import '../../projects/models/project_path_config.dart';
-import '../../voice/services/voice_service.dart';
 import '../../voice/models/normalization_result.dart';
+import '../../voice/services/transcript_normalizer.dart';
+import '../../voice/services/voice_service.dart';
+import '../../voice/widgets/normalization_confirmation_sheet.dart';
 import '../models/metric_event.dart';
 import '../models/native_output_turn.dart';
 import '../models/prompt_record.dart';
@@ -19,8 +21,6 @@ import '../models/task_draft.dart';
 import '../models/task_session.dart';
 import '../models/voice_input.dart';
 import '../services/agent_instruction_discovery.dart';
-import '../../voice/services/transcript_normalizer.dart';
-import '../../voice/widgets/normalization_confirmation_sheet.dart';
 import '../services/constraint_extractor.dart';
 import '../services/prompt_template_builder.dart';
 import '../services/secret_redactor.dart';
@@ -554,7 +554,7 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
     }
 
     final activeCount = state.tasks
-        .where((t) => switch (t.status) {
+        .where((t) => switch (state.taskStatus(t)) {
               TaskStatus.completed ||
               TaskStatus.userCompleted ||
               TaskStatus.failed ||
@@ -597,7 +597,6 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
       id: taskId,
       host: taskHost,
       title: _taskTitleFor(taskText),
-      status: TaskStatus.running,
       createdAt: now,
       updatedAt: now,
       startedAt: now,

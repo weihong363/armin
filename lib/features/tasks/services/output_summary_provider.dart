@@ -7,7 +7,7 @@ import 'secret_redactor.dart';
 class OutputSummaryRequest {
   const OutputSummaryRequest({
     required this.cleanedOutput,
-    required this.status,
+    this.status = TaskStatus.turnIdle,
     this.taskTitle = '',
     this.promptInputs = const [],
     this.agentCommand = '',

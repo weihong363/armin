@@ -1,4 +1,3 @@
-import 'package:armin/core/models/task_status.dart';
 import 'package:armin/features/tasks/services/output_summary_provider.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -13,7 +12,6 @@ Ran jq -r '.pet_id' output/hatch-pet/*/pet_request.json
 帮我输出所有 momo 的 PET
 实际的 pets 有 momo、luna、nori。
 ''',
-    status: TaskStatus.turnIdle,
     taskTitle: '帮我输出所有 momo 的 PET',
     agentCommand: 'qodercli',
   );
@@ -37,7 +35,6 @@ Ran jq -r '.pet_id' output/hatch-pet/*/pet_request.json
 输出 hello world
 hello
 ''',
-      status: TaskStatus.turnIdle,
       taskTitle: '初始任务',
       promptInputs: ['输出 hello world'],
     );
@@ -53,7 +50,6 @@ hello
   test('rule provider does not speak a prompt when no output exists', () async {
     const echoOnly = OutputSummaryRequest(
       cleanedOutput: '输出 hello world',
-      status: TaskStatus.turnIdle,
       promptInputs: ['输出 hello world'],
     );
 
@@ -71,7 +67,6 @@ IMPORTANT: After completing your current task, you MUST address the user's messa
 above. Do not ignore it.
 项目结构检查完成，主要入口在 lib/main.dart。
 ''',
-      status: TaskStatus.turnIdle,
       taskTitle: '检查项目结构',
     );
 
@@ -96,7 +91,6 @@ Turn 1
 
 hello world
 ''',
-      status: TaskStatus.turnIdle,
       taskTitle: '输出hello world在一行里面输出',
       promptInputs: ['输出hello world在一行里面输出'],
     );
@@ -120,7 +114,6 @@ Thinking
 │ Simple request, just print hello world.
 ▪ hello world
 ''',
-      status: TaskStatus.turnIdle,
       taskTitle: '输出hello world',
       promptInputs: ['输出hello world'],
     );
@@ -161,7 +154,6 @@ Thinking
 
   无需额外改动，可以直接使用。
 ''',
-      status: TaskStatus.turnIdle,
       taskTitle: '添加 GET /stats/{code}',
       promptInputs: ['添加 GET /stats/{code}'],
     );
@@ -182,7 +174,6 @@ Thinking
       () async {
     const noisyPrefix = OutputSummaryRequest(
       cleanedOutput: '最小改动不要提交 Git 高风险操作先确认 HELLO WORLD',
-      status: TaskStatus.turnIdle,
       taskTitle: '输出hello world在一行里面输出',
     );
 
@@ -204,7 +195,6 @@ hello Type your message or @path/to/file Auto Model .ctx █ 10% · ~/workspace/
 Shift+Tab to Auto-accept Edits
 AGENTS.md file · 12 skills
 ''',
-      status: TaskStatus.turnIdle,
       taskTitle: '输出hello',
     );
 
@@ -224,7 +214,6 @@ AGENTS.md file · 12 skills
 completion: tls handshake eof
 runbook-copilot 是面向工程团队的 RAG 事故排障助手，用于根据告警、服务名、日志和症状检索知识库并生成带引用的排障建议。
 ''',
-      status: TaskStatus.turnIdle,
       taskTitle: '检查输出',
     );
 
@@ -244,7 +233,6 @@ Summer：一位迷人的美国沙滩女孩 Codex 宠物，棕发波浪、暖棕�
 pin-up 风格，含 9 个动画状态（idle/running/waving/jumping/failed/waiting/review
 等），15361872 精灵图集，192208 像素格。
 ''',
-      status: TaskStatus.turnIdle,
     );
 
     final summary = await const RuleBasedOutputSummaryProvider()
@@ -268,7 +256,6 @@ ${List.generate(20, (index) => '过程记录 $index：检查了一个低价值�
 结论：实际存在的 PET 包括 momo、luna、nori、Summer。
 Summer：一位迷人的美国沙滩女孩 Codex 宠物，棕发波浪、暖棕肤色、海军蓝比基尼、自信活力的 pin-up 风格，含 9 个动画状态（idle/running/waving/jumping/failed/waiting/review 等），1536×1872 精灵图集，192×208 像素格。
 ''',
-      status: TaskStatus.turnIdle,
       taskTitle: '帮我输出所有 momo 的 PET',
     );
 
@@ -298,7 +285,6 @@ Read(pubspec.yaml)
   ✅ 当前状态：项目可以作为高视觉表现力倒计时小组件库继续扩展。
   下一步建议：补充 README 示例、录制 GIF 预览，并增加更多主题 preset。
 ''',
-      status: TaskStatus.turnIdle,
       taskTitle: '输出项目简介',
     );
 
@@ -321,7 +307,6 @@ Summer：一位迷人的美国沙滩女孩 Codex 宠物，棕发波浪、暖棕
 肤、海军蓝比基尼、像素风格、厚轮廓线、赛璐璐平涂，9 行精灵图
 （idle/running/waving/jumping/failed/waiting/review 等），192×208 像素格。
 ''',
-      status: TaskStatus.turnIdle,
     );
 
     final summary =
@@ -340,7 +325,6 @@ Summer：一位迷人的美国沙滩女孩 Codex 宠物，棕发波浪、暖棕
 Glob('output/hatch-pet/taro/**/*.json') ■ Read(/Users/ironion/workspace/momo/output/hatch-pet/taro/pet_request.json) ■ TARO 是 一 只 小型疲惫兔子开发者桌面宠物，灰奶油色调像素风格（厚轮廓线、赛璐璐平涂），9 行精灵图（idle/running-right/running-left/waving/jumping/failed/waiting/running/review），192×208 帧尺寸。
 Shift+Tab to Auto-accept Edits
 ''',
-      status: TaskStatus.turnIdle,
     );
 
     final summary =
@@ -363,7 +347,6 @@ Grep('SUMMER' within ./)
 Thinking Grep('summer' within ./) Thinking
 Summer 是一个 Codex桌面宠物（pixel-art风格），角色设定为一位活力四射的美国海滩女孩吉祥物，拥有9种动画状态（idle、running、waving、jumping等），采用192×208像素网格、#00FF00 chroma-key背景。
 ''',
-      status: TaskStatus.turnIdle,
     );
 
     final summary =
@@ -387,7 +370,6 @@ Thinking...
 核心重命名逻辑已全部就绪，实际重命名验证通过。
 下一步可以写 README.md，或者继续调整参数校验。
 ''',
-      status: TaskStatus.turnIdle,
       taskTitle: prompt,
       promptInputs: [prompt],
     );
@@ -415,7 +397,6 @@ Thinking
  ⠸ Thinking... (esc to cancel, 1m 2s)
  YOLO Shift+Tab to Auto Mode
 ''',
-      status: TaskStatus.turnIdle,
       taskTitle: '读取 pubspec.yaml',
       promptInputs: ['读取 pubspec.yaml'],
     );
@@ -439,7 +420,6 @@ Thinking
 *
 Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdown_widgets
 ''',
-      status: TaskStatus.turnIdle,
       taskTitle:
           'Read%20pubspec.yaml.%20Do%20not%20modify%20files.%20Final%20answer%20only:%20ARMIN_SIMPLE_BEGIN%20status=PASS%20files_changed=0%20ARMIN_SIMPLE_END',
       promptInputs: [
@@ -482,7 +462,6 @@ message above. Do not ignore it.
 *
 Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdown_widgets
 ''',
-      status: TaskStatus.turnIdle,
       taskTitle:
           'Read%20pubspec.yaml.%20Do%20not%20modify%20files.%20Final%20answer%20only:%20ARMIN_SIMPLE_BEGIN%20status=PASS%20files_changed=0%20ARMIN_SIMPLE_END',
       promptInputs: [
@@ -511,7 +490,6 @@ message above. Do not ignore it. ARMINR1PASS
 *
 Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdown_widgets
 ''',
-      status: TaskStatus.turnIdle,
       taskTitle: 'Read pubspec.yaml',
       promptInputs: ['Read pubspec.yaml'],
       agentCommand: 'qodercli',
@@ -539,7 +517,6 @@ Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdo
 Credits exhausted. Use /usage for details or /upgrade for more.
 Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdown_widgets
 ''',
-      status: TaskStatus.turnIdle,
       taskTitle: 'Read lib directory briefly',
       promptInputs: ['Read lib directory briefly'],
       agentCommand: 'qodercli',
@@ -564,7 +541,6 @@ Q: 你想执行哪个中断测试？
 执行 test_hello_world.py
 HELLO WORLD
 ''',
-      status: TaskStatus.turnIdle,
       taskTitle: '输出hello world',
     );
 
@@ -592,7 +568,6 @@ Allow this command to run? Redirection detected.
 4. No
 HELLO WORLD
 ''',
-      status: TaskStatus.turnIdle,
       taskTitle: '输出 HELLO WORLD',
     );
 
@@ -626,7 +601,6 @@ Asking User
 ↑↓ navigate · Enter select · Esc back
 HELLO WORLD
 ''',
-      status: TaskStatus.turnIdle,
       taskTitle: '输出 HELLO WORLD',
     );
 
@@ -649,7 +623,6 @@ Summer：一位迷人的美国沙滩女孩 Codex 宠物，棕发波浪、暖棕�
 pin-up 风格，含 9 个动画状态（idle/running/waving/jumping/failed/waiting/review
 等），1536 x 1872 精灵图集，192 x 208 像素格。
 ''',
-      status: TaskStatus.turnIdle,
     );
 
     final summary = await const RuleBasedOutputSummaryProvider()
@@ -690,7 +663,6 @@ pin-up 风格，含 9 个动画状态（idle/running/waving/jumping/failed/waiti
 
 你想测试哪个模块？
 ''',
-      status: TaskStatus.turnIdle,
       taskTitle: '你想测试哪个模块？',
       promptInputs: ['你想测试哪个模块？'],
     );
@@ -737,7 +709,6 @@ pin-up 风格，含 9 个动画状态（idle/running/waving/jumping/failed/waiti
 
 ✓ Update successful! The new version will be used on your next run.
 ''',
-      status: TaskStatus.turnIdle,
       taskTitle: '让显示所有测试文件',
     );
 
@@ -764,7 +735,6 @@ pin-up 风格，含 9 个动画状态（idle/running/waving/jumping/failed/waiti
 | API | 通过 | 3 个接口可用 |
 | 数据库 | 失败 | 连接超时 |
 ''',
-      status: TaskStatus.turnIdle,
       taskTitle: '检查系统状态',
     );
 
@@ -796,7 +766,6 @@ pin-up 风格，含 9 个动画状态（idle/running/waving/jumping/failed/waiti
 └──────────────────┴──────────────────────────────────┘
 下一步可以写 README.md，或者你觉得有需要调整的地方。
 ''',
-      status: TaskStatus.turnIdle,
       taskTitle: '实现重命名工具',
     );
 
@@ -827,7 +796,6 @@ pin-up 风格，含 9 个动画状态（idle/running/waving/jumping/failed/waiti
 └──────────────────┴──────────────────────────────────┘
 下一步可以写 README.md，或者继续调整参数校验。
 ''',
-      status: TaskStatus.turnIdle,
       taskTitle: prompt,
       promptInputs: [prompt],
     );
@@ -859,7 +827,6 @@ pin-up 风格，含 9 个动画状态（idle/running/waving/jumping/failed/waiti
 │ Providers    │ s/                             │ 指标、Tempo 追踪、Loki 日志   │
 └──────────────┴────────────────────────────────┴──────────────────────────────┘
 ''',
-      status: TaskStatus.turnIdle,
       taskTitle: '输出核心模块清单',
     );
 
@@ -896,7 +863,6 @@ pin-up 风格，含 9 个动画状态（idle/running/waving/jumping/failed/waiti
 │ 口         │                              │                      │
 └────────────┴──────────────────────────────┴──────────────────────┘
 ''',
-      status: TaskStatus.turnIdle,
       taskTitle: '输出核心模块清单',
     );
 
@@ -932,7 +898,6 @@ pin-up 风格，含 9 个动画状态（idle/running/waving/jumping/failed/waiti
 │            │          │ （evaluate_loop.py）                 │
 └────────────┴──────────┴──────────────────────────────────────┘
 ''',
-      status: TaskStatus.turnIdle,
       taskTitle: '输出核心模块清单',
     );
 
@@ -989,7 +954,6 @@ pin-up 风格，含 9 个动画状态（idle/running/waving/jumping/failed/waiti
    │          │ 留         │ 代表原文件名（不含扩展名）              │ --fmt      │
    └──────────┴────────────┴─────────────────────────────────────────┴────────────┘
 ''',
-      status: TaskStatus.turnIdle,
       taskTitle: '输出功能表',
     );
 
@@ -1042,7 +1006,6 @@ Package complete. Here's what was created:
    To run the example app:
     cd example && flutter pub get && flutter run
 ''',
-      status: TaskStatus.turnIdle,
       taskTitle: '创建倒计时 widget package',
     );
 
@@ -1147,7 +1110,6 @@ Package complete. Here's what was created:
 │ test_chunking.py │ 3 │
 │ test_retrieval.py │ 7 │
 ''',
-        status: TaskStatus.turnIdle,
         taskTitle: '显示所有测试文件',
       ),
     );
@@ -1174,7 +1136,6 @@ Package complete. Here's what was created:
     await provider.summarize(
       const OutputSummaryRequest(
         cleanedOutput: '已连接 password=hunter2 token=secret-token',
-        status: TaskStatus.turnIdle,
         taskTitle: '检查 api_key=private-key',
         promptInputs: [
           '使用 cookie=session-value',
@@ -1212,7 +1173,6 @@ Package complete. Here's what was created:
     await provider.summarize(
       const OutputSummaryRequest(
         cleanedOutput: 'password=hunter2',
-        status: TaskStatus.turnIdle,
       ),
     );
 
@@ -1222,7 +1182,6 @@ Package complete. Here's what was created:
   test('rule summary redacts secrets before display and speech', () async {
     const sensitive = OutputSummaryRequest(
       cleanedOutput: '已连接成功，password=hunter2 token=secret-token。',
-      status: TaskStatus.turnIdle,
     );
 
     final summary =
@@ -1244,7 +1203,6 @@ Use /skills to list available skills
 You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro).
 已找到 SUMMER。
 ''',
-      status: TaskStatus.failed,
       taskTitle: '检查 SUMMER',
     );
 
@@ -1281,7 +1239,6 @@ You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro).
     final summary = await const RuleBasedOutputSummaryProvider().summarize(
       const OutputSummaryRequest(
         cleanedOutput: output,
-        status: TaskStatus.turnIdle,
         taskTitle: 'test',
       ),
     );
@@ -1310,7 +1267,6 @@ Thinking
 核心逻辑已完成，审批提示会在远端出现后同步到任务详情。
 下一步可以真机验证审批卡片是否自动出现。
 ''',
-      status: TaskStatus.turnIdle,
       taskTitle: '实现审批同步修复',
       promptInputs: ['实现审批同步修复'],
     );
@@ -1345,7 +1301,6 @@ Thinking
 Done. README.md created with all usage examples.
 README.md 已写入，包含三种模式的完整使用示例、公共参数表和安全机制说明。
 ''',
-      status: TaskStatus.turnIdle,
       taskTitle: '写 readme，包含所有使用事例',
       promptInputs: ['写 readme，包含所有使用事例'],
     );
@@ -1404,7 +1359,6 @@ README.md 已写入，包含三种模式的完整使用示例、公共参数表�
 Credits exhausted. Use /usage for details or /upgrade for more.
 Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdown_widgets
 ''',
-      status: TaskStatus.turnIdle,
       taskTitle: '刷题项目简介',
       promptInputs: ['刷题项目简介'],
       agentCommand: 'qodercli',
@@ -1444,7 +1398,6 @@ Credits exhausted. Use /usage for details or /upgrade for more.
 YOLO Shift+Tab to Auto Mode
 Model · ctx ░░░░░░░░░░ 0% · ~/workspace/armin-test/countdown_widgets
 ''',
-      status: TaskStatus.turnIdle,
       taskTitle: 'Phase 2.7 real qodercli long task',
       promptInputs: [
         'Phase 2.7 real qodercli long task verification. Final answer must include the exact marker ARMIN_P27_REAL_TURN1_123.',
@@ -1479,7 +1432,6 @@ Credits exhausted. Use /usage for details or /upgrade for more.
 * Type your message or @path/to/file
 Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdown_widgets
 ''',
-      status: TaskStatus.turnIdle,
       taskTitle: 'Phase 2.7 real qodercli smoke',
       promptInputs: [
         'Do not modify files. Read pubspec.yaml only. Final answer only: '
@@ -1519,7 +1471,6 @@ Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdo
 Credits exhausted. Use /usage for details or /upgrade for more.
 Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdown_widgets
 ''',
-      status: TaskStatus.turnIdle,
       taskTitle: '用中文输出',
       promptInputs: ['用中文输出'],
       agentCommand: 'qodercli',

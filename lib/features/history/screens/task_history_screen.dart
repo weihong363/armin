@@ -21,6 +21,7 @@ class TaskHistoryScreen extends StatelessWidget {
                 for (final task in tasks)
                   TaskCard(
                     task: task,
+                    status: state.taskStatus(task),
                     workState: state.workState(task.id),
                     onTap: () => Navigator.of(context).push(
                       MaterialPageRoute<void>(

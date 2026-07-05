@@ -9,7 +9,9 @@ import 'package:armin/features/history/screens/task_detail_screen.dart';
 import 'package:armin/features/hosts/models/host_config.dart';
 import 'package:armin/features/projects/models/project_path_config.dart';
 import 'package:armin/features/runtime/models/approval_state.dart';
+import 'package:armin/features/runtime/services/bridge_runtime.dart';
 import 'package:armin/features/runtime/services/runtime_event_bus.dart';
+import 'package:armin/features/runtime/services/runtime_task_store.dart';
 import 'package:armin/features/tasks/models/native_output_turn.dart';
 import 'package:armin/features/tasks/models/task_constraint.dart';
 import 'package:armin/features/tasks/models/task_session.dart';
@@ -52,7 +54,6 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
     final task = _task().copyWith(
-      status: TaskStatus.running,
       nativeApprovalRequests: [
         _nativeApproval(
           question: 'Need approval',
@@ -87,7 +88,7 @@ void main() {
   });
 
   testWidgets('detached task shows relisten controls', (tester) async {
-    final task = _task().copyWith(status: TaskStatus.observerDetached);
+    final task = _task(status: TaskStatus.observerDetached).copyWith();
     final state = ArminAppState(
       store: _TaskStore(task),
       agentSessionService: const _NoopAgent(),
@@ -113,7 +114,7 @@ void main() {
 
   testWidgets('running task shows comet loading badge on runtime control',
       (tester) async {
-    final task = _task().copyWith(status: TaskStatus.running);
+    final task = _task(status: TaskStatus.running).copyWith();
     final state = ArminAppState(
       store: _TaskStore(task),
       agentSessionService: const _NoopAgent(),
@@ -136,10 +137,42 @@ void main() {
         find.byKey(const Key('runtime-control-state-badge')), findsOneWidget);
   });
 
+  testWidgets('task status overrides stale working runtime brain state',
+      (tester) async {
+    final task = _task(status: TaskStatus.turnIdle).copyWith();
+    final runtime = BridgeRuntime(
+      taskStore: InMemoryRuntimeTaskStore(),
+      eventBus: RuntimeEventBus(),
+    );
+    final state = ArminAppState(
+      store: _TaskStore(task),
+      agentSessionService: const _NoopAgent(),
+      voiceService: const _SilentVoiceService(),
+      bridgeRuntime: runtime,
+    );
+    await state.load();
+    await runtime.startTask(
+      taskId: task.id,
+      sessionName: 'runtime-stale-working',
+      projectPath: '/tmp',
+      tmuxSessionName: 'armin-39640616',
+    );
+
+    await tester.pumpWidget(
+      AppStateScope(
+        state: state,
+        child: const MaterialApp(home: TaskDetailScreen(taskId: 'task-1')),
+      ),
+    );
+
+    expect(find.text('Executing'), findsNothing);
+    expect(find.text('Review'), findsWidgets);
+    expect(find.text('等待你的指示'), findsWidgets);
+  });
+
   testWidgets('terminal prompt options can be selected from runtime controls',
       (tester) async {
     final task = _task().copyWith(
-      status: TaskStatus.needAttention,
       nativeApproval: _nativeApproval(
         question: 'Allow execution of [ls]? Redirection detected.',
         options: const [
@@ -168,7 +201,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(agent.selectedTerminalOption, '1');
-    expect(state.tasks.single.status, TaskStatus.running);
+    expect(state.taskStatus(state.tasks.single), TaskStatus.running);
     expect(find.text('Allow once'), findsNothing);
   });
 
@@ -191,7 +224,6 @@ void main() {
       createdAt: DateTime(2026, 5, 19),
     );
     final task = _task().copyWith(
-      status: TaskStatus.needApproval,
       nativeApproval: currentApproval,
       nativeApprovalRequests: [staleApproval],
     );
@@ -225,7 +257,7 @@ void main() {
 
   testWidgets('attention task highlights attention banner and next action',
       (tester) async {
-    final task = _task().copyWith(status: TaskStatus.turnIdle);
+    final task = _task(status: TaskStatus.turnIdle).copyWith();
     final state = ArminAppState(
       store: _TaskStore(task),
       agentSessionService: const _NoopAgent(),
@@ -251,7 +283,6 @@ void main() {
   testWidgets('terminal prompt supports manual response options',
       (tester) async {
     final task = _task().copyWith(
-      status: TaskStatus.needAttention,
       nativeApproval: _nativeApproval(
         question:
             'Allow this command to run? Redirection detected. python -m pytest tests/test_hello_world.py',
@@ -300,7 +331,6 @@ void main() {
   testWidgets('terminal prompt voice hint uses current options',
       (tester) async {
     final task = _task().copyWith(
-      status: TaskStatus.needAttention,
       nativeApproval: _nativeApproval(
         question: '你说的「中断测试」是指什么？',
         options: const [
@@ -341,7 +371,6 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
     final task = _task().copyWith(
-      status: TaskStatus.needApproval,
       nativeApproval: _nativeApproval(
         question: 'Need approval',
         options: const [],
@@ -388,7 +417,7 @@ void main() {
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
-    final task = _task().copyWith(status: TaskStatus.turnIdle);
+    final task = _task(status: TaskStatus.turnIdle).copyWith();
     final agent = _CapturingAgent();
     final voice = _RecognizingVoiceService('输出 hello world');
     final state = ArminAppState(
@@ -431,7 +460,7 @@ void main() {
 
   testWidgets('manual follow-up releases detail tree without inherited errors',
       (tester) async {
-    final task = _task().copyWith(status: TaskStatus.turnIdle);
+    final task = _task(status: TaskStatus.turnIdle).copyWith();
     final agent = _CapturingAgent();
     final state = ArminAppState(
       store: _TaskStore(task),
@@ -456,7 +485,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(agent.lastFollowUp, '继续检查输出');
-    expect(state.tasks.single.status, TaskStatus.running);
+    expect(state.taskStatus(state.tasks.single), TaskStatus.running);
     expect(tester.takeException(), isNull);
 
     await tester.pumpWidget(const SizedBox.shrink());
@@ -466,7 +495,7 @@ void main() {
 
   testWidgets('manual follow-up shows progress while instruction is sending',
       (tester) async {
-    final task = _task().copyWith(status: TaskStatus.turnIdle);
+    final task = _task(status: TaskStatus.turnIdle).copyWith();
     final agent = _DelayedFollowUpAgent();
     final state = ArminAppState(
       store: _TaskStore(task),
@@ -495,13 +524,13 @@ void main() {
     agent.completeFollowUp();
     await tester.pumpAndSettle();
 
-    expect(state.tasks.single.status, TaskStatus.running);
+    expect(state.taskStatus(state.tasks.single), TaskStatus.running);
     expect(find.text('发送中...'), findsNothing);
   });
 
   testWidgets('voice stop command executes local stop instead of follow-up',
       (tester) async {
-    final task = _task().copyWith(status: TaskStatus.turnIdle);
+    final task = _task(status: TaskStatus.turnIdle).copyWith();
     final agent = _CapturingAgent();
     final state = ArminAppState(
       store: _TaskStore(task),
@@ -532,7 +561,7 @@ void main() {
 
   testWidgets('voice constraint follow-up persists detected constraints',
       (tester) async {
-    final task = _task().copyWith(status: TaskStatus.turnIdle);
+    final task = _task(status: TaskStatus.turnIdle).copyWith();
     final store = _TaskStore(task);
     final agent = _CapturingAgent();
     final state = ArminAppState(
@@ -563,7 +592,7 @@ void main() {
   });
 
   testWidgets('voice resume command resumes a paused task', (tester) async {
-    final task = _task().copyWith(status: TaskStatus.paused);
+    final task = _task(status: TaskStatus.paused).copyWith();
     final agent = _CapturingAgent();
     final state = ArminAppState(
       store: _TaskStore(task),
@@ -593,7 +622,6 @@ void main() {
       (tester) async {
     final now = DateTime(2026, 5, 18);
     final task = _task().copyWith(
-      status: TaskStatus.turnIdle,
       turns: [
         NativeOutputTurn(
           id: 'turn-task-1-1',
@@ -662,7 +690,6 @@ Summer 是一个海滩风格宠物。
       (tester) async {
     final now = DateTime(2026, 5, 18);
     final task = _task().copyWith(
-      status: TaskStatus.turnIdle,
       turns: [
         NativeOutputTurn(
           id: 'turn-task-1-1',
@@ -717,7 +744,6 @@ Summer 是一个海滩风格宠物。
   testWidgets('timeline filters terminal chrome from stored summary',
       (tester) async {
     final task = _task().copyWith(
-      status: TaskStatus.turnIdle,
       shortSummary: '''
 ████████████████████
 Signed in Browser Login
@@ -748,7 +774,6 @@ Summer：一位迷人的美国沙滩女孩 Codex 宠物。
       (tester) async {
     final now = DateTime(2026, 5, 18);
     final task = _task().copyWith(
-      status: TaskStatus.running,
       summary: 'Signed in Browser Login',
       turns: [
         NativeOutputTurn(
@@ -787,7 +812,6 @@ Summer：一位迷人的美国沙滩女孩 Codex 宠物。
       (tester) async {
     final now = DateTime(2026, 5, 18);
     final task = _task().copyWith(
-      status: TaskStatus.turnIdle,
       turns: [
         NativeOutputTurn(
           id: 'turn-task-1-1',
@@ -872,7 +896,6 @@ Summer：海滩风格 Codex 宠物。
 
     final now = DateTime(2026, 5, 18);
     final task = _task().copyWith(
-      status: TaskStatus.turnIdle,
       turns: [
         for (var index = 1; index <= 7; index++)
           NativeOutputTurn(
@@ -936,7 +959,6 @@ Summer：海滩风格 Codex 宠物。
 
     final now = DateTime(2026, 5, 18);
     final task = _task().copyWith(
-      status: TaskStatus.turnIdle,
       turns: [
         NativeOutputTurn(
           id: 'turn-task-1-1',
@@ -998,7 +1020,6 @@ Thinking
     addTearDown(tester.view.resetDevicePixelRatio);
     final now = DateTime(2026, 5, 18);
     final task = _task().copyWith(
-      status: TaskStatus.turnIdle,
       turns: [
         NativeOutputTurn(
           id: 'turn-task-1-1',
@@ -1049,7 +1070,6 @@ Thinking
       (tester) async {
     final now = DateTime(2026, 5, 18);
     final task = _task().copyWith(
-      status: TaskStatus.running,
       turns: [
         NativeOutputTurn(
           id: 'turn-task-1-1',
@@ -1103,7 +1123,6 @@ Thinking
     addTearDown(tester.view.resetDevicePixelRatio);
     final now = DateTime(2026, 5, 18);
     final task = _task().copyWith(
-      status: TaskStatus.needAttention,
       nativeApproval: _nativeApproval(
         question: 'Allow this command to run? Redirection detected.',
         options: const [
@@ -1153,7 +1172,6 @@ Allow this command to run? Redirection detected.
   testWidgets('result panel ignores task summary without turn evidence',
       (tester) async {
     final task = _task().copyWith(
-      status: TaskStatus.turnIdle,
       summary: '任务摘要已生成。',
       shortSummary: 'SHORT_SUMMARY_SHOULD_NOT_RENDER',
     );
@@ -1181,7 +1199,6 @@ Allow this command to run? Redirection detected.
       'result panel filters approval decision turn output to deliverable',
       (tester) async {
     final task = _task().copyWith(
-      status: TaskStatus.turnIdle,
       turns: [
         NativeOutputTurn(
           id: 'turn-task-1-1',
@@ -1239,7 +1256,6 @@ README.md 已写入，包含三种模式的完整使用示例、公共参数表�
   testWidgets('result refreshes after reloading updated turns', (tester) async {
     final now = DateTime(2026, 5, 18);
     final initialTask = _task().copyWith(
-      status: TaskStatus.turnIdle,
       updatedAt: now,
       turns: [
         NativeOutputTurn(
@@ -1317,7 +1333,6 @@ README.md 已写入，包含三种模式的完整使用示例、公共参数表�
     addTearDown(tester.view.resetDevicePixelRatio);
     final now = DateTime(2026, 5, 18);
     final task = _task().copyWith(
-      status: TaskStatus.turnIdle,
       turns: [
         NativeOutputTurn(
           id: 'turn-task-1-1',
@@ -1409,7 +1424,6 @@ README.md 已写入，包含三种模式的完整使用示例、公共参数表�
     addTearDown(tester.view.resetDevicePixelRatio);
     final now = DateTime(2026, 5, 18);
     final task = _task().copyWith(
-      status: TaskStatus.turnIdle,
       turns: [
         for (var index = 1; index <= 8; index++)
           NativeOutputTurn(
@@ -1456,7 +1470,6 @@ README.md 已写入，包含三种模式的完整使用示例、公共参数表�
     addTearDown(tester.view.resetDevicePixelRatio);
     final now = DateTime(2026, 5, 18);
     final task = _task().copyWith(
-      status: TaskStatus.turnIdle,
       turns: [
         NativeOutputTurn(
           id: 'turn-task-1-1',
@@ -1536,7 +1549,6 @@ Summer 是一个桌面宠物。
   testWidgets('failed task header does not label the finish time completed',
       (tester) async {
     final task = _task().copyWith(
-      status: TaskStatus.failed,
       completedAt: DateTime(2026, 5, 18, 11, 42),
       shortSummary: 'SSH 执行失败',
     );
@@ -1563,7 +1575,7 @@ Summer 是一个桌面宠物。
   testWidgets('rerun is disabled while task is still interactive',
       (tester) async {
     final state = ArminAppState(
-      store: _TaskStore(_task().copyWith(status: TaskStatus.turnIdle)),
+      store: _TaskStore(_task(status: TaskStatus.turnIdle).copyWith()),
       agentSessionService: const _NoopAgent(),
       voiceService: const _SilentVoiceService(),
     );
@@ -1588,7 +1600,7 @@ Summer 是一个桌面宠物。
 
   testWidgets('rerun is available after task is failed', (tester) async {
     final state = ArminAppState(
-      store: _TaskStore(_task().copyWith(status: TaskStatus.failed)),
+      store: _TaskStore(_task(status: TaskStatus.failed).copyWith()),
       agentSessionService: const _NoopAgent(),
       voiceService: const _SilentVoiceService(),
     );
@@ -1612,7 +1624,7 @@ Summer 是一个桌面宠物。
 
   testWidgets('terminal task exposes remote session cleanup action',
       (tester) async {
-    final task = _task().copyWith(status: TaskStatus.runtimeLost);
+    final task = _task(status: TaskStatus.runtimeLost).copyWith();
     final agent = _CapturingAgent();
     final state = ArminAppState(
       store: _TaskStore(task),
@@ -1637,7 +1649,7 @@ Summer 是一个桌面宠物。
   });
 
   testWidgets('connection paused task can be marked complete', (tester) async {
-    final task = _task().copyWith(status: TaskStatus.runtimeLost);
+    final task = _task(status: TaskStatus.runtimeLost).copyWith();
     final state = ArminAppState(
       store: _TaskStore(task),
       agentSessionService: const _NoopAgent(),
@@ -1658,7 +1670,7 @@ Summer 是一个桌面宠物。
     await tester.tap(find.text('标记完成'));
     await tester.pumpAndSettle();
 
-    expect(state.tasks.single.status, TaskStatus.userCompleted);
+    expect(state.taskStatus(state.tasks.single), TaskStatus.userCompleted);
   });
 
   testWidgets('detail banner demotes project cli and keeps editable title',
@@ -1768,7 +1780,11 @@ Summer 是一个桌面宠物。
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
-          body: TaskCard(task: task, onTap: () {}),
+          body: TaskCard(
+            task: task,
+            status: state.taskStatus(task),
+            onTap: () {},
+          ),
         ),
       ),
     );
@@ -1788,7 +1804,6 @@ Summer 是一个桌面宠物。
 
   testWidgets('pull to refresh resyncs remote approval prompt', (tester) async {
     final task = _task().copyWith(
-      status: TaskStatus.running,
       nativeApprovalRequests: [
         _nativeApproval(
           question: 'Apply this change?',
@@ -1836,7 +1851,7 @@ Apply this change?
     await tester.pumpAndSettle();
 
     expect(agent.captureCount, greaterThan(0));
-    expect(store.task.status, TaskStatus.needApproval);
+    expect(state.taskStatus(task), TaskStatus.needApproval);
     expect(find.text('任务确认'), findsOneWidget);
     expect(find.text('Apply this change?'), findsWidgets);
     expect(find.text('Allow once'), findsWidgets);
@@ -1844,7 +1859,7 @@ Apply this change?
 
   testWidgets('small pull on task detail does not trigger refresh',
       (tester) async {
-    final task = _task().copyWith(status: TaskStatus.running);
+    final task = _task().copyWith();
     final store = _TaskStore(task);
     final agent = _RefreshingAgent()..capturedLog = 'Apply this change?';
     final state = ArminAppState(
@@ -1870,12 +1885,12 @@ Apply this change?
     await tester.pump(const Duration(milliseconds: 300));
 
     expect(agent.captureCount, 0);
-    expect(store.task.status, TaskStatus.running);
+    expect(state.taskStatus(task), TaskStatus.running);
   });
 
   testWidgets('pull inside task detail tabs does not trigger refresh',
       (tester) async {
-    final task = _task().copyWith(status: TaskStatus.running);
+    final task = _task().copyWith();
     final store = _TaskStore(task);
     final agent = _RefreshingAgent()..capturedLog = 'Apply this change?';
     final state = ArminAppState(
@@ -1897,12 +1912,26 @@ Apply this change?
     await tester.pump(const Duration(seconds: 1));
 
     expect(agent.captureCount, 0);
-    expect(store.task.status, TaskStatus.running);
+    expect(state.taskStatus(task), TaskStatus.running);
   });
 }
 
-TaskSession _task() {
+TaskSession _task({TaskStatus status = TaskStatus.running}) {
   final now = DateTime(2026, 5, 18);
+  final turnStatus = switch (status) {
+    TaskStatus.turnIdle ||
+    TaskStatus.completed =>
+      NativeOutputTurnStatus.turnIdle,
+    TaskStatus.needAttention => NativeOutputTurnStatus.needAttention,
+    TaskStatus.runtimeLost => NativeOutputTurnStatus.runtimeLost,
+    TaskStatus.failed => NativeOutputTurnStatus.failed,
+    TaskStatus.userCompleted => NativeOutputTurnStatus.completedByUser,
+    TaskStatus.userFailed => NativeOutputTurnStatus.failedByUser,
+    TaskStatus.stopped => NativeOutputTurnStatus.stopped,
+    _ => null,
+  };
+  final isObserverDetached = status == TaskStatus.observerDetached;
+  final isPaused = status == TaskStatus.paused;
   return TaskSession(
     id: 'task-1',
     host: HostConfig(
@@ -1920,9 +1949,11 @@ TaskSession _task() {
       password: 'secret',
     ),
     title: 'Task',
-    status: TaskStatus.running,
     createdAt: now,
     updatedAt: now,
+    completedAt: status == TaskStatus.completed ? now : null,
+    startedAt:
+        status == TaskStatus.pending || status == TaskStatus.draft ? null : now,
     rawSttText: '',
     cleanedDraft: 'Task',
     userText: 'Task',
@@ -1930,7 +1961,25 @@ TaskSession _task() {
     constraints: const {},
     finalPrompt: 'Task',
     secretRecords: const [],
-    rawLog: '',
+    rawLog: isObserverDetached
+        ? 'Observer detached by user.'
+        : (isPaused ? 'Task paused by user.' : ''),
+    shortSummary: isObserverDetached ? '已断开手机监听' : (isPaused ? '连接已暂停' : ''),
+    turns: [
+      if (turnStatus != null || isObserverDetached)
+        NativeOutputTurn(
+          id: 'turn-task-1-1',
+          taskId: 'task-1',
+          turnIndex: 1,
+          userInput: 'Task',
+          rawOutput: 'Task output',
+          cleanedOutput: 'Task output',
+          startedAt: now,
+          lastOutputAt: now,
+          status:
+              isObserverDetached ? NativeOutputTurnStatus.running : turnStatus!,
+        ),
+    ],
   );
 }
 

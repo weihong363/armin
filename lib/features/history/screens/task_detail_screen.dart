@@ -14,6 +14,7 @@ import '../../agent/services/agent_output_cleaner.dart';
 import '../../hosts/models/host_config.dart';
 import '../../projects/models/project_path_config.dart';
 import '../../runtime/models/approval_state.dart';
+import '../../runtime/models/resolved_runtime_state.dart';
 import '../../runtime/models/runtime_task_snapshot.dart';
 import '../../runtime/models/work_state.dart';
 import '../../runtime/services/runtime_event_bus.dart';
@@ -219,10 +220,13 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
         body: const Center(child: Text('任务不存在或已删除')),
       );
     }
-    final workState = _effectiveWorkStateFor(
+    final appState = AppStateScope.read(context);
+    final status = appState.taskStatus(task);
+    final workState = resolveRuntimeState(
       task,
-      AppStateScope.read(context).workState(task.id),
-    );
+      taskStatus: status,
+      workState: appState.workState(task.id),
+    ).toWorkState(task.id);
     _maybeRevealAttentionAction(task, workState);
 
     return Scaffold(
@@ -246,22 +250,22 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
             itemBuilder: (context) => [
               PopupMenuItem(
                 value: _TaskDetailAction.rerun,
-                enabled: _canRerun(task),
+                enabled: _canRerun(status),
                 child: const Text('重新执行'),
               ),
               PopupMenuItem(
                 value: _TaskDetailAction.forceStop,
-                enabled: _canForceStop(task),
+                enabled: _canForceStop(status),
                 child: const Text('强制停止'),
               ),
               PopupMenuItem(
                 value: _TaskDetailAction.cleanupSession,
-                enabled: _canCleanupSession(task),
+                enabled: _canCleanupSession(status),
                 child: const Text('清理远端会话'),
               ),
               PopupMenuItem(
                 value: _TaskDetailAction.delete,
-                enabled: _canDelete(task),
+                enabled: _canDelete(status),
                 child: const Text('删除任务'),
               ),
             ],
@@ -289,23 +293,16 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
                       SliverPadding(
                         padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
                         sliver: SliverToBoxAdapter(
-                          child: _TaskHeader(
-                            task: task,
-                            workState: workState,
-                          ),
-                        ),
-                      ),
-                      SliverPadding(
-                        padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
-                        sliver: SliverToBoxAdapter(
                           child: ValueListenableBuilder<RuntimeTaskSnapshot?>(
                             valueListenable: _progressNotifier,
                             builder: (context, progressSnapshot, _) {
-                              return _CurrentSituationCard(
+                              final model = _RuntimeBrainViewModel.from(
                                 task: task,
+                                status: status,
                                 workState: workState,
                                 progressSnapshot: progressSnapshot,
                               );
+                              return _RuntimeBrainCard(model: model);
                             },
                           ),
                         ),
@@ -317,9 +314,20 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
                             key: _attentionAnchorKey,
                             child: _TaskNeedsPanel(
                               task: task,
+                              status: status,
                               workState: workState,
                               onViewResult: _revealLatestResult,
                             ),
+                          ),
+                        ),
+                      ),
+                      SliverPadding(
+                        padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
+                        sliver: SliverToBoxAdapter(
+                          child: _TaskHeader(
+                            task: task,
+                            status: status,
+                            workState: workState,
                           ),
                         ),
                       ),
@@ -351,6 +359,7 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
                           ),
                           index: visibleTabIndex,
                           task: task,
+                          status: status,
                           revealLatestTurnToken: _latestTurnRevealToken,
                           resultVersion: _resultVersion,
                         );
@@ -590,8 +599,8 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
     }
   }
 
-  bool _canDelete(TaskSession task) {
-    return switch (task.status) {
+  bool _canDelete(TaskStatus status) {
+    return switch (status) {
       TaskStatus.completed ||
       TaskStatus.failed ||
       TaskStatus.userCompleted ||
@@ -603,32 +612,32 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
     };
   }
 
-  bool _canForceStop(TaskSession task) {
-    return task.status == TaskStatus.running ||
-        task.status == TaskStatus.paused ||
-        task.status == TaskStatus.needApproval ||
-        task.status == TaskStatus.turnIdle ||
-        task.status == TaskStatus.needAttention ||
-        task.status == TaskStatus.observerDetached ||
-        task.status == TaskStatus.pending;
+  bool _canForceStop(TaskStatus status) {
+    return status == TaskStatus.running ||
+        status == TaskStatus.paused ||
+        status == TaskStatus.needApproval ||
+        status == TaskStatus.turnIdle ||
+        status == TaskStatus.needAttention ||
+        status == TaskStatus.observerDetached ||
+        status == TaskStatus.pending;
   }
 
-  bool _canRerun(TaskSession task) {
-    return task.status == TaskStatus.completed ||
-        task.status == TaskStatus.failed ||
-        task.status == TaskStatus.userCompleted ||
-        task.status == TaskStatus.userFailed ||
-        task.status == TaskStatus.stopped ||
-        task.status == TaskStatus.runtimeLost;
+  bool _canRerun(TaskStatus status) {
+    return status == TaskStatus.completed ||
+        status == TaskStatus.failed ||
+        status == TaskStatus.userCompleted ||
+        status == TaskStatus.userFailed ||
+        status == TaskStatus.stopped ||
+        status == TaskStatus.runtimeLost;
   }
 
-  bool _canCleanupSession(TaskSession task) {
-    return task.status == TaskStatus.completed ||
-        task.status == TaskStatus.failed ||
-        task.status == TaskStatus.userCompleted ||
-        task.status == TaskStatus.userFailed ||
-        task.status == TaskStatus.stopped ||
-        task.status == TaskStatus.runtimeLost;
+  bool _canCleanupSession(TaskStatus status) {
+    return status == TaskStatus.completed ||
+        status == TaskStatus.failed ||
+        status == TaskStatus.userCompleted ||
+        status == TaskStatus.userFailed ||
+        status == TaskStatus.stopped ||
+        status == TaskStatus.runtimeLost;
   }
 }
 
@@ -637,36 +646,461 @@ class _CurrentTaskTabPanel extends StatelessWidget {
     super.key,
     required this.index,
     required this.task,
+    required this.status,
     required this.revealLatestTurnToken,
     required this.resultVersion,
   });
 
   final int index;
   final TaskSession task;
+  final TaskStatus status;
   final int revealLatestTurnToken;
   final int resultVersion;
 
   @override
   Widget build(BuildContext context) {
     return switch (index) {
-      0 => _TimelinePanel(task: task),
+      0 => _TimelinePanel(task: task, status: status),
       1 => _ResultPanel(
           task: task,
+          status: status,
           revealLatestTurnToken: revealLatestTurnToken,
           resultVersion: resultVersion,
         ),
-      _ => _AdvancedDebugPanel(task: task),
+      _ => _AdvancedDebugPanel(task: task, status: status),
     };
+  }
+}
+
+class _RuntimeBrainViewModel {
+  const _RuntimeBrainViewModel({
+    required this.goal,
+    required this.focus,
+    required this.next,
+    required this.risk,
+    required this.statusLabel,
+    required this.statusColor,
+    required this.elapsed,
+    required this.steps,
+    required this.requiresAttention,
+  });
+
+  final String goal;
+  final _RuntimeFocusViewModel focus;
+  final String next;
+  final String risk;
+  final String statusLabel;
+  final Color statusColor;
+  final String elapsed;
+  final List<_RuntimeTimelineStepViewModel> steps;
+  final bool requiresAttention;
+
+  factory _RuntimeBrainViewModel.from({
+    required TaskSession task,
+    required TaskStatus status,
+    required WorkState? workState,
+    required RuntimeTaskSnapshot? progressSnapshot,
+  }) {
+    final phase = runtimePhaseForTaskStatus(status);
+    final statusColor = _detailStatusColor(status, workState);
+    final focus = _RuntimeFocusViewModel.from(
+      task: task,
+      status: status,
+      workState: workState,
+      progressSnapshot: progressSnapshot,
+    );
+    return _RuntimeBrainViewModel(
+      goal: _runtimeGoalText(task),
+      focus: focus,
+      next: _runtimeNextText(task, status, workState),
+      risk: _runtimeRiskText(status, workState),
+      statusLabel: _runtimePhaseLabel(phase, status),
+      statusColor: statusColor,
+      elapsed: _runtimeElapsedText(task, status),
+      steps: _runtimeStepsFor(task, status, workState),
+      requiresAttention: _isAttentionRequired(workState) ||
+          status == TaskStatus.turnIdle ||
+          status == TaskStatus.needAttention ||
+          status == TaskStatus.needApproval,
+    );
+  }
+}
+
+class _RuntimeFocusViewModel {
+  const _RuntimeFocusViewModel({
+    required this.id,
+    required this.title,
+    required this.subtitle,
+    required this.color,
+    required this.icon,
+  });
+
+  final String id;
+  final String title;
+  final String subtitle;
+  final Color color;
+  final IconData icon;
+
+  factory _RuntimeFocusViewModel.from({
+    required TaskSession task,
+    required TaskStatus status,
+    required WorkState? workState,
+    required RuntimeTaskSnapshot? progressSnapshot,
+  }) {
+    final phase = runtimePhaseForTaskStatus(status);
+    final progressAction = progressSnapshot == null
+        ? ''
+        : _progressActionText(progressSnapshot.action);
+    final headline = workState?.headline.trim() ?? '';
+    final detail = workState?.detail.trim() ?? '';
+    final latestTurn = task.turns.lastOrNull;
+    final latestDeliverable = latestTurn?.deliverable;
+
+    final title = switch (phase) {
+      WorkPhase.working => _firstNonEmpty([
+          progressAction,
+          headline,
+          detail,
+          _latestTurnFocus(latestTurn),
+          'Agent 正在执行',
+        ]),
+      WorkPhase.needsApproval => headline.isEmpty ? '等待审批' : headline,
+      WorkPhase.needsInstruction ||
+      WorkPhase.turnIdle =>
+        latestDeliverable == null
+            ? _firstNonEmpty([headline, '等待你的下一步指令'])
+            : '等待你验收最新结果',
+      WorkPhase.needsReview => '等待你查看最新结果',
+      WorkPhase.quieting => status == TaskStatus.paused ? '任务已暂停' : '监听已暂停',
+      WorkPhase.completed => '任务已完成',
+      WorkPhase.failed => '需要查看运行问题',
+      WorkPhase.stopped => '任务已停止',
+      WorkPhase.idle => '等待开始',
+      WorkPhase.needsDecision => headline.isEmpty ? '等待你的决定' : headline,
+    };
+    final subtitle = switch (phase) {
+      WorkPhase.working => 'Current Focus',
+      WorkPhase.needsApproval => 'Risk / Approval',
+      WorkPhase.turnIdle || WorkPhase.needsInstruction => 'User Attention',
+      WorkPhase.completed || WorkPhase.needsReview => 'Review',
+      WorkPhase.failed => 'Risk',
+      WorkPhase.quieting => 'Connection',
+      WorkPhase.idle => 'Ready',
+      WorkPhase.needsDecision => 'Decision',
+      WorkPhase.stopped => 'Stopped',
+    };
+    return _RuntimeFocusViewModel(
+      id: '${task.id}:${phase.name}:$title',
+      title: title,
+      subtitle: subtitle,
+      color: _detailStatusColor(status, workState),
+      icon: _runtimeFocusIcon(phase, status),
+    );
+  }
+}
+
+class _RuntimeTimelineStepViewModel {
+  const _RuntimeTimelineStepViewModel({
+    required this.label,
+    required this.state,
+  });
+
+  final String label;
+  final _RuntimeTimelineStepState state;
+}
+
+enum _RuntimeTimelineStepState { done, active, idle, blocked }
+
+class _RuntimeBrainCard extends StatelessWidget {
+  const _RuntimeBrainCard({required this.model});
+
+  final _RuntimeBrainViewModel model;
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 220),
+      curve: Curves.easeOutCubic,
+      decoration: BoxDecoration(
+        color: model.statusColor.withValues(alpha: 0.07),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: model.statusColor.withValues(alpha: 0.22)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    'Runtime Brain',
+                    style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                          color: model.statusColor,
+                        ),
+                  ),
+                ),
+                _MiniBadge(
+                  key: const Key('runtime-control-state-badge'),
+                  label: model.statusLabel,
+                  color: model.statusColor,
+                  animate: !model.requiresAttention &&
+                      model.statusLabel == 'Executing',
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            _RuntimeBrainField(
+              label: 'Goal',
+              value: model.goal,
+              maxLines: 1,
+            ),
+            const SizedBox(height: 6),
+            AnimatedSwitcher(
+              duration: const Duration(milliseconds: 220),
+              switchInCurve: Curves.easeOutCubic,
+              switchOutCurve: Curves.easeInCubic,
+              transitionBuilder: (child, animation) {
+                final offset = Tween<Offset>(
+                  begin: const Offset(0, 0.08),
+                  end: Offset.zero,
+                ).animate(animation);
+                return FadeTransition(
+                  opacity: animation,
+                  child: SlideTransition(
+                    position: offset,
+                    child: ScaleTransition(
+                      scale: Tween<double>(begin: 0.98, end: 1).animate(
+                        animation,
+                      ),
+                      child: child,
+                    ),
+                  ),
+                );
+              },
+              child: _RuntimeBrainField(
+                key: ValueKey(model.focus.id),
+                label: 'Current Focus',
+                value: model.focus.title,
+                leading: Icon(
+                  model.focus.icon,
+                  size: 18,
+                  color: model.focus.color,
+                ),
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              'Next · ${model.next}   Risk · ${model.risk}   Time · ${model.elapsed}',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    color: Theme.of(context)
+                        .colorScheme
+                        .onSurface
+                        .withValues(alpha: 0.58),
+                  ),
+            ),
+            const SizedBox(height: 6),
+            Text('当前状况', style: Theme.of(context).textTheme.labelSmall),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _RuntimeBrainField extends StatelessWidget {
+  const _RuntimeBrainField({
+    required this.label,
+    required this.value,
+    this.leading,
+    this.maxLines = 1,
+    super.key,
+  });
+
+  final String label;
+  final String value;
+  final Widget? leading;
+  final int maxLines;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                color: Theme.of(context)
+                    .colorScheme
+                    .onSurface
+                    .withValues(alpha: 0.48),
+              ),
+        ),
+        const SizedBox(height: 4),
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (leading != null) ...[
+              Padding(
+                padding: const EdgeInsets.only(top: 2),
+                child: leading,
+              ),
+              const SizedBox(width: 6),
+            ],
+            Expanded(
+              child: Text(
+                value,
+                maxLines: maxLines,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+class _RuntimeFocusCard extends StatelessWidget {
+  const _RuntimeFocusCard({required this.focus});
+
+  final _RuntimeFocusViewModel focus;
+
+  @override
+  Widget build(BuildContext context) {
+    return _InfoCard(
+      title: 'Focus',
+      trailing: Text(
+        focus.subtitle,
+        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: focus.color,
+            ),
+      ),
+      child: AnimatedSwitcher(
+        duration: const Duration(milliseconds: 220),
+        switchInCurve: Curves.easeOutCubic,
+        child: Row(
+          key: ValueKey(focus.id),
+          children: [
+            AnimatedContainer(
+              duration: const Duration(milliseconds: 220),
+              width: 36,
+              height: 36,
+              decoration: BoxDecoration(
+                color: focus.color.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(18),
+              ),
+              child: Icon(focus.icon, color: focus.color, size: 20),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                focus.title,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _RuntimeStateTimelineCard extends StatelessWidget {
+  const _RuntimeStateTimelineCard({required this.steps});
+
+  final List<_RuntimeTimelineStepViewModel> steps;
+
+  @override
+  Widget build(BuildContext context) {
+    return _InfoCard(
+      title: 'State Timeline',
+      child: Column(
+        children: [
+          for (var index = 0; index < steps.length; index++) ...[
+            _RuntimeStateTimelineStep(step: steps[index]),
+            if (index != steps.length - 1)
+              Container(
+                width: 1,
+                height: 12,
+                margin: const EdgeInsets.only(left: 9),
+                alignment: Alignment.centerLeft,
+                color: ArminTheme.border,
+              ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _RuntimeStateTimelineStep extends StatelessWidget {
+  const _RuntimeStateTimelineStep({required this.step});
+
+  final _RuntimeTimelineStepViewModel step;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = switch (step.state) {
+      _RuntimeTimelineStepState.done => Colors.green.shade700,
+      _RuntimeTimelineStepState.active => ArminTheme.primary,
+      _RuntimeTimelineStepState.blocked => Colors.orange.shade700,
+      _RuntimeTimelineStepState.idle =>
+        Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.32),
+    };
+    final icon = switch (step.state) {
+      _RuntimeTimelineStepState.done => Icons.check_rounded,
+      _RuntimeTimelineStepState.active => Icons.circle,
+      _RuntimeTimelineStepState.blocked => Icons.priority_high_rounded,
+      _RuntimeTimelineStepState.idle => Icons.circle_outlined,
+    };
+    return Row(
+      children: [
+        AnimatedContainer(
+          duration: const Duration(milliseconds: 220),
+          width: 20,
+          height: 20,
+          decoration: BoxDecoration(
+            color: step.state == _RuntimeTimelineStepState.idle
+                ? Colors.transparent
+                : color.withValues(alpha: 0.12),
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Icon(icon, size: 14, color: color),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: AnimatedDefaultTextStyle(
+            duration: const Duration(milliseconds: 180),
+            style: Theme.of(context).textTheme.bodyMedium!.copyWith(
+                  color: color,
+                  fontWeight: step.state == _RuntimeTimelineStepState.active
+                      ? FontWeight.w700
+                      : FontWeight.w500,
+                ),
+            child: Text(step.label),
+          ),
+        ),
+      ],
+    );
   }
 }
 
 class _TaskHeader extends StatefulWidget {
   const _TaskHeader({
     required this.task,
+    required this.status,
     required this.workState,
   });
 
   final TaskSession task;
+  final TaskStatus status;
   final WorkState? workState;
 
   @override
@@ -707,18 +1141,29 @@ class _TaskHeaderState extends State<_TaskHeader> {
   @override
   Widget build(BuildContext context) {
     final task = widget.task;
-    final statusColor = _detailStatusColor(task.status, widget.workState);
+    final status = widget.status;
+    final statusColor = _detailStatusColor(status, widget.workState);
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: statusColor.withValues(alpha: 0.08),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: statusColor.withValues(alpha: 0.22)),
+        color: Theme.of(context).colorScheme.surface,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: ArminTheme.border),
       ),
       child: Padding(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.all(12),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            Text(
+              'Task Meta',
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    color: Theme.of(context)
+                        .colorScheme
+                        .onSurface
+                        .withValues(alpha: 0.48),
+                  ),
+            ),
+            const SizedBox(height: 6),
             AnimatedSwitcher(
               duration: const Duration(milliseconds: 180),
               child: _editingTitle
@@ -729,12 +1174,12 @@ class _TaskHeaderState extends State<_TaskHeader> {
                       enabled: !_savingTitle,
                       autofocus: true,
                       textInputAction: TextInputAction.done,
-                      style: Theme.of(context).textTheme.titleLarge,
+                      style: Theme.of(context).textTheme.titleMedium,
                       decoration: InputDecoration(
                         labelText: '标题',
                         hintText: '输入任务标题',
                         hintStyle:
-                            Theme.of(context).textTheme.titleLarge?.copyWith(
+                            Theme.of(context).textTheme.titleMedium?.copyWith(
                                   color: Theme.of(context)
                                       .colorScheme
                                       .onSurface
@@ -788,7 +1233,9 @@ class _TaskHeaderState extends State<_TaskHeader> {
                         Expanded(
                           child: Text(
                             task.displayTitle,
-                            style: Theme.of(context).textTheme.titleLarge,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context).textTheme.titleMedium,
                           ),
                         ),
                         IconButton(
@@ -813,20 +1260,19 @@ class _TaskHeaderState extends State<_TaskHeader> {
                       ],
                     ),
             ),
-            const SizedBox(height: 10),
+            const SizedBox(height: 8),
             Wrap(
               spacing: 10,
-              runSpacing: 8,
+              runSpacing: 6,
               crossAxisAlignment: WrapCrossAlignment.center,
               children: [
                 _MiniBadge(
-                  key: const Key('runtime-control-state-badge'),
-                  label: _detailStatusLabel(task.status, widget.workState),
+                  label: _detailStatusLabel(status, widget.workState),
                   color: statusColor,
-                  animate: _workPhaseFor(widget.workState, task.status) ==
-                      WorkPhase.working,
+                  animate:
+                      runtimePhaseForTaskStatus(status) == WorkPhase.working,
                 ),
-                _TaskTimingText(task: task),
+                _TaskTimingText(task: task, status: status),
                 GestureDetector(
                   onTap: () => _showHostEditor(context, task),
                   child: Row(
@@ -1096,9 +1542,10 @@ class _HostEditDialogState extends State<_HostEditDialog> {
 }
 
 class _TaskTimingText extends StatefulWidget {
-  const _TaskTimingText({required this.task});
+  const _TaskTimingText({required this.task, required this.status});
 
   final TaskSession task;
+  final TaskStatus status;
 
   @override
   State<_TaskTimingText> createState() => _TaskTimingTextState();
@@ -1124,7 +1571,7 @@ class _TaskTimingTextState extends State<_TaskTimingText>
   @override
   void didUpdateWidget(covariant _TaskTimingText oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.task.status != widget.task.status ||
+    if (oldWidget.status != widget.status ||
         oldWidget.task.completedAt != widget.task.completedAt) {
       _syncTimer();
     }
@@ -1152,7 +1599,7 @@ class _TaskTimingTextState extends State<_TaskTimingText>
     _timer = null;
     if (_appActive &&
         TickerMode.valuesOf(context).enabled &&
-        _isLiveTask(widget.task)) {
+        _isLiveTask(widget.task, widget.status)) {
       _timer = Timer.periodic(const Duration(seconds: 1), (_) {
         if (mounted) {
           setState(() {});
@@ -1164,55 +1611,28 @@ class _TaskTimingTextState extends State<_TaskTimingText>
   @override
   Widget build(BuildContext context) {
     return Text(
-      _statusTimingText(widget.task),
+      _statusTimingText(widget.task, widget.status),
       style: Theme.of(context).textTheme.bodySmall,
     );
   }
 
-  bool _isLiveTask(TaskSession task) {
+  bool _isLiveTask(TaskSession task, TaskStatus status) {
     return task.completedAt == null &&
-        (task.status == TaskStatus.running ||
-            task.status == TaskStatus.pending ||
-            task.status == TaskStatus.paused ||
-            task.status == TaskStatus.needApproval ||
-            task.status == TaskStatus.turnIdle ||
-            task.status == TaskStatus.needAttention ||
-            task.status == TaskStatus.observerDetached);
-  }
-}
-
-class _CurrentSituationCard extends StatelessWidget {
-  const _CurrentSituationCard({
-    required this.task,
-    required this.workState,
-    this.progressSnapshot,
-  });
-
-  final TaskSession task;
-  final WorkState? workState;
-  final RuntimeTaskSnapshot? progressSnapshot;
-
-  @override
-  Widget build(BuildContext context) {
-    final text = progressSnapshot != null &&
-            _workPhaseFor(workState, task.status) == WorkPhase.working
-        ? _progressSituationText(task, progressSnapshot!)
-        : _currentSituationText(task, workState);
-    return _InfoCard(
-      title: '当前状况',
-      child: Text(
-        text,
-        maxLines: 3,
-        overflow: TextOverflow.ellipsis,
-      ),
-    );
+        (status == TaskStatus.running ||
+            status == TaskStatus.pending ||
+            status == TaskStatus.paused ||
+            status == TaskStatus.needApproval ||
+            status == TaskStatus.turnIdle ||
+            status == TaskStatus.needAttention ||
+            status == TaskStatus.observerDetached);
   }
 }
 
 class _TimelinePanel extends StatefulWidget {
-  const _TimelinePanel({required this.task});
+  const _TimelinePanel({required this.task, required this.status});
 
   final TaskSession task;
+  final TaskStatus status;
 
   @override
   State<_TimelinePanel> createState() => _TimelinePanelState();
@@ -1222,9 +1642,9 @@ class _TimelinePanelState extends State<_TimelinePanel> {
   String _cachedSignature = '';
   late _TimelineViewModel _viewModel;
 
-  static String _computeSignature(TaskSession task) {
+  static String _computeSignature(TaskSession task, TaskStatus status) {
     final latestTurn = task.turns.lastOrNull;
-    return '${task.id}:${task.status.name}:${task.shortSummary}:'
+    return '${task.id}:${status.name}:${task.shortSummary}:'
         '${task.updatedAt.microsecondsSinceEpoch}:'
         '${task.completedAt?.microsecondsSinceEpoch}:'
         '${task.voiceInputs.length}:${task.turns.length}:'
@@ -1234,8 +1654,11 @@ class _TimelinePanelState extends State<_TimelinePanel> {
         '${latestTurn?.deliverable?.displaySummary.hashCode}';
   }
 
-  static _TimelineViewModel _timelineViewModelFor(TaskSession task) {
-    final signature = _computeSignature(task);
+  static _TimelineViewModel _timelineViewModelFor(
+    TaskSession task,
+    TaskStatus status,
+  ) {
+    final signature = _computeSignature(task, status);
     final cached = _cachedTimeline(signature);
     if (cached != null) {
       return cached;
@@ -1268,21 +1691,21 @@ class _TimelinePanelState extends State<_TimelinePanel> {
           subtitle: _cleanSnippet(input.rawSttText, maxChars: 120),
         ),
       _TimelineItemData(
-        icon: _timelineResultIcon(task.status),
+        icon: _timelineResultIcon(status),
         time:
             task.completedAt == null ? '--:--' : _timeLabel(task.completedAt!),
-        title: _timelineResultTitle(task.status),
+        title: _timelineResultTitle(status),
         subtitle: readableSummary.isEmpty
-            ? _currentSituationText(task)
+            ? _currentSituationText(task, status)
             : readableSummary,
-        color: _timelineResultColor(task.status),
+        color: _timelineResultColor(status),
       ),
     ];
     final model = _TimelineViewModel(
       visibleItems: allItems.reversed.take(3).toList(growable: false),
       hasTurns: task.turns.isNotEmpty,
       hasLoopFacts: _LoopFactsSummary.fromTask(task).hasFacts,
-      followUpSuggestions: _followUpSuggestionsFor(task),
+      followUpSuggestions: _followUpSuggestionsFor(task, status),
     );
     _cacheTimeline(signature, model);
     return model;
@@ -1290,9 +1713,10 @@ class _TimelinePanelState extends State<_TimelinePanel> {
 
   static List<LoopFollowUpSuggestion> _followUpSuggestionsFor(
     TaskSession task,
+    TaskStatus status,
   ) {
     final latestTurn = task.turns.lastOrNull;
-    if (task.status != TaskStatus.turnIdle ||
+    if (status != TaskStatus.turnIdle ||
         latestTurn?.status != NativeOutputTurnStatus.turnIdle ||
         latestTurn?.deliverable == null) {
       return const [];
@@ -1303,17 +1727,17 @@ class _TimelinePanelState extends State<_TimelinePanel> {
   @override
   void initState() {
     super.initState();
-    _cachedSignature = _computeSignature(widget.task);
-    _viewModel = _timelineViewModelFor(widget.task);
+    _cachedSignature = _computeSignature(widget.task, widget.status);
+    _viewModel = _timelineViewModelFor(widget.task, widget.status);
   }
 
   @override
   void didUpdateWidget(covariant _TimelinePanel oldWidget) {
     super.didUpdateWidget(oldWidget);
-    final newSignature = _computeSignature(widget.task);
+    final newSignature = _computeSignature(widget.task, widget.status);
     if (newSignature != _cachedSignature) {
       _cachedSignature = newSignature;
-      _viewModel = _timelineViewModelFor(widget.task);
+      _viewModel = _timelineViewModelFor(widget.task, widget.status);
     }
   }
 
@@ -1325,12 +1749,39 @@ class _TimelinePanelState extends State<_TimelinePanel> {
       physics: _taskDetailTabScrollPhysics,
       padding: const EdgeInsets.all(20),
       itemCount: _viewModel.visibleItems.length +
+          2 +
           (_viewModel.hasLoopFacts ? 1 : 0) +
           (_viewModel.followUpSuggestions.isNotEmpty ? 1 : 0) +
           (_viewModel.hasTurns ? 1 : 0),
       separatorBuilder: (_, __) => const SizedBox(height: 12),
       itemBuilder: (context, index) {
         var itemIndex = index;
+        if (itemIndex == 0) {
+          final workState = AppStateScope.read(context).workState(
+            widget.task.id,
+          );
+          final model = _RuntimeBrainViewModel.from(
+            task: widget.task,
+            status: widget.status,
+            workState: workState,
+            progressSnapshot: null,
+          );
+          return _RuntimeFocusCard(focus: model.focus);
+        }
+        itemIndex -= 1;
+        if (itemIndex == 0) {
+          final workState = AppStateScope.read(context).workState(
+            widget.task.id,
+          );
+          final model = _RuntimeBrainViewModel.from(
+            task: widget.task,
+            status: widget.status,
+            workState: workState,
+            progressSnapshot: null,
+          );
+          return _RuntimeStateTimelineCard(steps: model.steps);
+        }
+        itemIndex -= 1;
         if (_viewModel.hasLoopFacts) {
           if (itemIndex == 0) {
             return _LoopFactsCard(task: widget.task);
@@ -1361,6 +1812,7 @@ class _TimelinePanelState extends State<_TimelinePanel> {
     AddContextSheet.show(
       context,
       task: widget.task,
+      status: widget.status,
       title: suggestion.title,
       hintText: suggestion.reason,
       initialInstruction: suggestion.draft,
@@ -1629,11 +2081,13 @@ class _TimelineItem extends StatelessWidget {
 class _ResultPanel extends StatefulWidget {
   const _ResultPanel({
     required this.task,
+    required this.status,
     required this.revealLatestTurnToken,
     required this.resultVersion,
   });
 
   final TaskSession task;
+  final TaskStatus status;
   final int revealLatestTurnToken;
   final int resultVersion;
 
@@ -2059,7 +2513,7 @@ class _ResultPanelState extends State<_ResultPanel> {
     final resultTurn = _latestResultTurn(task);
     return [
       task.id,
-      task.status.name,
+      widget.status.name,
       _visibleSummaryCount,
       task.summary?.hashCode ?? 0,
       task.shortSummary.hashCode,
@@ -2075,7 +2529,7 @@ class _ResultPanelState extends State<_ResultPanel> {
     final latest = task.turns.isEmpty ? null : task.turns.last;
     return [
       task.id,
-      task.status.name,
+      widget.status.name,
       if (latest != null) ...[
         latest.id,
         latest.status.name,
@@ -2087,7 +2541,7 @@ class _ResultPanelState extends State<_ResultPanel> {
   }
 
   bool _shouldBuildResultSummary(TaskSession task) {
-    return !_usesRecentOutputPreview(task.status);
+    return !_usesRecentOutputPreview(widget.status);
   }
 
   Future<String> _recentOutputPreview(
@@ -2637,11 +3091,13 @@ class _TimelineItemData {
 class _TaskNeedsPanel extends StatefulWidget {
   const _TaskNeedsPanel({
     required this.task,
+    required this.status,
     required this.workState,
     required this.onViewResult,
   });
 
   final TaskSession task;
+  final TaskStatus status;
   final WorkState? workState;
   final VoidCallback onViewResult;
 
@@ -2655,7 +3111,7 @@ class _TaskNeedsPanelState extends State<_TaskNeedsPanel> {
   @override
   Widget build(BuildContext context) {
     final task = widget.task;
-    final nextAction = _nextActionForTask(task.status, widget.workState);
+    final nextAction = _nextActionForTask(widget.status, widget.workState);
     return _InfoCard(
       title: '这个任务需要什么',
       child: Column(
@@ -2714,6 +3170,7 @@ class _TaskNeedsPanelState extends State<_TaskNeedsPanel> {
           ],
           _PrimaryTaskActionButton(
             task: task,
+            status: widget.status,
             workState: widget.workState,
             onAddContext: () => _showFollowUpSheet(context),
             onViewResult: widget.onViewResult,
@@ -2849,6 +3306,7 @@ class _TaskNeedsPanelState extends State<_TaskNeedsPanel> {
     AddContextSheet.show(
       context,
       task: widget.task,
+      status: widget.status,
       title: title,
       hintText: hintText,
       approval: approval,
@@ -3074,9 +3532,10 @@ class _AddContextEntry extends StatelessWidget {
 }
 
 class _AddContextPanel extends StatefulWidget {
-  const _AddContextPanel({required this.task});
+  const _AddContextPanel({required this.task, required this.status});
 
   final TaskSession task;
+  final TaskStatus status;
 
   @override
   State<_AddContextPanel> createState() => _AddContextPanelState();
@@ -3087,9 +3546,9 @@ class _AddContextPanelState extends State<_AddContextPanel> {
 
   @override
   Widget build(BuildContext context) {
-    final enabled = _runtimeControlStateFromTask(widget.task.status) !=
+    final enabled = _runtimeControlStateFromTask(widget.status) !=
             RuntimeControlState.stopped ||
-        widget.task.status == TaskStatus.runtimeLost;
+        widget.status == TaskStatus.runtimeLost;
     return _InfoCard(
       title: '添加上下文',
       child: Column(
@@ -3113,6 +3572,7 @@ class _AddContextPanelState extends State<_AddContextPanel> {
     AddContextSheet.show(
       context,
       task: widget.task,
+      status: widget.status,
       title: '向此任务添加上下文',
       hintText: '添加约束、决定或后续指令...',
       interpretVoiceCommand: _voiceCommandProcessor.interpret,
@@ -3175,6 +3635,7 @@ class _AddContextPanelState extends State<_AddContextPanel> {
 class _PrimaryTaskActionButton extends StatelessWidget {
   const _PrimaryTaskActionButton({
     required this.task,
+    required this.status,
     required this.workState,
     required this.onAddContext,
     required this.onViewResult,
@@ -3183,6 +3644,7 @@ class _PrimaryTaskActionButton extends StatelessWidget {
   });
 
   final TaskSession task;
+  final TaskStatus status;
   final WorkState? workState;
   final VoidCallback onAddContext;
   final VoidCallback onViewResult;
@@ -3191,7 +3653,7 @@ class _PrimaryTaskActionButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final action = _primaryTaskActionFor(task.status, workState);
+    final action = _primaryTaskActionFor(status, workState);
     if (action == null) {
       return const SizedBox.shrink();
     }
@@ -3345,9 +3807,10 @@ class _ApprovalOptionButton extends StatelessWidget {
 }
 
 class _AdvancedDebugPanel extends StatefulWidget {
-  const _AdvancedDebugPanel({required this.task});
+  const _AdvancedDebugPanel({required this.task, required this.status});
 
   final TaskSession task;
+  final TaskStatus status;
 
   @override
   State<_AdvancedDebugPanel> createState() => _AdvancedDebugPanelState();
@@ -3357,8 +3820,8 @@ class _AdvancedDebugPanelState extends State<_AdvancedDebugPanel> {
   @override
   Widget build(BuildContext context) {
     final task = widget.task;
-    final controlState = _runtimeControlStateFromTask(task.status);
-    final canResolveRuntimeLost = task.status == TaskStatus.runtimeLost;
+    final controlState = _runtimeControlStateFromTask(widget.status);
+    final canResolveRuntimeLost = widget.status == TaskStatus.runtimeLost;
     return ListView(
       key: PageStorageKey<String>('task-detail-advanced-list-${task.id}'),
       physics: _taskDetailTabScrollPhysics,
@@ -3443,11 +3906,13 @@ class _AdvancedDebugPanelState extends State<_AdvancedDebugPanel> {
             ],
           ),
         ),
-        _InfoCard(
-          title: '调试命令',
-          child: Text(
+        _LazyInfoCard(
+          title: 'Terminal',
+          collapsedText: '远端会话 ${task.host.tmuxSessionName}',
+          builder: (context) => SelectableText(
             'tmux attach -t ${task.host.tmuxSessionName}\n'
             'tmux capture-pane -p -t ${task.host.tmuxSessionName} -S -200',
+            style: Theme.of(context).textTheme.bodySmall,
           ),
         ),
         _LazyInfoCard(
@@ -3896,40 +4361,176 @@ class _NextAction {
   final Color color;
 }
 
-WorkPhase _workPhaseFor(WorkState? workState, [TaskStatus? status]) {
-  final phase = workState?.phase;
-  if (phase != null) {
-    return phase;
+String _workPhaseName(WorkState? workState) {
+  return (workState?.phase ?? WorkPhase.idle).name;
+}
+
+String _runtimeGoalText(TaskSession task) {
+  return _cleanSnippet(task.userText, maxChars: 80);
+}
+
+String _runtimeElapsedText(TaskSession task, TaskStatus status) {
+  if (_isTaskLive(status)) {
+    final startedAt = task.startedAt ?? task.createdAt;
+    return _elapsedLabel(DateTime.now().difference(startedAt));
   }
-  return switch (status) {
-    TaskStatus.draft || TaskStatus.pending || null => WorkPhase.idle,
-    TaskStatus.running => WorkPhase.working,
-    TaskStatus.paused || TaskStatus.observerDetached => WorkPhase.quieting,
-    TaskStatus.turnIdle => WorkPhase.turnIdle,
-    TaskStatus.needApproval => WorkPhase.needsApproval,
-    TaskStatus.needAttention => WorkPhase.needsInstruction,
-    TaskStatus.completed || TaskStatus.userCompleted => WorkPhase.completed,
-    TaskStatus.failed ||
-    TaskStatus.userFailed ||
-    TaskStatus.runtimeLost =>
-      WorkPhase.failed,
-    TaskStatus.stopped => WorkPhase.stopped,
+  final value = task.completedAt ?? task.updatedAt;
+  return _timeLabel(value);
+}
+
+String _runtimeNextText(
+  TaskSession task,
+  TaskStatus status,
+  WorkState? workState,
+) {
+  final latestDeliverable = task.turns.lastOrNull?.deliverable;
+  return switch (runtimePhaseForTaskStatus(status)) {
+    WorkPhase.needsApproval => '等待你选择审批结果',
+    WorkPhase.turnIdle ||
+    WorkPhase.needsInstruction =>
+      latestDeliverable == null ? '补充下一步指令' : '验收结果或继续下一轮',
+    WorkPhase.working => '继续观察 Agent 输出',
+    WorkPhase.quieting => status == TaskStatus.paused ? '恢复任务' : '重新监听远端会话',
+    WorkPhase.completed || WorkPhase.needsReview => '查看并确认结果',
+    WorkPhase.failed => '查看风险并决定是否重试',
+    WorkPhase.stopped => '查看历史或重新执行',
+    WorkPhase.idle => status == TaskStatus.pending ? '等待计划时间启动' : '准备启动任务',
+    WorkPhase.needsDecision => '等待你的决定',
   };
 }
 
-WorkState? _effectiveWorkStateFor(TaskSession task, WorkState? workState) {
-  return workState;
+String _runtimeRiskText(TaskStatus status, WorkState? workState) {
+  final approval = workState?.approval;
+  if (approval?.state == ApprovalState.pending) {
+    return '需要审批';
+  }
+  return switch (runtimePhaseForTaskStatus(status)) {
+    WorkPhase.failed => '运行需要检查',
+    WorkPhase.quieting => status == TaskStatus.paused ? '任务暂停' : '监听断开',
+    WorkPhase.needsInstruction => '等待输入',
+    WorkPhase.turnIdle => '等待验收',
+    WorkPhase.working => '无用户阻塞',
+    WorkPhase.completed || WorkPhase.needsReview => '等待验收',
+    WorkPhase.stopped => '已停止',
+    WorkPhase.idle => '未开始',
+    WorkPhase.needsApproval || WorkPhase.needsDecision => '需要介入',
+  };
 }
 
-String _workPhaseName(WorkState? workState) {
-  return _workPhaseFor(workState).name;
+String _runtimePhaseLabel(WorkPhase phase, TaskStatus status) {
+  return switch (phase) {
+    WorkPhase.idle => status == TaskStatus.pending ? 'Scheduled' : 'Idle',
+    WorkPhase.working => 'Executing',
+    WorkPhase.quieting => status == TaskStatus.paused ? 'Paused' : 'Detached',
+    WorkPhase.turnIdle => 'Review',
+    WorkPhase.needsApproval => 'Approval',
+    WorkPhase.needsDecision => 'Decision',
+    WorkPhase.needsReview => 'Review',
+    WorkPhase.needsInstruction => 'Waiting',
+    WorkPhase.completed => 'Finished',
+    WorkPhase.failed => 'Risk',
+    WorkPhase.stopped => 'Stopped',
+  };
+}
+
+IconData _runtimeFocusIcon(WorkPhase phase, TaskStatus status) {
+  return switch (phase) {
+    WorkPhase.working => Icons.bolt_outlined,
+    WorkPhase.needsApproval || WorkPhase.needsDecision => Icons.rule_outlined,
+    WorkPhase.turnIdle ||
+    WorkPhase.needsInstruction ||
+    WorkPhase.needsReview =>
+      Icons.touch_app_outlined,
+    WorkPhase.quieting =>
+      status == TaskStatus.paused ? Icons.pause_outlined : Icons.wifi_off,
+    WorkPhase.completed => Icons.check_circle_outline,
+    WorkPhase.failed => Icons.error_outline,
+    WorkPhase.stopped => Icons.stop_circle_outlined,
+    WorkPhase.idle => Icons.schedule_outlined,
+  };
+}
+
+List<_RuntimeTimelineStepViewModel> _runtimeStepsFor(
+  TaskSession task,
+  TaskStatus status,
+  WorkState? workState,
+) {
+  final phase = runtimePhaseForTaskStatus(status);
+  final hasStarted = task.startedAt != null ||
+      task.turns.isNotEmpty ||
+      status != TaskStatus.draft;
+  final hasResult = task.turns.any((turn) => turn.deliverable != null);
+  final terminal = !_isTaskLive(status);
+  final blocked = phase == WorkPhase.needsApproval ||
+      phase == WorkPhase.needsInstruction ||
+      phase == WorkPhase.failed ||
+      status == TaskStatus.runtimeLost;
+  return [
+    _RuntimeTimelineStepViewModel(
+      label: 'SSH Connected',
+      state: hasStarted
+          ? _RuntimeTimelineStepState.done
+          : _RuntimeTimelineStepState.idle,
+    ),
+    _RuntimeTimelineStepViewModel(
+      label: 'Planning',
+      state: hasStarted
+          ? _RuntimeTimelineStepState.done
+          : _RuntimeTimelineStepState.active,
+    ),
+    _RuntimeTimelineStepViewModel(
+      label: 'Executing',
+      state: phase == WorkPhase.working || phase == WorkPhase.quieting
+          ? _RuntimeTimelineStepState.active
+          : hasStarted
+              ? _RuntimeTimelineStepState.done
+              : _RuntimeTimelineStepState.idle,
+    ),
+    _RuntimeTimelineStepViewModel(
+      label: 'Review',
+      state: blocked
+          ? _RuntimeTimelineStepState.blocked
+          : hasResult ||
+                  phase == WorkPhase.turnIdle ||
+                  phase == WorkPhase.needsReview
+              ? _RuntimeTimelineStepState.active
+              : _RuntimeTimelineStepState.idle,
+    ),
+    _RuntimeTimelineStepViewModel(
+      label: 'Finished',
+      state: terminal
+          ? _RuntimeTimelineStepState.done
+          : _RuntimeTimelineStepState.idle,
+    ),
+  ];
+}
+
+String _latestTurnFocus(NativeOutputTurn? turn) {
+  if (turn == null) {
+    return '';
+  }
+  final cleaned = _cleanSnippet(
+    turn.cleanedOutput.trim().isNotEmpty ? turn.cleanedOutput : turn.rawOutput,
+    maxChars: 80,
+  );
+  return cleaned;
+}
+
+String _firstNonEmpty(List<String> values) {
+  for (final value in values) {
+    final trimmed = value.trim();
+    if (trimmed.isNotEmpty) {
+      return trimmed;
+    }
+  }
+  return '';
 }
 
 String _detailStatusLabel(TaskStatus status, [WorkState? workState]) {
   if (workState != null && workState.headline.trim().isNotEmpty) {
     return workState.headline.trim();
   }
-  switch (_workPhaseFor(workState, status)) {
+  switch (runtimePhaseForTaskStatus(status)) {
     case WorkPhase.idle:
       return '等待开始';
     case WorkPhase.working:
@@ -3956,7 +4557,7 @@ String _detailStatusLabel(TaskStatus status, [WorkState? workState]) {
 }
 
 Color _detailStatusColor(TaskStatus status, [WorkState? workState]) {
-  return switch (_workPhaseFor(workState, status)) {
+  return switch (runtimePhaseForTaskStatus(status)) {
     WorkPhase.needsApproval ||
     WorkPhase.needsDecision ||
     WorkPhase.needsReview ||
@@ -3971,14 +4572,14 @@ Color _detailStatusColor(TaskStatus status, [WorkState? workState]) {
   };
 }
 
-String _statusTimingText(TaskSession task) {
-  if (task.status == TaskStatus.pending && task.scheduledFor != null) {
+String _statusTimingText(TaskSession task, TaskStatus status) {
+  if (status == TaskStatus.pending && task.scheduledFor != null) {
     return _scheduledTaskLabel(task.scheduledFor!);
   }
   if (task.completedAt != null) {
     return '更新于 ${_timeLabel(task.completedAt!)}';
   }
-  if (_isTaskLive(task.status)) {
+  if (_isTaskLive(status)) {
     final startedAt = task.startedAt ?? task.createdAt;
     return '${_elapsedLabel(DateTime.now().difference(startedAt))} 持续中';
   }
@@ -4035,8 +4636,12 @@ String _cleanSnippet(String value, {int maxChars = 160}) {
       .trim();
 }
 
-String _currentSituationText(TaskSession task, [WorkState? workState]) {
-  if (task.status == TaskStatus.pending && task.scheduledFor != null) {
+String _currentSituationText(
+  TaskSession task,
+  TaskStatus status, [
+  WorkState? workState,
+]) {
+  if (status == TaskStatus.pending && task.scheduledFor != null) {
     return '${_scheduledTaskLabel(task.scheduledFor!)}。';
   }
   if (workState == null) {
@@ -4044,7 +4649,7 @@ String _currentSituationText(TaskSession task, [WorkState? workState]) {
   }
   final statusText = workState.statusText.trim();
   if (statusText.isNotEmpty) return statusText;
-  return switch (_workPhaseFor(workState, task.status)) {
+  return switch (runtimePhaseForTaskStatus(status)) {
     WorkPhase.idle => '等待开始。',
     WorkPhase.working => '此任务仍在工作中。',
     WorkPhase.quieting => '更新已暂停。',
@@ -4056,16 +4661,6 @@ String _currentSituationText(TaskSession task, [WorkState? workState]) {
     WorkPhase.failed => '此任务遇到了问题。',
     WorkPhase.stopped => '此任务已停止。',
   };
-}
-
-String _progressSituationText(TaskSession task, RuntimeTaskSnapshot snapshot) {
-  final actionText = _progressActionText(snapshot.action);
-  final action = actionText.isNotEmpty ? '动作: $actionText。' : '';
-  final progress = snapshot.progress > 0 ? '进度 ${snapshot.progress}%' : '';
-  final parts = [action, progress].where((p) => p.isNotEmpty);
-  if (parts.isEmpty) return _currentSituationText(task);
-  return '此任务仍在工作中。${parts.join('，')}。'
-      '\n当前不需要任何操作。';
 }
 
 String _progressActionText(String value) {
@@ -4093,7 +4688,7 @@ String _progressActionText(String value) {
 }
 
 _NextAction _nextActionForTask(TaskStatus status, [WorkState? workState]) {
-  switch (_workPhaseFor(workState, status)) {
+  switch (runtimePhaseForTaskStatus(status)) {
     case WorkPhase.needsApproval:
       return _NextAction(
         title: '需要你决定',
@@ -4162,7 +4757,7 @@ _PrimaryTaskAction? _primaryTaskActionFor(
   TaskStatus status, [
   WorkState? workState,
 ]) {
-  switch (_workPhaseFor(workState, status)) {
+  switch (runtimePhaseForTaskStatus(status)) {
     case WorkPhase.needsApproval:
       return const _PrimaryTaskAction(
         label: '查看',

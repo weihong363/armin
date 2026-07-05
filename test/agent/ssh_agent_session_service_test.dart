@@ -120,8 +120,9 @@ void main() {
     expect(command, contains('Enter'));
     expect(command, contains('stable_count'));
     expect(command, contains('__ARMIN_SETTLED_CANDIDATE__'));
-    expect(command, contains('monitor_version=phase2.6-settled-v4'));
+    expect(command, contains('monitor_version=phase2.6-settled-v8'));
     expect(command, contains('STABLE_POLLS=4'));
+    expect(command, contains(r'next if $line =~ /[\x{2800}-\x{28ff}]/;'));
     expect(command, contains(r'stable_count" -ge "$STABLE_POLLS"'));
     expect(command, contains('last_stable_emitted_hash'));
     expect(command, contains(r'current_hash" != "$last_stable_emitted_hash"'));

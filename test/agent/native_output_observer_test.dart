@@ -1,3 +1,5 @@
+import 'package:armin/features/agent/models/agent_approval_config.dart';
+import 'package:armin/features/agent/services/agent_runtime_adapter.dart';
 import 'package:armin/features/agent/services/agent_runtime_config.dart';
 import 'package:armin/features/agent/services/native_output_observer.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -62,6 +64,49 @@ void main() {
     );
 
     expect(snapshot.state, isNot(NativeOutputObserverState.turnIdle));
+    expect(snapshot.turnIdle, isFalse);
+  });
+
+  test('qoder adapter ignores infinite spinner after final output', () {
+    final observer = NativeOutputObserver(
+      runtimeAdapter: const AgentRuntimeAdapter(AgentType.qoder),
+      idleThreshold: const Duration(seconds: 1),
+    );
+    const output = '''
+▪ ARMIN_REAL_SESSION_CHECK status=PASS project=countdown_widgets files_changed=0
+  Result: ARMIN_REAL_SESSION_CHECK
+  All checks passed.
+ ⠴ Thinking... (esc to cancel)  Auto Model · ctx 25%
+''';
+
+    final snapshot = observer.observeSettled(
+      output,
+      now: DateTime(2026, 7, 6, 12),
+    );
+
+    expect(snapshot.state, NativeOutputObserverState.turnIdle);
+    expect(snapshot.turnIdle, isTrue);
+  });
+
+  test('codex adapter keeps active bash work running', () {
+    final observer = NativeOutputObserver(
+      runtimeAdapter: const AgentRuntimeAdapter(AgentType.codex),
+      idleThreshold: const Duration(seconds: 1),
+    );
+    const output = '''
+▪ Let me run the requested command.
+
+▫ Bash(sleep 180 && echo LONGTASK_DONE)
+
+⠹ Thinking... (esc to cancel, 48s)
+''';
+
+    final snapshot = observer.observeSettled(
+      output,
+      now: DateTime(2026, 7, 6, 12),
+    );
+
+    expect(snapshot.state, NativeOutputObserverState.running);
     expect(snapshot.turnIdle, isFalse);
   });
 

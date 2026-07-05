@@ -1,11 +1,10 @@
 import 'package:armin/app_state_scope.dart';
-import 'package:armin/core/models/task_status.dart';
 import 'package:armin/core/services/armin_app_state.dart';
 import 'package:armin/core/storage/in_memory_task_history_store.dart';
+import 'package:armin/features/tasks/services/output_summary_provider.dart';
 import 'package:armin/features/voice/screens/voice_settings_screen.dart';
 import 'package:armin/features/voice/services/device_voice_service.dart';
 import 'package:armin/features/voice/services/voice_service.dart';
-import 'package:armin/features/tasks/services/output_summary_provider.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -83,7 +82,6 @@ void main() {
     final summary = await state.outputSummaryProvider.summarize(
       const OutputSummaryRequest(
         cleanedOutput: '已找到结果。',
-        status: TaskStatus.turnIdle,
       ),
     );
     expect(summary.displaySummary, '已找到结果。');

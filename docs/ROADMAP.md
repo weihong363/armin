@@ -173,6 +173,8 @@ Phase 3 的优先级不变，核心是 “Loops > Prompts”：Loop Engine、日
 
 Phase 3 起步必须遵守 [Phase 3 Loop Runtime 前置设计](runtime/phase-3-loop-runtime-prep.md)：先做单任务 Loop Runtime 的事实记录、事实状态视图和恢复能力，不直接进入多 Agent 调度、通用 workflow engine 或完整 scheduler。过渡阶段可以做规则型验收辅助建议，但必须基于 latest deliverable、用户目标、约束和 loop facts，不能用低价值状态按钮建议替代。
 
+当前状态：Phase 3.0-3.7 已完成代码级收口，临时执行跟踪见 [Phase 3 临时执行计划](runtime/phase-3-execution-plan-temp.md)。当前已覆盖 Loop facts、事实状态视图、恢复与续跑门禁、规则型验收辅助建议纯服务、单次任务调度 MVP、审批 facts / 审批恢复增强、只基于正式 deliverable 的 Loop 级摘要与结果追踪，以及基于 RuntimeEventBus 的本地通知事件层；AI 辅助、自动审批、完整 recurrence scheduler、原生系统通知 adapter 和通知点击跳转仍需在后续阶段独立验证后再进入。
+
 - Runtime 持久化边界收敛到 SQLite：任务、turn、runtime event、work state、approval state、session binding、watcher offset 和 deliverable 可恢复
 - Flutter 内 Bridge Runtime 作为过渡实现，支持 App 重启后的状态重建
 - 断线/重连后的 watcher offset 与 event replay，避免通过完整 `capture-pane` 重新猜测状态
@@ -181,6 +183,7 @@ Phase 3 起步必须遵守 [Phase 3 Loop Runtime 前置设计](runtime/phase-3-l
 - 任务级上下文延续
 - Loop 事实记录：输入长度、输出摘要长度、等待时间、审批次数、重试次数、用户后续动作
 - 规则型验收辅助建议：基于 latest turn deliverable、用户目标、约束和可验证信号生成可编辑 follow-up 草稿；不接 AI、不自动执行
+- 通知入口：基于 RuntimeEventBus 的审批、等待用户、fresh deliverable、运行丢失、完成和失败事件生成去重后的本地通知请求；当前不接 push 或系统通知权限
 - 手动子任务组织
 - 委托质量和注意力成本指标
 - token 消耗、结果符合预期程度和用户返工次数的综合评估

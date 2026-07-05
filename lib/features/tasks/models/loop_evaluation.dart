@@ -87,8 +87,119 @@ class LoopEvaluation {
   }
 }
 
+class LoopResultReference {
+  const LoopResultReference({
+    required this.turnId,
+    required this.turnIndex,
+    required this.summaryLength,
+    required this.evidenceFingerprint,
+  });
+
+  final String turnId;
+  final int turnIndex;
+  final int summaryLength;
+  final String evidenceFingerprint;
+
+  factory LoopResultReference.fromJson(Map<String, Object?> json) {
+    return LoopResultReference(
+      turnId: json['turnId'] as String? ?? '',
+      turnIndex: _int(json['turnIndex']),
+      summaryLength: _int(json['summaryLength']),
+      evidenceFingerprint: json['evidenceFingerprint'] as String? ?? '',
+    );
+  }
+
+  Map<String, Object?> toJson() {
+    return {
+      'turnId': turnId,
+      'turnIndex': turnIndex,
+      'summaryLength': summaryLength,
+      'evidenceFingerprint': evidenceFingerprint,
+    };
+  }
+}
+
+class LoopResultSummary {
+  static const metricEventType = 'loop_result_summary';
+
+  const LoopResultSummary({
+    required this.id,
+    required this.taskId,
+    required this.createdAt,
+    required this.latestTurnId,
+    required this.latestTurnIndex,
+    required this.latestEvidenceFingerprint,
+    required this.resultCount,
+    required this.acceptedCount,
+    required this.redoCount,
+    required this.completedCount,
+    required this.failedCount,
+    required this.summaryText,
+    required this.results,
+  });
+
+  final String id;
+  final String taskId;
+  final DateTime createdAt;
+  final String latestTurnId;
+  final int latestTurnIndex;
+  final String latestEvidenceFingerprint;
+  final int resultCount;
+  final int acceptedCount;
+  final int redoCount;
+  final int completedCount;
+  final int failedCount;
+  final String summaryText;
+  final List<LoopResultReference> results;
+
+  factory LoopResultSummary.fromJson(Map<String, Object?> json) {
+    final results = json['results'];
+    return LoopResultSummary(
+      id: json['id'] as String? ?? '',
+      taskId: json['taskId'] as String? ?? '',
+      createdAt: DateTime.tryParse(json['createdAt'] as String? ?? '') ??
+          DateTime.now(),
+      latestTurnId: json['latestTurnId'] as String? ?? '',
+      latestTurnIndex: _int(json['latestTurnIndex']),
+      latestEvidenceFingerprint:
+          json['latestEvidenceFingerprint'] as String? ?? '',
+      resultCount: _int(json['resultCount']),
+      acceptedCount: _int(json['acceptedCount']),
+      redoCount: _int(json['redoCount']),
+      completedCount: _int(json['completedCount']),
+      failedCount: _int(json['failedCount']),
+      summaryText: json['summaryText'] as String? ?? '',
+      results: results is List
+          ? results
+              .whereType<Map<String, Object?>>()
+              .map(LoopResultReference.fromJson)
+              .toList(growable: false)
+          : const [],
+    );
+  }
+
+  Map<String, Object?> toJson() {
+    return {
+      'id': id,
+      'taskId': taskId,
+      'createdAt': createdAt.toIso8601String(),
+      'latestTurnId': latestTurnId,
+      'latestTurnIndex': latestTurnIndex,
+      'latestEvidenceFingerprint': latestEvidenceFingerprint,
+      'resultCount': resultCount,
+      'acceptedCount': acceptedCount,
+      'redoCount': redoCount,
+      'completedCount': completedCount,
+      'failedCount': failedCount,
+      'summaryText': summaryText,
+      'results': results.map((result) => result.toJson()).toList(),
+    };
+  }
+}
+
 enum LoopUserActionKind {
   continueTask,
+  acceptResult,
   markCompleted,
   markFailed,
   rejectOrRedo,
@@ -157,6 +268,85 @@ class LoopUserAction {
   }
 }
 
+enum LoopApprovalEventKind {
+  requested,
+  approved,
+  rejected,
+  optionSelected,
+  customResponse,
+}
+
+class LoopApprovalEvent {
+  static const metricEventType = 'loop_approval_event';
+
+  const LoopApprovalEvent({
+    required this.id,
+    required this.taskId,
+    required this.approvalId,
+    required this.kind,
+    required this.createdAt,
+    required this.turnId,
+    required this.turnIndex,
+    required this.status,
+    this.questionLength = 0,
+    this.optionCount = 0,
+    this.selectedOptionKey,
+    this.customResponseLength = 0,
+    this.source = 'terminal',
+  });
+
+  final String id;
+  final String taskId;
+  final String approvalId;
+  final LoopApprovalEventKind kind;
+  final DateTime createdAt;
+  final String turnId;
+  final int turnIndex;
+  final String status;
+  final int questionLength;
+  final int optionCount;
+  final String? selectedOptionKey;
+  final int customResponseLength;
+  final String source;
+
+  factory LoopApprovalEvent.fromJson(Map<String, Object?> json) {
+    return LoopApprovalEvent(
+      id: json['id'] as String? ?? '',
+      taskId: json['taskId'] as String? ?? '',
+      approvalId: json['approvalId'] as String? ?? '',
+      kind: _approvalEventKind(json['kind']),
+      createdAt: DateTime.tryParse(json['createdAt'] as String? ?? '') ??
+          DateTime.now(),
+      turnId: json['turnId'] as String? ?? '',
+      turnIndex: _int(json['turnIndex']),
+      status: json['status'] as String? ?? '',
+      questionLength: _int(json['questionLength']),
+      optionCount: _int(json['optionCount']),
+      selectedOptionKey: json['selectedOptionKey'] as String?,
+      customResponseLength: _int(json['customResponseLength']),
+      source: json['source'] as String? ?? 'terminal',
+    );
+  }
+
+  Map<String, Object?> toJson() {
+    return {
+      'id': id,
+      'taskId': taskId,
+      'approvalId': approvalId,
+      'kind': kind.name,
+      'createdAt': createdAt.toIso8601String(),
+      'turnId': turnId,
+      'turnIndex': turnIndex,
+      'status': status,
+      'questionLength': questionLength,
+      'optionCount': optionCount,
+      'selectedOptionKey': selectedOptionKey,
+      'customResponseLength': customResponseLength,
+      'source': source,
+    };
+  }
+}
+
 int _int(Object? value) {
   if (value is int) return value;
   if (value is num) return value.toInt();
@@ -178,5 +368,13 @@ LoopUserActionKind _userActionKind(Object? value) {
   return LoopUserActionKind.values.firstWhere(
     (kind) => kind.name == name,
     orElse: () => LoopUserActionKind.continueTask,
+  );
+}
+
+LoopApprovalEventKind _approvalEventKind(Object? value) {
+  final name = value as String? ?? '';
+  return LoopApprovalEventKind.values.firstWhere(
+    (kind) => kind.name == name,
+    orElse: () => LoopApprovalEventKind.requested,
   );
 }

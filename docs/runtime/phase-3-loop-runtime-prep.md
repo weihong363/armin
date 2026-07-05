@@ -83,21 +83,49 @@ Loop Runtime 的新增数据必须满足：
 
 ## 当前落地状态
 
+- Phase 3.0 基线冻结与 Loop 合同已完成文档级收口，临时执行跟踪见 [Phase 3 临时执行计划](phase-3-execution-plan-temp.md)。
 - 已定义 `LoopTurnMetrics`、`LoopEvaluation`，表达单 turn 的事实和评估结果；当前代码不包含下一步建议字段。
 - 已在 latest turn deliverable 保存点写入 `loop_evaluated` metric event；事实与结果卡片同源，避免 prompt echo、thinking、旧 turn 或 reconnect snapshot 参与评估。
-- 已记录关键用户动作 `loop_user_action`：继续下一轮、标记完成、标记失败，并绑定 task、turn、next turn、输入长度和来源。
+- 已记录关键用户动作 `loop_user_action`：继续下一轮、接受结果、拒绝/重做、标记完成、标记失败，并绑定 task、turn、next turn、输入长度和来源。
 - 当前写入复用 `TaskSession.metricEvents`，随现有 task 持久化路径保存和恢复；不新增数据库表、不新增并行状态管线。
-- 已补充单元测试，覆盖 turn settle 后生成 deliverable 时同步写入 loop facts、用户动作 facts、AppState 重建恢复 deliverable/facts/approval WorkState，并确认当前 payload 不包含下一步建议。
+- 已补充单元测试，覆盖 turn settle 后生成 deliverable 时同步写入 loop facts、用户动作 facts、AppState 重建恢复 deliverable/facts/approval WorkState、接受/重做 facts 恢复不触发远端控制或自动 TTS，并确认当前 payload 不包含下一步建议。
 - 已新增规则型验收辅助建议纯服务，覆盖补测试证据、收敛阻塞、补修改清单、确认完成度、校验约束等高价值 follow-up 草稿；当前不接 UI、不自动发送。
-- 尚未启用自动下一步执行、AI follow-up 草稿、scheduler 或通知策略；下一步进入任务详情 Loop 状态视图与更完整的恢复门禁。
+- Phase 3.3 恢复与续跑代码级门禁已补齐：App 重启后恢复 detached task，并可重新 attach 原 `armin-*` tmux session；已有 remote snapshot / reconcile 测试覆盖远端仍运行时保持 running、远端完成后自动 `turnIdle`。
+- Phase 3.4 单次调度 MVP 已完成代码级接入：`TaskSession.scheduledFor` 随现有 task 持久化，AppState 支持 schedule / reschedule / cancel，过期 pending task 在 load 或 timer 到点后复用现有 `startTaskExecution` 主链路启动。
+- Phase 3.5 审批工作流增强已完成代码级接入：审批请求、通过、拒绝、终端选项选择和补充指令进入 `loop_approval_event` facts；恢复后 pending approval 的 WorkState 与 facts 保持一致。
+- Phase 3.6 自动摘要与结果追踪已完成代码级接入：`loop_result_summary` 只基于正式 `TurnDeliverable` 聚合 Loop 级摘要和结果索引，结果卡片与 TTS 仍只消费 turn deliverable。
+- Phase 3.7 通知与用户反馈已完成本地事件层：AppState 将 RuntimeEventBus 中的审批、等待用户、fresh deliverable、运行丢失、完成和失败事件映射为去重后的 `TaskNotificationService` 请求；当前默认 no-op，不接系统通知权限或 push。
+- 尚未启用自动下一步执行、AI follow-up 草稿、自动审批、完整 recurrence scheduler 或原生系统通知 adapter；调度 MVP、审批 facts 和本地通知事件都不能替代 Loop Runtime 主链路。
+
+## Phase 3.0 基线冻结与 Loop 合同
+
+Phase 3.0 的作用是把 Phase 2.6/2.7 已经验证的任务执行能力固定为 Phase 3 的入口合同。它不新增 Runtime 行为，也不把 Loop Runtime 提前做成 workflow engine。
+
+冻结内容：
+
+- 状态自动收敛：执行中必须保持 running，完成后自动进入 `turnIdle` / 需要用户处理的状态，不依赖手动刷新。
+- 结果来源：结果卡片、手动朗读和自动 TTS 继续只消费 latest turn `TurnDeliverable`。
+- Turn 隔离：Turn 2 及后续结果不得显示旧 turn deliverable。
+- TTS 去重：自动 TTS 只在本轮 fresh deliverable 首次出现时播报一次。
+- 性能边界：Loop facts、规则型草稿和未来 AI 评估不得进入同步 UI 全文解析路径。
+
+Loop 最小合同：
+
+- 一个任务只能有一个当前 Loop 上下文。
+- 一个 Loop 由多个 turn/step 推进，但 Phase 3 起步仍只处理单任务内循环。
+- Loop facts 只记录事实：输入、输出、等待、审批、重试、用户后续动作和结果存在性。
+- Loop 建议或草稿必须由用户确认后才可发送。
+- `turnIdle` 只表示本轮等待用户继续，不表示整个任务已完成。
+
+Phase 3.0 完成后允许进入 Phase 3.1，但后续每个改动仍必须列出受影响基线并提供验证证据。
 
 ## 当前可执行部分
 
 当前可以继续执行的内容：
 
-1. 完善 Loop facts：补充拒绝/重做等尚未产品化的用户动作事件。
+1. 完善 Loop facts：继续补充更多用户动作入口；接受结果、拒绝/重做、继续、完成和失败的事实事件已接入。
 2. 任务详情 Loop 状态视图：只展示事实状态，例如执行中、等待审批、等待用户验证、运行时丢失、用户已收尾。
-3. App 重启恢复测试：继续补充 SQLite runtime store 的设备级恢复一致性；代码级 RuntimePersistenceStore 契约已覆盖 approval 和 WorkState。
+3. App 重启恢复测试：代码级恢复门禁已覆盖 deliverable、loop facts、approval WorkState、observer detached 重新 attach 原 tmux session；后续只需用真实 qodercli 抽样补充设备级证据。
 4. 指标门禁：确认 loop facts 写入不会影响 Tab 切换、状态自动刷新、结果卡片和 TTS。
 5. 规则型验收辅助建议 UI 接入：当前服务和测试已完成，后续只展示草稿，不自动发送。
 

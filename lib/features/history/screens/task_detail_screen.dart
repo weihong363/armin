@@ -2324,8 +2324,19 @@ class _LoopFactsCard extends StatelessWidget {
             _FactChip(label: '最近', value: 'Turn ${summary.lastTurnIndex}'),
           _FactChip(label: '结果', value: summary.deliverableCount.toString()),
           _FactChip(label: '继续', value: summary.continueCount.toString()),
+          _FactChip(label: '接受', value: summary.acceptedCount.toString()),
+          _FactChip(label: '重做', value: summary.redoCount.toString()),
+          _FactChip(
+              label: '审批', value: summary.approvalRequestCount.toString()),
+          _FactChip(
+              label: '处理', value: summary.approvalResolvedCount.toString()),
           _FactChip(label: '完成', value: summary.completedCount.toString()),
           _FactChip(label: '失败', value: summary.failedCount.toString()),
+          if (summary.approvalCustomResponseCount > 0)
+            _FactChip(
+              label: '补充',
+              value: summary.approvalCustomResponseCount.toString(),
+            ),
           if (summary.lastOutputSummaryLength > 0)
             _FactChip(
               label: '摘要',
@@ -2336,7 +2347,28 @@ class _LoopFactsCard extends StatelessWidget {
               label: '耗时',
               value: _elapsedLabel(Duration(milliseconds: summary.lastWaitMs)),
             ),
+          if (summary.loopSummaryText.isNotEmpty)
+            _LoopSummaryText(summary.loopSummaryText),
         ],
+      ),
+    );
+  }
+}
+
+class _LoopSummaryText extends StatelessWidget {
+  const _LoopSummaryText(this.text);
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: double.infinity,
+      child: Text(
+        text,
+        maxLines: 3,
+        overflow: TextOverflow.ellipsis,
+        style: Theme.of(context).textTheme.bodySmall,
       ),
     );
   }
@@ -2472,25 +2504,42 @@ class _LoopFactsSummary {
     required this.lastTurnIndex,
     required this.deliverableCount,
     required this.continueCount,
+    required this.acceptedCount,
+    required this.redoCount,
+    required this.approvalRequestCount,
+    required this.approvalResolvedCount,
+    required this.approvalCustomResponseCount,
     required this.completedCount,
     required this.failedCount,
     required this.lastOutputSummaryLength,
     required this.lastWaitMs,
+    required this.loopSummaryText,
   });
 
   final int turnCount;
   final int lastTurnIndex;
   final int deliverableCount;
   final int continueCount;
+  final int acceptedCount;
+  final int redoCount;
+  final int approvalRequestCount;
+  final int approvalResolvedCount;
+  final int approvalCustomResponseCount;
   final int completedCount;
   final int failedCount;
   final int lastOutputSummaryLength;
   final int lastWaitMs;
+  final String loopSummaryText;
 
   bool get hasFacts {
     return turnCount > 0 ||
         deliverableCount > 0 ||
         continueCount > 0 ||
+        acceptedCount > 0 ||
+        redoCount > 0 ||
+        approvalRequestCount > 0 ||
+        approvalResolvedCount > 0 ||
+        approvalCustomResponseCount > 0 ||
         completedCount > 0 ||
         failedCount > 0;
   }
@@ -2498,10 +2547,16 @@ class _LoopFactsSummary {
   factory _LoopFactsSummary.fromTask(TaskSession task) {
     var deliverableCount = 0;
     var continueCount = 0;
+    var acceptedCount = 0;
+    var redoCount = 0;
+    var approvalRequestCount = 0;
+    var approvalResolvedCount = 0;
+    var approvalCustomResponseCount = 0;
     var completedCount = 0;
     var failedCount = 0;
     var lastOutputSummaryLength = 0;
     var lastWaitMs = 0;
+    var loopSummaryText = '';
     for (final event in task.metricEvents) {
       final payload = _metricPayload(event.payloadJson);
       if (event.eventType == LoopEvaluation.metricEventType) {
@@ -2512,17 +2567,35 @@ class _LoopFactsSummary {
         lastOutputSummaryLength = evaluation.metrics.outputSummaryLength;
         lastWaitMs = evaluation.metrics.waitMs;
       }
+      if (event.eventType == LoopResultSummary.metricEventType) {
+        loopSummaryText = LoopResultSummary.fromJson(payload).summaryText;
+      }
       if (event.eventType == LoopUserAction.metricEventType) {
         final action = LoopUserAction.fromJson(payload);
         switch (action.kind) {
           case LoopUserActionKind.continueTask:
             continueCount += 1;
+          case LoopUserActionKind.acceptResult:
+            acceptedCount += 1;
           case LoopUserActionKind.markCompleted:
             completedCount += 1;
           case LoopUserActionKind.markFailed:
             failedCount += 1;
           case LoopUserActionKind.rejectOrRedo:
-            failedCount += 1;
+            redoCount += 1;
+        }
+      }
+      if (event.eventType == LoopApprovalEvent.metricEventType) {
+        final approvalEvent = LoopApprovalEvent.fromJson(payload);
+        switch (approvalEvent.kind) {
+          case LoopApprovalEventKind.requested:
+            approvalRequestCount += 1;
+          case LoopApprovalEventKind.approved ||
+                LoopApprovalEventKind.rejected ||
+                LoopApprovalEventKind.optionSelected:
+            approvalResolvedCount += 1;
+          case LoopApprovalEventKind.customResponse:
+            approvalCustomResponseCount += 1;
         }
       }
     }
@@ -2531,10 +2604,16 @@ class _LoopFactsSummary {
       lastTurnIndex: task.turns.lastOrNull?.turnIndex ?? 0,
       deliverableCount: deliverableCount,
       continueCount: continueCount,
+      acceptedCount: acceptedCount,
+      redoCount: redoCount,
+      approvalRequestCount: approvalRequestCount,
+      approvalResolvedCount: approvalResolvedCount,
+      approvalCustomResponseCount: approvalCustomResponseCount,
       completedCount: completedCount,
       failedCount: failedCount,
       lastOutputSummaryLength: lastOutputSummaryLength,
       lastWaitMs: lastWaitMs,
+      loopSummaryText: loopSummaryText,
     );
   }
 }
@@ -3893,6 +3972,9 @@ Color _detailStatusColor(TaskStatus status, [WorkState? workState]) {
 }
 
 String _statusTimingText(TaskSession task) {
+  if (task.status == TaskStatus.pending && task.scheduledFor != null) {
+    return _scheduledTaskLabel(task.scheduledFor!);
+  }
   if (task.completedAt != null) {
     return '更新于 ${_timeLabel(task.completedAt!)}';
   }
@@ -3954,6 +4036,9 @@ String _cleanSnippet(String value, {int maxChars = 160}) {
 }
 
 String _currentSituationText(TaskSession task, [WorkState? workState]) {
+  if (task.status == TaskStatus.pending && task.scheduledFor != null) {
+    return '${_scheduledTaskLabel(task.scheduledFor!)}。';
+  }
   if (workState == null) {
     return '正在同步任务状态。';
   }
@@ -4210,6 +4295,14 @@ String _timeLabel(DateTime value) {
   final hour = value.hour.toString().padLeft(2, '0');
   final minute = value.minute.toString().padLeft(2, '0');
   return '$hour:$minute';
+}
+
+String _scheduledTaskLabel(DateTime scheduledFor) {
+  final now = DateTime.now();
+  if (!scheduledFor.isAfter(now)) {
+    return '计划已到点，正在准备启动';
+  }
+  return '计划于 ${_timeLabel(scheduledFor)} 执行';
 }
 
 String _timelineResultTitle(TaskStatus status) {

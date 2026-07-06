@@ -186,9 +186,6 @@ class ArminAppState extends ChangeNotifier {
       return TaskStatus.needApproval;
     }
     final latestTurn = task.turns.lastOrNull;
-    if (_hasPausedFact(task)) {
-      return TaskStatus.paused;
-    }
     if (task.completedAt != null &&
         (latestTurn == null ||
             latestTurn.status == NativeOutputTurnStatus.turnIdle)) {
@@ -209,6 +206,9 @@ class ArminAppState extends ChangeNotifier {
         NativeOutputTurnStatus.failedByUser => TaskStatus.userFailed,
         NativeOutputTurnStatus.stopped => TaskStatus.stopped,
       };
+    }
+    if (_hasPausedFact(task)) {
+      return TaskStatus.paused;
     }
     if (task.completedAt != null) {
       return TaskStatus.completed;

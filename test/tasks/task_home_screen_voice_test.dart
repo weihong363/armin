@@ -277,11 +277,11 @@ void main() {
     expect(find.text('Old approval'), findsOneWidget);
     expect(find.text('Decision needed'), findsOneWidget);
     expect(find.text('Continue copy'), findsOneWidget);
-    // paused also appears as needsAttention; visible count depends on priority sort
-    expect(find.text('Paused task'), findsWidgets);
-    expect(find.textContaining('查看全部'), findsOneWidget);
+    expect(find.text('Paused task'), findsNothing);
+    expect(find.text('Hidden failure'), findsNothing);
+    expect(find.text('查看全部 5 项等待任务'), findsOneWidget);
 
-    await tester.tap(find.textContaining('查看全部'));
+    await tester.tap(find.text('查看全部 5 项等待任务'));
     await tester.pumpAndSettle();
 
     expect(find.text('等待你处理'), findsOneWidget);
@@ -410,7 +410,7 @@ TaskSession _task(
     constraints: const {},
     finalPrompt: title,
     secretRecords: const [],
-    rawLog: '',
+    rawLog: status == TaskStatus.paused ? 'Task paused by user' : '',
     nativeApproval: status == TaskStatus.needApproval
         ? NativeTerminalApproval(
             id: 'approval-$id',
@@ -425,6 +425,7 @@ TaskSession _task(
       TaskStatus.needApproval => '这个任务需要你做决定',
       TaskStatus.needAttention => '这个任务需要你做决定',
       TaskStatus.turnIdle => '等待你的指示',
+      TaskStatus.paused => '连接已暂停',
       TaskStatus.failed => '继续之前请先检查问题',
       TaskStatus.runtimeLost => '连接已暂停',
       _ => '',

@@ -4,7 +4,6 @@ import 'package:flutter/material.dart';
 
 import '../../../core/models/task_status.dart';
 import '../../../shared/theme/armin_theme.dart';
-import '../../agent/services/agent_output_cleaner.dart';
 import '../../runtime/models/resolved_runtime_state.dart';
 import '../../runtime/models/work_state.dart';
 import '../models/task_session.dart';
@@ -71,7 +70,7 @@ class TaskCard extends StatelessWidget {
               _StatusPill(status: status, workState: effectiveWorkState),
               const SizedBox(height: 8),
               Text(
-                _readableSummary(task, status),
+                _readableSummary(task, status, effectiveWorkState),
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
                 style: Theme.of(context).textTheme.bodySmall,
@@ -204,7 +203,7 @@ class _FeaturedTaskCardState extends State<_FeaturedTaskCard> {
               ),
               const SizedBox(height: 8),
               Text(
-                _readableSummary(task, widget.status),
+                _readableSummary(task, widget.status, workState),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
@@ -302,15 +301,32 @@ class _FeaturedTaskCardState extends State<_FeaturedTaskCard> {
   }
 }
 
-String _readableSummary(TaskSession task, TaskStatus status) {
+String _readableSummary(
+  TaskSession task,
+  TaskStatus status,
+  WorkState? workState,
+) {
   if (status == TaskStatus.pending && task.scheduledFor != null) {
     return _scheduledTaskLabel(task.scheduledFor!);
   }
-  final summary = const AgentOutputCleaner().clean(task.shortSummary);
-  final text = summary.isEmpty ? task.userText : summary;
+  final statusText = workState?.statusText.trim() ?? '';
+  final deliverableText = _latestDeliverableSummary(task);
+  final text = statusText.isNotEmpty
+      ? statusText
+      : (deliverableText.isNotEmpty ? deliverableText : task.userText);
   return const SemanticSnippetBuilder()
       .build(text, contentType: SnippetContentType.agentSummary, maxChars: 140)
       .visibleText;
+}
+
+String _latestDeliverableSummary(TaskSession task) {
+  for (final turn in task.turns.reversed) {
+    final text = turn.deliverable?.displaySummary.trim();
+    if (text != null && text.isNotEmpty) {
+      return text;
+    }
+  }
+  return '';
 }
 
 class _StatusPill extends StatelessWidget {

@@ -205,7 +205,7 @@ none → pending → resolving → resolved
 - `RuntimePolicy` 会按执行模式调整安静输出阈值：安全模式较短，平衡模式更长，激进 / YOLO 模式最长，以降低长时间 thinking、跑测试或自动执行时被误判为 `turnIdle` 的风险；单次运行仍有最长观察时限，监控窗口较短，final capture 窗口较完整。
 - 已结束、失败、停止或运行丢失的任务可重新执行，并预选原任务的 Host 和 project path；仍在交互中的任务不能通过重跑另起 session。
 
-Armin 不解释或重写 Agent 的执行逻辑。`SelectableOutputSummaryProvider` 支持用户打开实验性的端侧摘要增强，并在 runner 不存在、设备不支持、超时或失败时回落至脱敏后的规则摘要。生产包仍待接入实际 Android 模型 runner；它只用于 TTS/展示摘要，不参与 Agent 执行。
+Armin 不解释或重写 Agent 的执行逻辑。`SelectableOutputSummaryProvider` 支持用户打开实验性的端侧摘要增强，并在端侧模型不存在、设备不支持、超时或失败时回落至脱敏后的规则摘要。Android 侧已接入 llama.cpp native runtime，可加载本地 GGUF 做摘要和 Loop Evaluation 辅助判断；它只用于 TTS/展示摘要/验收辅助，不参与 Agent 执行、审批或 follow-up 发送。
 
 ## 交互效率与 Loop Engineering
 
@@ -218,7 +218,7 @@ Armin 不解释或重写 Agent 的执行逻辑。`SelectableOutputSummaryProvide
 
 Loop Engineering 在 Armin 中的边界是单任务闭环优化：更清楚地计划任务、更可靠地观察执行、更早发现偏离、更低成本地追加上下文和验收结果。它不应变成复杂工作流系统、自动 fork/join runtime 或多 Agent 调度器。
 
-Phase 3 的起步实现见 [Phase 3 Loop Runtime 前置设计](runtime/phase-3-loop-runtime-prep.md)。架构上先新增 task/turn 级 loop facts 和恢复验证；执行、状态、审批、结果和 TTS 继续走 Phase 2.6/2.7 已验证的 RuntimeEventBus、WorkState、ApprovalState 与 `TurnDeliverable` 主路径。过渡阶段的规则型验收辅助建议只能消费 latest deliverable、用户目标、约束和 loop facts，并生成用户确认后才能发送的 follow-up 草稿。
+Phase 3 的起步实现见 [Phase 3 Loop Runtime 前置设计](runtime/phase-3-loop-runtime-prep.md)。架构上先新增 task/turn 级 loop facts 和恢复验证；执行、状态、审批、结果和 TTS 继续走 Phase 2.6/2.7 已验证的 RuntimeEventBus、WorkState、ApprovalState 与 `TurnDeliverable` 主路径。过渡阶段的规则型验收辅助建议和 AI Loop Evaluation 只能消费 latest deliverable、用户目标、约束和 loop facts；AI 评估只展示辅助判断，不自动发送草稿或改变状态。
 
 ## Phase 2.6 结果迁移架构
 

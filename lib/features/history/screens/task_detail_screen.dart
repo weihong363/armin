@@ -10,6 +10,7 @@ import '../../../core/services/armin_app_state.dart';
 import '../../../shared/line_noise_filter.dart';
 import '../../../shared/scroll/armin_scroll_behavior.dart';
 import '../../../shared/theme/armin_theme.dart';
+import '../../agent/parsers/terminal_prompt_parser.dart';
 import '../../agent/services/agent_output_cleaner.dart';
 import '../../hosts/models/host_config.dart';
 import '../../projects/models/project_path_config.dart';
@@ -23,9 +24,9 @@ import '../../tasks/models/native_output_turn.dart';
 import '../../tasks/models/task_session.dart';
 import '../../tasks/models/voice_input.dart';
 import '../../tasks/screens/task_draft_screen.dart';
+import '../../tasks/services/loop_evaluation_assistant.dart';
 import '../../tasks/services/loop_follow_up_advisor.dart';
 import '../../tasks/services/semantic_snippet_builder.dart';
-import '../../tasks/services/turn_output_slicer.dart';
 import '../../tasks/services/voice_task_command_processor.dart';
 import '../../tasks/widgets/add_context_sheet.dart';
 import '../../voice/services/device_voice_service.dart';
@@ -39,22 +40,9 @@ enum _TaskDetailAction {
 }
 
 const _taskDetailTabScrollPhysics = ClampingScrollPhysics();
-const _recentPreviewCacheLimit = 3;
 const _timelineCacheLimit = 12;
 
-final _recentPreviewCache = <String, String>{};
 final _timelineCache = <String, _TimelineViewModel>{};
-
-String? _cachedRecentPreview(String signature) {
-  return _recentPreviewCache[signature];
-}
-
-void _cacheRecentPreview(String signature, String preview) {
-  _recentPreviewCache[signature] = preview;
-  while (_recentPreviewCache.length > _recentPreviewCacheLimit) {
-    _recentPreviewCache.remove(_recentPreviewCache.keys.first);
-  }
-}
 
 _TimelineViewModel? _cachedTimeline(String signature) {
   return _timelineCache[signature];
@@ -68,9 +56,14 @@ void _cacheTimeline(String signature, _TimelineViewModel model) {
 }
 
 class TaskDetailScreen extends StatefulWidget {
-  const TaskDetailScreen({required this.taskId, super.key});
+  const TaskDetailScreen({
+    required this.taskId,
+    this.loopEvaluationAssistant = const LoopEvaluationAssistant(),
+    super.key,
+  });
 
   final String taskId;
+  final LoopEvaluationAssistant loopEvaluationAssistant;
 
   @override
   State<TaskDetailScreen> createState() => _TaskDetailScreenState();
@@ -86,9 +79,6 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
 
   late final TabController _tabController =
       TabController(length: 3, vsync: this);
-  final _attentionAnchorKey = GlobalKey();
-  int _latestTurnRevealToken = 0;
-  String _handledAttentionRevealSignature = '';
 
   StreamSubscription<RuntimeEvent>? _eventSubscription;
   final int _resultVersion = 0;
@@ -176,9 +166,6 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
     if (!mounted) {
       return;
     }
-    setState(() {
-      _latestTurnRevealToken++;
-    });
     _selectTab(_resultTabIndex);
   }
 
@@ -227,8 +214,6 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
       taskStatus: status,
       workState: appState.workState(task.id),
     ).toWorkState(task.id);
-    _maybeRevealAttentionAction(task, workState);
-
     return Scaffold(
       resizeToAvoidBottomInset: false,
       appBar: AppBar(
@@ -286,6 +271,9 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
                 child: NotificationListener<ScrollNotification>(
                   onNotification: _handleTaskScrollNotification,
                   child: NestedScrollView(
+                    key: PageStorageKey<String>(
+                      'task-detail-nested-scroll-${task.id}',
+                    ),
                     physics: const ArminScrollPhysics(
                       parent: AlwaysScrollableScrollPhysics(),
                     ),
@@ -310,14 +298,11 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
                       SliverPadding(
                         padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
                         sliver: SliverToBoxAdapter(
-                          child: KeyedSubtree(
-                            key: _attentionAnchorKey,
-                            child: _TaskNeedsPanel(
-                              task: task,
-                              status: status,
-                              workState: workState,
-                              onViewResult: _revealLatestResult,
-                            ),
+                          child: _TaskNeedsPanel(
+                            task: task,
+                            status: status,
+                            workState: workState,
+                            onViewResult: _revealLatestResult,
                           ),
                         ),
                       ),
@@ -360,8 +345,9 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
                           index: visibleTabIndex,
                           task: task,
                           status: status,
-                          revealLatestTurnToken: _latestTurnRevealToken,
                           resultVersion: _resultVersion,
+                          loopEvaluationAssistant:
+                              widget.loopEvaluationAssistant,
                         );
                       },
                     ),
@@ -481,37 +467,6 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
       _taskPageAtTop = notification.metrics.extentBefore == 0;
     }
     return false;
-  }
-
-  bool get _isTestEnvironment {
-    final bindingName = WidgetsBinding.instance.runtimeType.toString();
-    return bindingName.contains('Test') || bindingName.contains('Automated');
-  }
-
-  void _maybeRevealAttentionAction(TaskSession task, WorkState? workState) {
-    if (!_isAttentionRequired(workState) || _isTestEnvironment) {
-      return;
-    }
-    final signature = '${task.id}:${_workPhaseName(workState)}:'
-        '${task.updatedAt.microsecondsSinceEpoch}';
-    if (_handledAttentionRevealSignature == signature) {
-      return;
-    }
-    _handledAttentionRevealSignature = signature;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) {
-        return;
-      }
-      final anchorContext = _attentionAnchorKey.currentContext;
-      if (anchorContext == null) {
-        return;
-      }
-      Scrollable.ensureVisible(
-        anchorContext,
-        alignment: 0.05,
-        duration: const Duration(milliseconds: 220),
-      );
-    });
   }
 
   void _rerunTask(BuildContext context, TaskSession task) {
@@ -647,24 +602,27 @@ class _CurrentTaskTabPanel extends StatelessWidget {
     required this.index,
     required this.task,
     required this.status,
-    required this.revealLatestTurnToken,
     required this.resultVersion,
+    required this.loopEvaluationAssistant,
   });
 
   final int index;
   final TaskSession task;
   final TaskStatus status;
-  final int revealLatestTurnToken;
   final int resultVersion;
+  final LoopEvaluationAssistant loopEvaluationAssistant;
 
   @override
   Widget build(BuildContext context) {
     return switch (index) {
-      0 => _TimelinePanel(task: task, status: status),
+      0 => _TimelinePanel(
+          task: task,
+          status: status,
+          loopEvaluationAssistant: loopEvaluationAssistant,
+        ),
       1 => _ResultPanel(
           task: task,
           status: status,
-          revealLatestTurnToken: revealLatestTurnToken,
           resultVersion: resultVersion,
         ),
       _ => _AdvancedDebugPanel(task: task, status: status),
@@ -755,19 +713,23 @@ class _RuntimeFocusViewModel {
     final detail = workState?.detail.trim() ?? '';
     final latestTurn = task.turns.lastOrNull;
     final latestDeliverable = latestTurn?.deliverable;
+    final hasReadableDeliverable = latestDeliverable != null &&
+        const AgentOutputCleaner()
+            .clean(latestDeliverable.displaySummary)
+            .trim()
+            .isNotEmpty;
 
     final title = switch (phase) {
       WorkPhase.working => _firstNonEmpty([
           progressAction,
           headline,
           detail,
-          _latestTurnFocus(latestTurn),
           'Agent 正在执行',
         ]),
       WorkPhase.needsApproval => headline.isEmpty ? '等待审批' : headline,
       WorkPhase.needsInstruction ||
       WorkPhase.turnIdle =>
-        latestDeliverable == null
+        !hasReadableDeliverable
             ? _firstNonEmpty([headline, '等待你的下一步指令'])
             : '等待你验收最新结果',
       WorkPhase.needsReview => '等待你查看最新结果',
@@ -1629,10 +1591,15 @@ class _TaskTimingTextState extends State<_TaskTimingText>
 }
 
 class _TimelinePanel extends StatefulWidget {
-  const _TimelinePanel({required this.task, required this.status});
+  const _TimelinePanel({
+    required this.task,
+    required this.status,
+    required this.loopEvaluationAssistant,
+  });
 
   final TaskSession task;
   final TaskStatus status;
+  final LoopEvaluationAssistant loopEvaluationAssistant;
 
   @override
   State<_TimelinePanel> createState() => _TimelinePanelState();
@@ -1640,11 +1607,13 @@ class _TimelinePanel extends StatefulWidget {
 
 class _TimelinePanelState extends State<_TimelinePanel> {
   String _cachedSignature = '';
+  String _aiEvaluationSignature = '';
+  Future<LoopEvaluationSummary>? _aiEvaluationFuture;
   late _TimelineViewModel _viewModel;
 
   static String _computeSignature(TaskSession task, TaskStatus status) {
     final latestTurn = task.turns.lastOrNull;
-    return '${task.id}:${status.name}:${task.shortSummary}:'
+    return '${task.id}:${status.name}:'
         '${task.updatedAt.microsecondsSinceEpoch}:'
         '${task.completedAt?.microsecondsSinceEpoch}:'
         '${task.voiceInputs.length}:${task.turns.length}:'
@@ -1665,7 +1634,7 @@ class _TimelinePanelState extends State<_TimelinePanel> {
     }
     final readableSummary = const SemanticSnippetBuilder()
         .build(
-          const AgentOutputCleaner().clean(task.shortSummary),
+          _latestDeliverableSummary(task),
           contentType: SnippetContentType.agentSummary,
           maxChars: 220,
         )
@@ -1705,10 +1674,21 @@ class _TimelinePanelState extends State<_TimelinePanel> {
       visibleItems: allItems.reversed.take(3).toList(growable: false),
       hasTurns: task.turns.isNotEmpty,
       hasLoopFacts: _LoopFactsSummary.fromTask(task).hasFacts,
+      showAiEvaluation: _shouldShowAiEvaluation(task, status),
       followUpSuggestions: _followUpSuggestionsFor(task, status),
     );
     _cacheTimeline(signature, model);
     return model;
+  }
+
+  static String _latestDeliverableSummary(TaskSession task) {
+    for (final turn in task.turns.reversed) {
+      final text = turn.deliverable?.displaySummary.trim();
+      if (text != null && text.isNotEmpty) {
+        return text;
+      }
+    }
+    return '';
   }
 
   static List<LoopFollowUpSuggestion> _followUpSuggestionsFor(
@@ -1722,6 +1702,15 @@ class _TimelinePanelState extends State<_TimelinePanel> {
       return const [];
     }
     return const LoopFollowUpAdvisor().suggest(task);
+  }
+
+  static bool _shouldShowAiEvaluation(TaskSession task, TaskStatus status) {
+    final latestTurn = task.turns.lastOrNull;
+    return latestTurn?.deliverable != null ||
+        status == TaskStatus.needApproval ||
+        status == TaskStatus.needAttention ||
+        status == TaskStatus.runtimeLost ||
+        status == TaskStatus.failed;
   }
 
   @override
@@ -1743,6 +1732,7 @@ class _TimelinePanelState extends State<_TimelinePanel> {
 
   @override
   Widget build(BuildContext context) {
+    final aiEvaluationFuture = _aiEvaluationFutureFor();
     return ListView.separated(
       key:
           PageStorageKey<String>('task-detail-timeline-list-${widget.task.id}'),
@@ -1751,6 +1741,7 @@ class _TimelinePanelState extends State<_TimelinePanel> {
       itemCount: _viewModel.visibleItems.length +
           2 +
           (_viewModel.hasLoopFacts ? 1 : 0) +
+          (_viewModel.showAiEvaluation ? 1 : 0) +
           (_viewModel.followUpSuggestions.isNotEmpty ? 1 : 0) +
           (_viewModel.hasTurns ? 1 : 0),
       separatorBuilder: (_, __) => const SizedBox(height: 12),
@@ -1788,6 +1779,12 @@ class _TimelinePanelState extends State<_TimelinePanel> {
           }
           itemIndex -= 1;
         }
+        if (_viewModel.showAiEvaluation) {
+          if (itemIndex == 0) {
+            return _LoopEvaluationCard(future: aiEvaluationFuture);
+          }
+          itemIndex -= 1;
+        }
         if (_viewModel.followUpSuggestions.isNotEmpty) {
           if (itemIndex == 0) {
             return _FollowUpSuggestionsCard(
@@ -1806,6 +1803,23 @@ class _TimelinePanelState extends State<_TimelinePanel> {
         );
       },
     );
+  }
+
+  Future<LoopEvaluationSummary> _aiEvaluationFutureFor() {
+    final latestTurn = widget.task.turns.lastOrNull;
+    final signature = '${widget.task.id}:${widget.status.name}:'
+        '${widget.task.updatedAt.microsecondsSinceEpoch}:'
+        '${widget.task.metricEvents.length}:'
+        '${latestTurn?.deliverable?.evidenceFingerprint}:'
+        '${latestTurn?.deliverable?.displaySummary.hashCode}';
+    if (_aiEvaluationFuture == null || signature != _aiEvaluationSignature) {
+      _aiEvaluationSignature = signature;
+      _aiEvaluationFuture = widget.loopEvaluationAssistant.evaluate(
+        widget.task,
+        runtimeStatus: widget.status.name,
+      );
+    }
+    return _aiEvaluationFuture!;
   }
 
   void _showSuggestedFollowUpSheet(LoopFollowUpSuggestion suggestion) {
@@ -1833,77 +1847,44 @@ class _TimelinePanelState extends State<_TimelinePanel> {
   }
 }
 
-class _TurnSummaryList extends StatefulWidget {
+class _TurnSummaryList extends StatelessWidget {
   const _TurnSummaryList({required this.task});
 
   final TaskSession task;
 
   @override
-  State<_TurnSummaryList> createState() => _TurnSummaryListState();
-}
-
-class _TurnSummaryListState extends State<_TurnSummaryList> {
-  static const _collapsedTurnCount = 3;
-
-  bool _expanded = false;
-
-  @override
-  void didUpdateWidget(covariant _TurnSummaryList oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.task.id != widget.task.id) {
-      _expanded = false;
-    }
-  }
-
-  @override
   Widget build(BuildContext context) {
-    final indexedTurns = [
-      for (var index = 0; index < widget.task.turns.length; index++)
-        _IndexedTurn(index: index, turn: widget.task.turns[index]),
-    ]..sort((a, b) => b.turn.turnIndex.compareTo(a.turn.turnIndex));
-    final hiddenCount = indexedTurns.length - _collapsedTurnCount;
-    final visibleTurns = _expanded
-        ? indexedTurns
-        : indexedTurns.take(_collapsedTurnCount).toList(growable: false);
+    final latest = task.turns.lastOrNull;
+    if (latest == null) {
+      return const Text('暂无输出记录');
+    }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        for (final indexedTurn in visibleTurns)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 12),
-            child: _TurnSummaryRow(
-              turn: indexedTurn.turn,
-              turnIndex: indexedTurn.index,
-              turns: widget.task.turns,
-            ),
+        _TurnSummaryRow(turn: latest),
+        if (task.turns.length > 1) ...[
+          const SizedBox(height: 4),
+          Text(
+            '已隐藏 ${task.turns.length - 1} 条更早输出，当前只展示最新结果。',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: ArminTheme.ink.withValues(alpha: 0.55),
+                ),
           ),
-        if (!_expanded && hiddenCount > 0)
-          Align(
-            alignment: Alignment.centerLeft,
-            child: TextButton(
-              onPressed: () => setState(() => _expanded = true),
-              child: Text('查看全部 $hiddenCount 条更早输出'),
-            ),
-          ),
+        ],
       ],
     );
   }
 }
 
 class _TurnSummaryRow extends StatelessWidget {
-  const _TurnSummaryRow({
-    required this.turn,
-    required this.turnIndex,
-    required this.turns,
-  });
+  const _TurnSummaryRow({required this.turn});
 
   final NativeOutputTurn turn;
-  final int turnIndex;
-  final List<NativeOutputTurn> turns;
 
   @override
   Widget build(BuildContext context) {
     final title = turn.turnIndex == 1 ? '初始任务输出' : '上下文更新输出 ${turn.turnIndex}';
+    final deliverable = turn.deliverable?.displaySummary.trim() ?? '';
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1930,90 +1911,16 @@ class _TurnSummaryRow extends StatelessWidget {
           overflow: TextOverflow.ellipsis,
           style: Theme.of(context).textTheme.bodySmall,
         ),
-        if (turn.rawOutput.isNotEmpty || turn.cleanedOutput.isNotEmpty) ...[
+        if (deliverable.isNotEmpty) ...[
           const SizedBox(height: 6),
-          _LazyTurnOutputExpansion(
-            key: ValueKey(
-                '${turn.id}:${turn.lastOutputAt.microsecondsSinceEpoch}'),
-            turns: turns,
-            turnIndex: turnIndex,
+          Text(
+            deliverable,
+            maxLines: 8,
+            overflow: TextOverflow.ellipsis,
+            style: Theme.of(context).textTheme.bodySmall,
           ),
         ],
       ],
-    );
-  }
-}
-
-class _LazyTurnOutputExpansion extends StatefulWidget {
-  const _LazyTurnOutputExpansion({
-    required this.turns,
-    required this.turnIndex,
-    super.key,
-  });
-
-  final List<NativeOutputTurn> turns;
-  final int turnIndex;
-
-  @override
-  State<_LazyTurnOutputExpansion> createState() =>
-      _LazyTurnOutputExpansionState();
-}
-
-class _LazyTurnOutputExpansionState extends State<_LazyTurnOutputExpansion> {
-  static const _turnOutputSlicer = TurnOutputSlicer();
-
-  bool _expanded = false;
-  String? _fullOutput;
-
-  @override
-  void didUpdateWidget(covariant _LazyTurnOutputExpansion oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.turns != widget.turns ||
-        oldWidget.turnIndex != widget.turnIndex) {
-      _fullOutput = _expanded ? _buildFullOutput() : null;
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return ExpansionTile(
-      key: PageStorageKey<String>(
-        'turn-output-expansion-${widget.turns[widget.turnIndex].id}',
-      ),
-      tilePadding: EdgeInsets.zero,
-      childrenPadding: const EdgeInsets.only(top: 4),
-      title: const Text('显示原始输出'),
-      onExpansionChanged: (expanded) {
-        // Defer setState — ExpansionTile may fire this during initState
-        // (PageStorage restoration) while the framework is still building.
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (!mounted) return;
-          setState(() {
-            _expanded = expanded;
-            _fullOutput = expanded ? _buildFullOutput() : null;
-          });
-        });
-      },
-      children: [
-        if (_expanded)
-          Align(
-            alignment: Alignment.centerLeft,
-            child: Text(
-              key: PageStorageKey<String>(
-                'turn-output-text-${widget.turns[widget.turnIndex].id}',
-              ),
-              _fallback(_fullOutput ?? '', '无'),
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
-          ),
-      ],
-    );
-  }
-
-  String _buildFullOutput() {
-    return _turnOutputSlicer.rawOutputForTurn(
-      widget.turns,
-      widget.turnIndex,
     );
   }
 }
@@ -2082,13 +1989,11 @@ class _ResultPanel extends StatefulWidget {
   const _ResultPanel({
     required this.task,
     required this.status,
-    required this.revealLatestTurnToken,
     required this.resultVersion,
   });
 
   final TaskSession task;
   final TaskStatus status;
-  final int revealLatestTurnToken;
   final int resultVersion;
 
   @override
@@ -2097,19 +2002,8 @@ class _ResultPanel extends StatefulWidget {
 
 class _ResultPanelState extends State<_ResultPanel> {
   static const _foldLineLimit = 20;
-  static const _recentOutputWindowChars = 12000;
-  static const _recentOutputLineLimit = 80;
-  static const _recentOutputPreviewLineLimit = 30;
   static const _summaryPageSize = 3;
 
-  final GlobalKey _topAnchorKey = GlobalKey();
-  Future<List<_TurnOutputSummary>>? _summariesFuture;
-  Future<String>? _recentPreviewFuture;
-  String _summarySignature = '';
-  String _recentPreviewSignature = '';
-  bool _summaryScheduled = false;
-  bool _recentPreviewScheduled = false;
-  int _handledRevealToken = 0;
   int _visibleSummaryCount = _summaryPageSize;
 
   String? _activeVoiceCardId;
@@ -2167,8 +2061,6 @@ class _ResultPanelState extends State<_ResultPanel> {
   void didChangeDependencies() {
     super.didChangeDependencies();
     _voiceService = AppStateScope.read(context).voiceService;
-    _syncResultWork();
-    _maybeRevealLatestTurn();
   }
 
   @override
@@ -2191,17 +2083,12 @@ class _ResultPanelState extends State<_ResultPanel> {
     final deepChanged = oldWidget.resultVersion != widget.resultVersion;
     if (deepChanged ||
         oldWidget.task.id != widget.task.id ||
-        oldWidget.task.summary != widget.task.summary ||
-        oldWidget.task.shortSummary != widget.task.shortSummary ||
+        oldWidget.status != widget.status ||
         _turnsSignature(oldWidget.task) != _turnsSignature(widget.task)) {
       if (oldWidget.task.id != widget.task.id ||
           _turnsSignature(oldWidget.task) != _turnsSignature(widget.task)) {
         _visibleSummaryCount = _summaryPageSize;
       }
-      _syncResultWork(force: deepChanged);
-    }
-    if (oldWidget.revealLatestTurnToken != widget.revealLatestTurnToken) {
-      _maybeRevealLatestTurn();
     }
   }
 
@@ -2212,7 +2099,6 @@ class _ResultPanelState extends State<_ResultPanel> {
       physics: _taskDetailTabScrollPhysics,
       padding: const EdgeInsets.fromLTRB(20, 20, 20, 96),
       children: [
-        SizedBox(key: _topAnchorKey, height: 0),
         _InfoCard(
           title: '结果 / 产出',
           trailing: Text(
@@ -2221,19 +2107,15 @@ class _ResultPanelState extends State<_ResultPanel> {
                   color: ArminTheme.ink.withValues(alpha: 0.45),
                 ),
           ),
-          child: _shouldBuildResultSummary(widget.task)
+          child: _shouldBuildResultContent(widget.task)
               ? _buildResultSummary()
-              : _buildRecentOutputPreview(),
+              : Text(_emptyResultText(widget.status)),
         ),
       ],
     );
   }
 
-  Future<List<_TurnOutputSummary>> _outputSummaries(
-    TaskSession task,
-    String signature,
-  ) async {
-    await Future<void>.delayed(Duration.zero);
+  List<_TurnOutputSummary> _outputSummaries(TaskSession task) {
     final summaries = <_TurnOutputSummary>[];
     final indexedTurns = _resultTurns(task, limit: _visibleSummaryCount);
     for (var visibleIndex = 0;
@@ -2243,7 +2125,7 @@ class _ResultPanelState extends State<_ResultPanel> {
       final turn = indexedTurn.turn;
       final deliverable = turn.deliverable;
       if (deliverable == null) continue;
-      final text = deliverable.displaySummary.trim();
+      final text = _displaySummaryText(deliverable.displaySummary);
       final speechText = deliverable.speechSummary.trim().isNotEmpty
           ? deliverable.speechSummary.trim()
           : DeviceVoiceService.cleanSpeechText(text);
@@ -2258,14 +2140,121 @@ class _ResultPanelState extends State<_ResultPanel> {
         );
       }
     }
+    if (summaries.isEmpty) {
+      final progress = _progressOutputSummary(task);
+      if (progress != null) {
+        summaries.add(progress);
+      }
+    }
     return summaries;
+  }
+
+  _TurnOutputSummary? _progressOutputSummary(TaskSession task) {
+    for (var index = task.turns.length - 1; index >= 0; index--) {
+      final turn = task.turns[index];
+      if (turn.deliverable != null ||
+          turn.status == NativeOutputTurnStatus.running) {
+        continue;
+      }
+      final text = _progressSummaryText(turn);
+      if (text.isEmpty) continue;
+      return _TurnOutputSummary(
+        title: '最近进展（非最终结果）',
+        text: text,
+        speechText: '',
+        fullOutputForSpeech: '',
+      );
+    }
+    return null;
+  }
+
+  String _progressSummaryText(NativeOutputTurn turn) {
+    final source = turn.cleanedOutput.trim().isNotEmpty
+        ? turn.cleanedOutput
+        : turn.rawOutput;
+    if (const TerminalPromptParser().parse(source) != null ||
+        _looksLikeTerminalInteraction(source)) {
+      return '';
+    }
+    final cleaned = const AgentOutputCleaner().clean(source);
+    if (cleaned.trim().isEmpty) return '';
+    final lines = <String>[];
+    for (final line in cleaned.split('\n')) {
+      final progressLine = _progressLine(line);
+      if (progressLine.isNotEmpty && !lines.contains(progressLine)) {
+        lines.add(progressLine);
+      }
+    }
+    if (lines.isEmpty) return '';
+    final tail = lines.length <= 6 ? lines : lines.sublist(lines.length - 6);
+    return [
+      '目标 CLI 尚未输出正式结果；下面是最近可确认的执行进展。',
+      ...tail,
+    ].join('\n');
+  }
+
+  bool _looksLikeTerminalInteraction(String output) {
+    final lower = output.toLowerCase();
+    return (lower.contains('allow once') ||
+            lower.contains('reject and type something') ||
+            lower.contains('permission required')) &&
+        (lower.contains('allow this command') ||
+            lower.contains('apply this change') ||
+            lower.contains('redirection detected') ||
+            lower.contains('command:'));
+  }
+
+  String _progressLine(String line) {
+    final trimmed = line.trim();
+    if (trimmed.isEmpty) return '';
+    final lower = trimmed.toLowerCase();
+    if (lower.startsWith('armin_diag:') ||
+        lower.startsWith('armin context governance') ||
+        lower.startsWith('## user task') ||
+        lower.startsWith('## user constraints') ||
+        lower.startsWith('thinking') ||
+        const LineNoiseFilter().isUnreadable(trimmed) ||
+        lower.contains("what's new") ||
+        lower.contains('not login please auth') ||
+        lower.contains('/release-notes for more')) {
+      return '';
+    }
+    final content = trimmed.replaceFirst(RegExp(r'^[▪▫]\s*'), '').trim();
+    final readMatch = RegExp(r'^Read\((.+)\)$').firstMatch(content);
+    if (readMatch != null) {
+      return '已读取 ${_compactPath(readMatch.group(1) ?? '')}';
+    }
+    final globMatch = RegExp(r"^Glob\('(.+)'\)$").firstMatch(content);
+    if (globMatch != null) {
+      return '已检查 ${globMatch.group(1)}';
+    }
+    final bashMatch = RegExp(r'^Bash\((.+)\)$').firstMatch(content);
+    if (bashMatch != null) {
+      return '已执行 ${bashMatch.group(1)}';
+    }
+    if (content.startsWith('└')) {
+      return content.replaceFirst(RegExp(r'^└\s*'), '').trim();
+    }
+    final contentLower = content.toLowerCase();
+    if (contentLower.startsWith('let me ') ||
+        contentLower.startsWith('i will ') ||
+        contentLower.startsWith("i'll ")) {
+      return '';
+    }
+    return content;
+  }
+
+  String _compactPath(String value) {
+    final normalized = value.trim();
+    if (normalized.isEmpty) return '文件';
+    final parts = normalized.split('/');
+    return parts.isEmpty ? normalized : parts.last.replaceAll(')', '');
   }
 
   bool _isResultTurn(NativeOutputTurnStatus status) {
     return switch (status) {
+      NativeOutputTurnStatus.running => false,
       NativeOutputTurnStatus.needAttention ||
-      NativeOutputTurnStatus.running =>
-        false,
       NativeOutputTurnStatus.turnIdle ||
       NativeOutputTurnStatus.runtimeLost ||
       NativeOutputTurnStatus.failed ||
@@ -2274,16 +2263,6 @@ class _ResultPanelState extends State<_ResultPanel> {
       NativeOutputTurnStatus.stopped =>
         true,
     };
-  }
-
-  _IndexedTurn? _latestResultTurn(TaskSession task) {
-    for (var index = task.turns.length - 1; index >= 0; index--) {
-      final turn = task.turns[index];
-      if (_isResultTurn(turn.status) && turn.deliverable != null) {
-        return _IndexedTurn(index: index, turn: turn);
-      }
-    }
-    return null;
   }
 
   List<_IndexedTurn> _resultTurns(TaskSession task, {required int limit}) {
@@ -2306,28 +2285,37 @@ class _ResultPanelState extends State<_ResultPanel> {
         .length;
   }
 
-  void _maybeRevealLatestTurn() {
-    if (widget.revealLatestTurnToken == _handledRevealToken) {
-      return;
+  String _displaySummaryText(String displaySummary) {
+    final cleaned = const AgentOutputCleaner().clean(displaySummary).trim();
+    if (cleaned.isEmpty) {
+      return '';
     }
-    _handledRevealToken = widget.revealLatestTurnToken;
-    _scheduleScrollToTop();
+    final lines = cleaned
+        .split('\n')
+        .map((line) => line.trimRight())
+        .where((line) => line.trim().isNotEmpty)
+        .where((line) => !_looksLikeResultLogNoise(line))
+        .toList(growable: false);
+    return lines.isEmpty ? cleaned : lines.join('\n');
   }
 
-  void _scheduleScrollToTop() {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) {
-        return;
-      }
-      final anchorContext = _topAnchorKey.currentContext;
-      if (anchorContext != null) {
-        Scrollable.ensureVisible(
-          anchorContext,
-          alignment: 0,
-          duration: Duration.zero,
-        );
-      }
-    });
+  bool _looksLikeResultLogNoise(String line) {
+    final trimmed = line.trim();
+    final lower = trimmed.toLowerCase();
+    return lower.startsWith('armin context governance') ||
+        lower.startsWith('armin_diag:') ||
+        lower.startsWith('## user task') ||
+        lower.startsWith('## user constraints') ||
+        lower.startsWith('thinking') ||
+        const LineNoiseFilter().isUnreadable(trimmed) ||
+        lower.contains("what's new") ||
+        lower.contains('not login please auth') ||
+        lower.contains('/release-notes for more') ||
+        RegExp(r'^[▪▫]\s*(?:Read|Glob|Grep|Bash|Write|Edit|MultiEdit|List)\(',
+                caseSensitive: false)
+            .hasMatch(trimmed) ||
+        trimmed.startsWith('└') ||
+        trimmed.startsWith('│');
   }
 
   String _turnsSignature(TaskSession task) {
@@ -2336,58 +2324,17 @@ class _ResultPanelState extends State<_ResultPanel> {
               t.turnIndex,
               t.status.name,
               t.userInput.hashCode,
-              t.cleanedOutput.length,
-              t.rawOutput.length,
-              t.lastOutputAt.microsecondsSinceEpoch,
               t.deliverable?.evidenceFingerprint ?? '',
             ].join(':'))
         .join('|');
   }
 
-  void _syncResultWork({bool force = false}) {
-    if (_shouldBuildResultSummary(widget.task)) {
-      _recentPreviewFuture = null;
-      _recentPreviewSignature = '';
-      final signature = _resultSummarySignature(widget.task);
-      if (force || _summarySignature != signature) {
-        _summarySignature = signature;
-        _summariesFuture = null;
-        _scheduleSummaryBuild(signature);
-      }
-      return;
-    }
-
-    _summariesFuture = null;
-    _summarySignature = '';
-    final signature = _recentOutputSignature(widget.task);
-    if (force || _recentPreviewSignature != signature) {
-      _recentPreviewSignature = signature;
-      _recentPreviewFuture = null;
-      if (_cachedRecentPreview(signature) == null) {
-        _scheduleRecentPreviewBuild(signature);
-      }
-    }
-  }
-
   Widget _buildResultSummary() {
-    final future = _summariesFuture;
-    if (future == null) {
-      return const Text('正在整理产出…');
+    final outputs = _outputSummaries(widget.task);
+    if (outputs.isEmpty) {
+      return const Text('暂无结果');
     }
-    return FutureBuilder<List<_TurnOutputSummary>>(
-      future: future,
-      builder: (context, snapshot) {
-        if (snapshot.connectionState != ConnectionState.done &&
-            !snapshot.hasData) {
-          return const Text('正在整理产出…');
-        }
-        final outputs = snapshot.data ?? const [];
-        if (outputs.isEmpty) {
-          return const Text('暂无结果');
-        }
-        return _buildOutputSummaries(outputs);
-      },
-    );
+    return _buildOutputSummaries(outputs);
   }
 
   Widget _buildOutputSummaries(List<_TurnOutputSummary> outputs) {
@@ -2432,151 +2379,37 @@ class _ResultPanelState extends State<_ResultPanel> {
   void _loadMoreSummaries() {
     setState(() {
       _visibleSummaryCount += _summaryPageSize;
-      _summarySignature = '';
-      _summariesFuture = null;
-    });
-    _syncResultWork(force: true);
-  }
-
-  Widget _buildRecentOutputPreview() {
-    final cached = _cachedRecentPreview(_recentPreviewSignature);
-    if (cached != null) {
-      return _RecentOutputPreview(
-        text: cached,
-        previewLineLimit: _recentOutputPreviewLineLimit,
-      );
-    }
-    final future = _recentPreviewFuture;
-    if (future == null) {
-      return const Text('正在整理最近输出…');
-    }
-    return FutureBuilder<String>(
-      future: future,
-      builder: (context, snapshot) {
-        if (snapshot.connectionState != ConnectionState.done &&
-            !snapshot.hasData) {
-          return const Text('正在整理最近输出…');
-        }
-        return _RecentOutputPreview(
-          text: snapshot.data ?? '',
-          previewLineLimit: _recentOutputPreviewLineLimit,
-        );
-      },
-    );
-  }
-
-  void _scheduleSummaryBuild(String signature) {
-    if (_summaryScheduled) {
-      return;
-    }
-    _summaryScheduled = true;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) {
-        return;
-      }
-      if (_summarySignature != signature ||
-          !_shouldBuildResultSummary(widget.task)) {
-        _summaryScheduled = false;
-        _syncResultWork();
-        return;
-      }
-      setState(() {
-        _summaryScheduled = false;
-        _summariesFuture = _outputSummaries(widget.task, signature);
-      });
     });
   }
 
-  void _scheduleRecentPreviewBuild(String signature) {
-    if (_recentPreviewScheduled) {
-      return;
-    }
-    _recentPreviewScheduled = true;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) {
-        return;
-      }
-      if (_recentPreviewSignature != signature ||
-          _shouldBuildResultSummary(widget.task)) {
-        _recentPreviewScheduled = false;
-        _syncResultWork();
-        return;
-      }
-      setState(() {
-        _recentPreviewScheduled = false;
-        _recentPreviewFuture = _recentOutputPreview(widget.task, signature);
-      });
-    });
-  }
+  bool _shouldBuildResultSummary(TaskSession task) =>
+      _resultTurnCount(task) > 0;
 
-  String _resultSummarySignature(TaskSession task) {
-    final resultTurn = _latestResultTurn(task);
-    return [
-      task.id,
-      widget.status.name,
-      _visibleSummaryCount,
-      task.summary?.hashCode ?? 0,
-      task.shortSummary.hashCode,
-      if (resultTurn != null) ...[
-        resultTurn.turn.id,
-        resultTurn.turn.status.name,
-        resultTurn.turn.deliverable?.evidenceFingerprint ?? '',
-      ],
-    ].join(':');
-  }
+  bool _shouldBuildResultContent(TaskSession task) =>
+      _shouldBuildResultSummary(task) || _progressOutputSummary(task) != null;
+}
 
-  String _recentOutputSignature(TaskSession task) {
-    final latest = task.turns.isEmpty ? null : task.turns.last;
-    return [
-      task.id,
-      widget.status.name,
-      if (latest != null) ...[
-        latest.id,
-        latest.status.name,
-        latest.rawOutput.length,
-        latest.cleanedOutput.length,
-        latest.lastOutputAt.microsecondsSinceEpoch,
-      ],
-    ].join(':');
-  }
-
-  bool _shouldBuildResultSummary(TaskSession task) {
-    return !_usesRecentOutputPreview(widget.status);
-  }
-
-  Future<String> _recentOutputPreview(
-      TaskSession task, String signature) async {
-    await Future<void>.delayed(Duration.zero);
-    if (task.turns.isEmpty) {
-      return '';
-    }
-    final latest = task.turns.last;
-    final source = latest.rawOutput.trim().isNotEmpty
-        ? latest.rawOutput
-        : latest.cleanedOutput;
-    if (source.trim().isEmpty) {
-      return '';
-    }
-    final tail = _tailWindow(source, _recentOutputWindowChars);
-    final cleaned = const AgentOutputCleaner().clean(tail).trim();
-    if (cleaned.isEmpty) {
-      return '';
-    }
-    final lines = cleaned
-        .split('\n')
-        .map((line) => line.trimRight())
-        .where((line) => line.trim().isNotEmpty)
-        .toList(growable: false);
-    if (lines.length <= _recentOutputLineLimit) {
-      final preview = lines.join('\n');
-      _cacheRecentPreview(signature, preview);
-      return preview;
-    }
-    final preview =
-        lines.skip(lines.length - _recentOutputLineLimit).join('\n');
-    _cacheRecentPreview(signature, preview);
-    return preview;
-  }
+String _emptyResultText(TaskStatus status) {
+  return switch (status) {
+    TaskStatus.running ||
+    TaskStatus.pending ||
+    TaskStatus.draft =>
+      '任务仍在执行，暂无可展示的正式结果。',
+    TaskStatus.needApproval ||
+    TaskStatus.needAttention =>
+      '任务正在等待你的处理，暂无可展示的正式结果。',
+    TaskStatus.turnIdle => '本轮已结束，暂无可展示的正式结果。',
+    TaskStatus.paused ||
+    TaskStatus.observerDetached ||
+    TaskStatus.runtimeLost =>
+      '更新已暂停，暂无可展示的正式结果。',
+    TaskStatus.completed ||
+    TaskStatus.userCompleted ||
+    TaskStatus.failed ||
+    TaskStatus.userFailed ||
+    TaskStatus.stopped =>
+      '暂无可展示的正式结果。',
+  };
 }
 
 String _deliverableTitle(int turnIndex, bool isLatest) {
@@ -2681,7 +2514,7 @@ class _OutputSegmentCardState extends State<_OutputSegmentCard> {
                       size: 18,
                     ),
                     label: Text(
-                      _outputExpanded ? '隐藏原始输出' : '显示原始输出',
+                      _outputExpanded ? '收起完整摘要' : '展开完整摘要',
                     ),
                   ),
                 ),
@@ -2750,12 +2583,14 @@ class _TimelineViewModel {
     required this.visibleItems,
     required this.hasTurns,
     required this.hasLoopFacts,
+    required this.showAiEvaluation,
     required this.followUpSuggestions,
   });
 
   final List<_TimelineItemData> visibleItems;
   final bool hasTurns;
   final bool hasLoopFacts;
+  final bool showAiEvaluation;
   final List<LoopFollowUpSuggestion> followUpSuggestions;
 }
 
@@ -2823,6 +2658,65 @@ class _LoopSummaryText extends StatelessWidget {
         maxLines: 3,
         overflow: TextOverflow.ellipsis,
         style: Theme.of(context).textTheme.bodySmall,
+      ),
+    );
+  }
+}
+
+class _LoopEvaluationCard extends StatelessWidget {
+  const _LoopEvaluationCard({required this.future});
+
+  final Future<LoopEvaluationSummary> future;
+
+  @override
+  Widget build(BuildContext context) {
+    return KeyedSubtree(
+      key: const Key('loop-evaluation-card'),
+      child: _InfoCard(
+        title: '辅助判断',
+        child: FutureBuilder<LoopEvaluationSummary>(
+          future: future,
+          builder: (context, snapshot) {
+            final textTheme = Theme.of(context).textTheme;
+            if (snapshot.connectionState != ConnectionState.done) {
+              return Row(
+                children: [
+                  SizedBox.square(
+                    dimension: 18,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: ArminTheme.primary.withValues(alpha: 0.7),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Text(
+                    '正在基于本轮事实生成判断',
+                    style: textTheme.bodySmall,
+                  ),
+                ],
+              );
+            }
+            final summary = snapshot.data;
+            final text = summary?.text.trim() ?? '暂时无法生成辅助判断。';
+            final source = summary?.usedAi == true ? '端侧模型' : '规则判断';
+            return AnimatedSwitcher(
+              duration: const Duration(milliseconds: 180),
+              child: Column(
+                key: ValueKey('$source:$text'),
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    text,
+                    style:
+                        textTheme.bodyMedium?.copyWith(color: ArminTheme.ink),
+                  ),
+                  const SizedBox(height: 10),
+                  _FactChip(label: '来源', value: source),
+                ],
+              ),
+            );
+          },
+        ),
       ),
     );
   }
@@ -3393,9 +3287,8 @@ class _TaskNeedsPanelState extends State<_TaskNeedsPanel> {
 
   bool _isReadableResultTurn(NativeOutputTurnStatus status) {
     return switch (status) {
+      NativeOutputTurnStatus.running => false,
       NativeOutputTurnStatus.needAttention ||
-      NativeOutputTurnStatus.running =>
-        false,
       NativeOutputTurnStatus.turnIdle ||
       NativeOutputTurnStatus.runtimeLost ||
       NativeOutputTurnStatus.failed ||
@@ -3405,107 +3298,6 @@ class _TaskNeedsPanelState extends State<_TaskNeedsPanel> {
         true,
     };
   }
-}
-
-class _RecentOutputPreview extends StatefulWidget {
-  const _RecentOutputPreview({
-    required this.text,
-    required this.previewLineLimit,
-  });
-
-  final String text;
-  final int previewLineLimit;
-
-  @override
-  State<_RecentOutputPreview> createState() => _RecentOutputPreviewState();
-}
-
-class _RecentOutputPreviewState extends State<_RecentOutputPreview> {
-  bool _expanded = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final text = widget.text;
-    if (text.trim().isEmpty) {
-      return const Text('任务正在等待你的处理，暂无可展示的正式结果。');
-    }
-    final lines = text.split('\n');
-    final needsExpansion = lines.length > widget.previewLineLimit;
-    final previewText = needsExpansion && !_expanded
-        ? lines.take(widget.previewLineLimit).join('\n')
-        : text;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          '任务正在等待你的处理。下面是最近输出，正式结果会在任务完成或进入明确结果状态后整理。',
-          style: Theme.of(context).textTheme.bodyMedium,
-        ),
-        const SizedBox(height: 12),
-        DecoratedBox(
-          decoration: BoxDecoration(
-            color: const Color(0xFFF8FAF8),
-            border: Border.all(color: ArminTheme.border),
-            borderRadius: BorderRadius.circular(8),
-          ),
-          child: Padding(
-            padding: const EdgeInsets.all(12),
-            child: _expanded
-                ? SelectableText(
-                    previewText,
-                    style: Theme.of(context).textTheme.bodySmall,
-                  )
-                : Text(
-                    previewText,
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-          ),
-        ),
-        if (needsExpansion) ...[
-          const SizedBox(height: 4),
-          Align(
-            alignment: Alignment.centerLeft,
-            child: TextButton.icon(
-              onPressed: () => setState(() => _expanded = !_expanded),
-              icon: Icon(
-                _expanded ? Icons.expand_less : Icons.expand_more,
-                size: 18,
-              ),
-              label: Text(_expanded ? '收起最近输出' : '展开最近输出'),
-            ),
-          ),
-        ],
-      ],
-    );
-  }
-}
-
-bool _usesRecentOutputPreview(TaskStatus status) {
-  return switch (status) {
-    TaskStatus.draft ||
-    TaskStatus.pending ||
-    TaskStatus.running ||
-    TaskStatus.paused ||
-    TaskStatus.needApproval ||
-    TaskStatus.needAttention ||
-    TaskStatus.observerDetached ||
-    TaskStatus.runtimeLost =>
-      true,
-    TaskStatus.turnIdle ||
-    TaskStatus.stopped ||
-    TaskStatus.userCompleted ||
-    TaskStatus.userFailed ||
-    TaskStatus.completed ||
-    TaskStatus.failed =>
-      false,
-  };
-}
-
-String _tailWindow(String output, int maxChars) {
-  if (output.length <= maxChars) {
-    return output;
-  }
-  return output.substring(output.length - maxChars);
 }
 
 class _AddContextEntry extends StatelessWidget {
@@ -4361,10 +4153,6 @@ class _NextAction {
   final Color color;
 }
 
-String _workPhaseName(WorkState? workState) {
-  return (workState?.phase ?? WorkPhase.idle).name;
-}
-
 String _runtimeGoalText(TaskSession task) {
   return _cleanSnippet(task.userText, maxChars: 80);
 }
@@ -4503,17 +4291,6 @@ List<_RuntimeTimelineStepViewModel> _runtimeStepsFor(
           : _RuntimeTimelineStepState.idle,
     ),
   ];
-}
-
-String _latestTurnFocus(NativeOutputTurn? turn) {
-  if (turn == null) {
-    return '';
-  }
-  final cleaned = _cleanSnippet(
-    turn.cleanedOutput.trim().isNotEmpty ? turn.cleanedOutput : turn.rawOutput,
-    maxChars: 80,
-  );
-  return cleaned;
 }
 
 String _firstNonEmpty(List<String> values) {

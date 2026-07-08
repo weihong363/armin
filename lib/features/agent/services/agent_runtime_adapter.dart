@@ -20,6 +20,38 @@ class AgentRuntimeAdapter {
     return activeWindow.any((line) => _isActiveWorkInWindow(line, lines));
   }
 
+  bool containsIdleInputPrompt(List<String> lines) {
+    return lines.any((line) {
+      final lower = line.toLowerCase();
+      return lower.contains('type your message or @path/to/file') ||
+          lower.contains('type your message') ||
+          lower.contains('press enter to continue');
+    });
+  }
+
+  bool containsActiveExecutionChrome(List<String> lines) {
+    return lines.any((line) {
+      final lower = line.toLowerCase();
+      return lower.contains('esc to cancel') ||
+          lower.contains('thinking...') ||
+          lower.contains('thinking…');
+    });
+  }
+
+  bool hasAgentWorkEvidence(List<String> lines) {
+    return lines.any((line) {
+      final normalized =
+          _statusWord(line).replaceFirst(RegExp(r'^[▪▫■●]\s*'), '').trim();
+      final lower = normalized.toLowerCase();
+      if (lower.isEmpty || _isTerminalChromeLine(lower)) {
+        return false;
+      }
+      return line.trimLeft().startsWith(RegExp('[▪▫■●]')) ||
+          _looksLikeToolTrace(normalized) ||
+          _looksLikePlanningLine(lower);
+    });
+  }
+
   bool looksLikeDeliverableLine(String line) {
     if (!line.startsWith('▪')) {
       return false;
@@ -146,10 +178,7 @@ class AgentRuntimeAdapter {
 
   bool _looksLikeActiveWorkLine(String line) {
     final lower = line.toLowerCase();
-    return RegExp(
-          r'^(?:bash|glob|grep|read|write|edit|multiedit|list|ls|cat)\s*\(',
-          caseSensitive: false,
-        ).hasMatch(line) ||
+    return _looksLikeToolTrace(line) ||
         _looksLikePlanningLine(lower) ||
         line.startsWith('让我') ||
         line.startsWith('我先') ||
@@ -173,6 +202,13 @@ class AgentRuntimeAdapter {
         lower.contains(" i'll ") ||
         lower.contains(' i will ') ||
         lower.contains(' let me ');
+  }
+
+  bool _looksLikeToolTrace(String line) {
+    return RegExp(
+      r'^(?:bash|glob|grep|read|write|edit|multiedit|list|ls|cat)\s*\(',
+      caseSensitive: false,
+    ).hasMatch(line);
   }
 
   String _statusWord(String line) {

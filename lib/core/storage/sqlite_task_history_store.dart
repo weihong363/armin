@@ -111,8 +111,20 @@ class SQLiteTaskHistoryStore extends TaskHistoryStore {
 
   @override
   Future<List<TaskSession>> loadTasks() async {
-    final rows = await _dbQuery('task_sessions', orderBy: 'updated_at DESC');
-    return rows.map(_decodePayload).map(TaskSession.fromJson).toList();
+    final db = await _db();
+    final taskRows = await db.query(
+      'task_sessions',
+      columns: ['task_id'],
+      orderBy: 'updated_at DESC',
+    );
+    final tasks = <TaskSession>[];
+    for (final row in taskRows) {
+      final taskId = row['task_id'] as String?;
+      if (taskId == null || taskId.isEmpty) continue;
+      final task = await _loadTask(taskId);
+      if (task != null) tasks.add(task);
+    }
+    return tasks;
   }
 
   @override
@@ -123,7 +135,7 @@ class SQLiteTaskHistoryStore extends TaskHistoryStore {
         {
           'task_id': task.id,
           'updated_at': task.updatedAt.toIso8601String(),
-          'payload': jsonEncode(task.toJson()),
+          'payload': jsonEncode(task.toCompactJson()),
         },
         conflictAlgorithm: ConflictAlgorithm.replace);
   }
@@ -164,16 +176,54 @@ class SQLiteTaskHistoryStore extends TaskHistoryStore {
 
   // ─── Helpers ──────────────────────────────────────────────────────
 
+  Future<TaskSession?> _loadTask(String taskId) async {
+    try {
+      final rows = await _dbQuery(
+        'task_sessions',
+        columns: ['payload'],
+        where: 'task_id = ?',
+        whereArgs: [taskId],
+        limit: 1,
+      );
+      if (rows.isEmpty) return null;
+      return TaskSession.fromJson(_decodePayload(rows.single));
+    } on DatabaseException catch (error) {
+      if (!_isCursorWindowRowTooBig(error)) rethrow;
+      final db = await _db();
+      await db.delete(
+        'task_sessions',
+        where: 'task_id = ?',
+        whereArgs: [taskId],
+      );
+      debugPrint(
+        'Dropped oversized task session payload for $taskId: $error',
+      );
+      return null;
+    }
+  }
+
   Future<List<Map<String, Object?>>> _dbQuery(
     String table, {
+    List<String>? columns,
     String? where,
     List<Object?>? whereArgs,
     String? orderBy,
     int? limit,
   }) async {
     final db = await _db();
-    return db.query(table,
-        where: where, whereArgs: whereArgs, orderBy: orderBy, limit: limit);
+    return db.query(
+      table,
+      columns: columns,
+      where: where,
+      whereArgs: whereArgs,
+      orderBy: orderBy,
+      limit: limit,
+    );
+  }
+
+  bool _isCursorWindowRowTooBig(DatabaseException error) {
+    final message = error.toString();
+    return message.contains('Row too big to fit into CursorWindow');
   }
 
   Map<String, Object?> _decodePayload(Map<String, Object?> row) {

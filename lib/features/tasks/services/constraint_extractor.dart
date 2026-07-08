@@ -11,7 +11,18 @@ class ConstraintExtractor {
 
     final constraints = <TaskConstraint>{};
 
-    if (_containsAny(input, ['先看看', '先看一下', '先分析', '只分析', '别改'])) {
+    if (_containsAny(input, [
+      '先看看',
+      '先看一下',
+      '先分析',
+      '只分析',
+      '别改',
+      'do not modify',
+      "don't modify",
+      'no file changes',
+      'read only',
+      'analysis only',
+    ])) {
       constraints.add(TaskConstraint.analyzeOnly);
     }
     if (_containsAny(input, ['先别大改', '最小改动', '小改', '不要大规模重构'])) {
@@ -19,6 +30,9 @@ class ConstraintExtractor {
     }
     if (_containsAny(input, ['可以改', '允许修改', '直接改'])) {
       constraints.add(TaskConstraint.allowChanges);
+    }
+    if (constraints.contains(TaskConstraint.analyzeOnly)) {
+      constraints.remove(TaskConstraint.allowChanges);
     }
     if (_containsAny(input, ['跑一下测试', '运行测试', '跑测试', '测一下'])) {
       constraints.add(TaskConstraint.runTestsAfterChanges);

@@ -22,6 +22,7 @@
 | 3 | Node.js API | Todo REST API + 文件存储 | 12-18 min | P1 |
 | 4 | Flutter App | 倒计时小组件集合 | 15-20 min | P1 |
 | 5 | Python 数据分析 | CSV 报表生成脚本 | 8-12 min | P2 |
+| 6 | Flutter App | Loop Runtime + AI Evaluation 长任务验收 | 12-18 min | P0 |
 
 ---
 
@@ -215,13 +216,138 @@ curl -v http://localhost:8080/1
 
 ---
 
+## Case 6：Loop Runtime + AI Evaluation 长任务验收（P0）
+
+**项目初始化**：使用已有 `countdown_widgets` 项目，不重置 host/project，不清空 App 数据。
+
+**前置条件**：
+```
+DEVICE=emulator-5554 ./scripts/slm/push-gguf-model.sh .models/slm/Qwen3-0.6B-Q4_K_M.gguf
+/Users/ironion/develop/flutter/bin/flutter drive --driver=test_driver/integration_test.dart --target=integration_test/native_slm_smoke_test.dart -d emulator-5554
+```
+
+不要重置模拟器数据，不要修改 Host / Project 配置，不要切换到 `qodercli-test`。
+
+**任务描述**：
+```
+在 countdown_widgets 项目中执行一次真实长任务评估。
+
+要求：
+1. 使用真实 qodercli，不使用 qodercli-test
+2. 使用 aggressive 模式
+3. 不修改文件
+4. 读取 pubspec.yaml、lib/、test/，必要时读取 README
+5. 输出中文项目简介和可验收结论
+6. 最终结果必须包含：
+   ARMIN_LOOP_LONG_D1 status=PASS files_changed=0 next=WAIT
+```
+
+**操作流程**：
+```
+1. 创建任务，选择真实 qodercli 和 countdown_widgets 项目
+2. 发送 Turn 1 任务：
+   Read pubspec.yaml. Do not modify files.
+   Output a concise Chinese project introduction, key widgets, test coverage, and acceptance conclusion.
+   Final answer must include:
+   ARMIN_LOOP_LONG_D1 status=PASS files_changed=0 next=WAIT
+3. 执行期间观察任务状态：远端仍在执行时 Armin 必须保持 running，不得提前 waiting
+4. Turn 1 完成后，不手动刷新，等待 Armin 自动进入 turnIdle
+5. 打开任务详情「动态」Tab，确认出现 Loop 事实和辅助判断
+6. 打开「产出」Tab，确认结果卡片包含 ARMIN_LOOP_LONG_D1、status=PASS、files_changed=0
+7. 直接发送 Turn 2：
+   Continue from the previous result. Do not modify files.
+   Summarize what remains to verify and whether the task can be marked complete.
+   Final answer must include:
+   ARMIN_LOOP_LONG_D2 status=PASS previous_case_repeated=false files_changed=0 next=COMPLETE
+8. Turn 2 执行期间 Armin 必须回到 running
+9. Turn 2 完成后，不手动刷新，等待 Armin 自动进入 turnIdle
+10. 再次检查「动态」Tab 的 Loop 事实和辅助判断
+11. 再次检查「产出」Tab 的最新结果卡片
+12. 标记完成
+```
+
+**验证点**：
+- 真实 qodercli 创建 `armin-*` tmux session，不能是手写 session
+- Turn 1 / Turn 2 均自动 `running -> turnIdle`，不依赖手动刷新
+- 远端仍在执行时 Armin 不提前进入 waiting
+- Turn 2 复用同一个 session
+- 每个 turn 都写入 `loop_evaluated`
+- 发送 Turn 2 写入 `loop_user_action`
+- 结果卡片始终来自 latest turn `TurnDeliverable`
+- Turn 2 最新结果包含 `ARMIN_LOOP_LONG_D2`，不把 Turn 1 当当前结果
+- 任务详情「动态」Tab 显示 `Loop 事实`
+- 任务详情「动态」Tab 显示 `辅助判断`
+- `辅助判断` 来源优先为 `端侧模型`；若为 `规则判断`，记录为 AI 层失败但 Runtime 层可单独判定
+- `辅助判断` 不包含 `Thinking`、`qodercli`、`Final answer only`、用户 prompt 原文或旧 turn marker
+- `native_slm_smoke_test.dart` 可单独证明端侧模型文件和 native runtime 可用
+
+**判定分层**：
+
+| 层级 | PASS 条件 |
+|------|-----------|
+| Runtime 层 | 真实 qodercli、自动 turnIdle、Turn 2 连续输入、deliverable 隔离、loop facts 写入 |
+| UI 层 | 任务详情显示 `Loop 事实` 和 `辅助判断`，且辅助判断无污染 |
+| AI 层 | `辅助判断` 来源为 `端侧模型`，native SLM smoke 通过 |
+
+**失败判定**：
+- 手动刷新后才进入 turnIdle：FAIL
+- Turn 2 结果卡片显示 Turn 1 结果：FAIL
+- `辅助判断` 使用旧 turn、thinking 或 prompt echo：FAIL
+- `辅助判断` 来源为 `规则判断`：AI 层 FAIL，Runtime/UI 层按实际结果判定
+- qodercli / SSH / 模型文件缺失导致无法触发：BLOCKED
+
+**报告格式**：
+```json
+{
+  "report_type": "ARMIN_LONG_TASK_LOOP_RUNTIME_AI_VERIFICATION",
+  "device": "emulator-5554",
+  "agent": "real_qodercli",
+  "approval_mode": "aggressive",
+  "manual_refresh_used": false,
+  "tmux_session": "armin-*",
+  "cases": [
+    {
+      "id": "CASE6-RUNTIME",
+      "status": "PASS | FAIL | BLOCKED",
+      "observed": "",
+      "evidence": ""
+    },
+    {
+      "id": "CASE6-LOOP-FACTS",
+      "status": "PASS | FAIL | BLOCKED",
+      "observed": "",
+      "evidence": ""
+    },
+    {
+      "id": "CASE6-AI-EVALUATION",
+      "status": "PASS | FAIL | BLOCKED",
+      "observed": "",
+      "evidence": ""
+    },
+    {
+      "id": "CASE6-TURN-CONTINUITY",
+      "status": "PASS | FAIL | BLOCKED",
+      "observed": "",
+      "evidence": ""
+    }
+  ],
+  "overall": "PASS | FAIL | BLOCKED",
+  "failed_case_ids": [],
+  "blocked_case_ids": [],
+  "notes": ""
+}
+```
+
+---
+
 ## 推荐执行顺序
 
-1. **Case 1**（Python CLI）— 最轻量，快速跑通完整闭环
-2. **Case 2**（Go 短链接）— 覆盖网络中断 + 重连
-3. **Case 3**（Node.js API）— 断开监听恢复 + 语音操作
-4. **Case 4**（Flutter 组件）— 锁屏 + auto-detach 验证
-5. **Case 5**（Python 报表）— 渐进式多轮开发
+1. **Case 6**（Loop Runtime + AI Evaluation）— 当前 Phase 3.8 主验收，优先确认 Loop Engineering 和 AI 辅助能力
+2. **Case 1**（Python CLI）— 最轻量，快速跑通完整闭环
+3. **Case 2**（Go 短链接）— 覆盖网络中断 + 重连
+4. **Case 3**（Node.js API）— 断开监听恢复 + 语音操作
+5. **Case 4**（Flutter 组件）— 锁屏 + auto-detach 验证
+6. **Case 5**（Python 报表）— 渐进式多轮开发
 
 ---
 
@@ -246,6 +372,11 @@ curl -v http://localhost:8080/1
 | 最终产物可运行/测试通过 |  |  |
 | 结果卡片语义正确 |  |  |
 | 小喇叭朗读当前结果 |  |  |
+| Loop 事实写入并展示 |  |  |
+| 辅助判断显示 |  |  |
+| 辅助判断来源为端侧模型 |  |  |
+| 辅助判断不含 thinking/prompt echo/旧 turn |  |  |
+| native SLM smoke 通过 |  |  |
 
 - App version / build number:
 - Android 设备型号与系统版本:

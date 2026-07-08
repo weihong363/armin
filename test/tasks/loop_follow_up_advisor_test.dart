@@ -11,7 +11,6 @@ void main() {
 
   test('suggests tests when implementation lacks validation evidence', () {
     final task = _task(
-      summary: '已实现倒计时组件交互和状态更新。',
       constraints: const {TaskConstraint.runTestsAfterChanges},
     );
 
@@ -24,8 +23,8 @@ void main() {
 
   test('does not suggest tests when latest deliverable has test evidence', () {
     final task = _task(
-      summary: '已实现倒计时组件，运行 flutter test test/countdown_test.dart 全部通过。',
       constraints: const {TaskConstraint.runTestsAfterChanges},
+      summary: '已实现倒计时组件，运行 flutter test test/countdown_test.dart 全部通过。',
     );
 
     final suggestions = advisor.suggest(task);
@@ -48,9 +47,7 @@ void main() {
   });
 
   test('asks for file evidence when implementation omits file list', () {
-    final task = _task(
-      summary: '已修复状态同步问题，并更新结果卡片逻辑。',
-    );
+    final task = _task();
 
     final suggestions = advisor.suggest(task);
 
@@ -62,8 +59,7 @@ void main() {
 
   test('does not ask for file evidence when latest result lists files', () {
     final task = _task(
-      summary:
-          '已修复状态同步问题，修改 lib/core/services/armin_app_state.dart，并通过 flutter test。',
+      summary: '已修复 lib/main.dart 和 test/countdown_test.dart，测试通过。',
     );
 
     final suggestions = advisor.suggest(task);
@@ -85,11 +81,11 @@ void main() {
 
   test('checks constraints when analyze-only task reports modifications', () {
     final task = _task(
-      summary: '已修改 pubspec.yaml 并提交 git commit。',
       constraints: const {
         TaskConstraint.analyzeOnly,
         TaskConstraint.noGitCommit,
       },
+      summary: '已修改 pubspec.yaml 并提交 git commit。',
     );
 
     final suggestions = advisor.suggest(task);
@@ -103,8 +99,8 @@ void main() {
 
   test('uses only latest deliverable and ignores old turn content', () {
     final task = _task(
-      summary: '已完成项目简介，当前无需额外操作。',
       previousSummary: '旧结果提到 permission denied 和 failed。',
+      summary: '已完成项目简介，当前可验收。',
     );
 
     final suggestions = advisor.suggest(task);
@@ -114,9 +110,7 @@ void main() {
   });
 
   test('does not emit status-button suggestions', () {
-    final task = _task(
-      summary: '已完成项目简介，当前可验收。',
-    );
+    final task = _task();
 
     final suggestions = advisor.suggest(task);
     final text = suggestions.map((item) => item.draft).join('\n');
@@ -127,7 +121,7 @@ void main() {
 }
 
 TaskSession _task({
-  required String summary,
+  String summary = '已实现倒计时组件交互和状态更新。',
   String? previousSummary,
   Set<TaskConstraint> constraints = const {},
 }) {
@@ -177,7 +171,6 @@ TaskSession _task({
     constraints: constraints,
     finalPrompt: '测试任务',
     secretRecords: const [],
-    rawLog: summary,
     approvalMode: AgentApprovalMode.aggressive,
     turns: turns,
   );

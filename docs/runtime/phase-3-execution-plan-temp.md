@@ -202,17 +202,25 @@ Phase 3 从 Phase 2.6/2.7 已验证的单任务可靠执行继续推进到轻量
 
 目标：最后再接 AI，且先做辅助，不做自治。
 
-执行内容：
+当前状态：已完成首轮只读接入。
 
-- AI 输入只包含用户目标、latest deliverable、loop facts、审批状态和用户约束。
-- AI 输出只作为结果评估、风险提示和可编辑 follow-up 草稿。
-- 用户确认前不自动发送。
+- Android 侧已接入 llama.cpp native runtime，`native_slm_smoke_test.dart` 可验证本地 GGUF 真模型生成。
+- 已新增 `LoopEvaluationAssistant`，输入限定为 runtime status、latest `TurnDeliverable`、`loop_evaluated`、`loop_user_action`、`loop_approval_event`。
+- 已接入任务详情「动态」Tab 的 `辅助判断` 卡片，只读展示，不改变状态、不触发 TTS、不自动发送 follow-up。
+- 模型不可用、超时、空输出或异常时回落到规则判断；fallback 不影响结果卡片、状态刷新或继续输入。
 
-验收：
+验收拆成三层：
 
-- AI 建议可关闭。
-- AI 建议不能绕过审批。
-- AI 建议不能基于旧 turn 或 thinking 内容。
+- Runtime 层：真实 qodercli P38 抽样验证 Turn 1 / Turn 2 自动收敛、deliverable 隔离和 loop facts 写入。
+- UI 层：`test/history/task_detail_screen_loop_test.dart` 和 `task_detail_screen_approval_test.dart --plain-name "loop evaluation assistant"` 验证 `Loop 事实`、`辅助判断`、来源显示和污染词过滤。
+- Native SLM 层：`native_slm_smoke_test.dart` 验证模型文件存在、native runtime 可加载、真模型可生成。
+
+限制：
+
+- 当前 AI 只做验收辅助判断，不做自动 follow-up。
+- 当前 AI 不自动审批、不标记完成/失败、不替代用户验收。
+- 模型文件仍通过 `.models/slm/Qwen3-0.6B-Q4_K_M.gguf` 本地缓存推送到模拟器；不提交 GGUF。
+- 端侧生成耗时约 18 秒，不能放入同步 UI 关键路径。
 
 ## Phase 3.0 完成记录
 

@@ -268,25 +268,23 @@ void main() {
         _task('task-1', 'Old approval', status: TaskStatus.needApproval),
         _task('task-2', 'Decision needed', status: TaskStatus.needAttention),
         _task('task-3', 'Continue copy', status: TaskStatus.turnIdle),
-        _task('task-4', 'Paused task', status: TaskStatus.paused),
-        _task('task-5', 'Hidden failure', status: TaskStatus.failed),
+        _task('task-4', 'More context', status: TaskStatus.turnIdle),
+        _task('task-5', 'Review needed', status: TaskStatus.needAttention),
       ],
     );
 
     expect(find.text('等待你处理'), findsOneWidget);
     expect(find.text('Old approval'), findsOneWidget);
-    expect(find.text('Decision needed'), findsOneWidget);
-    expect(find.text('Continue copy'), findsOneWidget);
-    expect(find.text('Paused task'), findsNothing);
-    expect(find.text('Hidden failure'), findsNothing);
     expect(find.text('查看全部 5 项等待任务'), findsOneWidget);
 
     await tester.tap(find.text('查看全部 5 项等待任务'));
     await tester.pumpAndSettle();
 
     expect(find.text('等待你处理'), findsOneWidget);
-    expect(find.text('Paused task'), findsOneWidget);
-    expect(find.text('Hidden failure'), findsOneWidget);
+    expect(find.text('Decision needed'), findsOneWidget);
+    expect(find.text('Continue copy'), findsOneWidget);
+    expect(find.text('More context'), findsOneWidget);
+    expect(find.text('Review needed'), findsOneWidget);
   });
 }
 
@@ -410,7 +408,6 @@ TaskSession _task(
     constraints: const {},
     finalPrompt: title,
     secretRecords: const [],
-    rawLog: status == TaskStatus.paused ? 'Task paused by user' : '',
     nativeApproval: status == TaskStatus.needApproval
         ? NativeTerminalApproval(
             id: 'approval-$id',
@@ -421,15 +418,6 @@ TaskSession _task(
             createdAt: now,
           )
         : null,
-    shortSummary: switch (status) {
-      TaskStatus.needApproval => '这个任务需要你做决定',
-      TaskStatus.needAttention => '这个任务需要你做决定',
-      TaskStatus.turnIdle => '等待你的指示',
-      TaskStatus.paused => '连接已暂停',
-      TaskStatus.failed => '继续之前请先检查问题',
-      TaskStatus.runtimeLost => '连接已暂停',
-      _ => '',
-    },
     turns: [
       if (turnStatus != null)
         NativeOutputTurn(

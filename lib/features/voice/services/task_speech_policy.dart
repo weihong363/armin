@@ -125,7 +125,8 @@ class TaskSpeechPolicy {
 
     if (status == TaskStatus.runtimeLost ||
         status == TaskStatus.observerDetached) {
-      return _decorate(status, '').trim();
+      final latestTurnText = _latestTurnSpeechText(task);
+      return _decorate(status, latestTurnText).trim();
     }
 
     if (status == TaskStatus.needAttention) {

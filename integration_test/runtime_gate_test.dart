@@ -563,7 +563,6 @@ TaskSession buildTask({
     constraints: const {},
     finalPrompt: prompt,
     secretRecords: const [],
-    rawLog: '',
     approvalMode: approvalMode,
     turns: [
       NativeOutputTurn(

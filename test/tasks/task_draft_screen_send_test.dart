@@ -7,6 +7,7 @@ import 'package:armin/core/storage/task_history_store.dart';
 import 'package:armin/features/agent/services/agent_session_service.dart';
 import 'package:armin/features/hosts/models/host_config.dart';
 import 'package:armin/features/projects/models/project_path_config.dart';
+import 'package:armin/features/tasks/models/native_output_turn.dart';
 import 'package:armin/features/tasks/models/task_session.dart';
 import 'package:armin/features/tasks/screens/task_draft_screen.dart';
 import 'package:flutter/material.dart';
@@ -309,8 +310,7 @@ void main() {
     await tester.pumpAndSettle();
   });
 
-  testWidgets('SSH failure marks task failed and keeps raw log',
-      (tester) async {
+  testWidgets('SSH failure marks task failed', (tester) async {
     final store = _TaskStore(hosts: [_host(password: 'secret-password')]);
     final agent = _CaptureAgentSessionService(error: StateError('ssh failed'));
     final state = await _pumpScreen(tester, store: store, agent: agent);
@@ -321,8 +321,10 @@ void main() {
 
     expect(store.savedTasks, isNotEmpty);
     expect(state.taskStatus(store.savedTasks.last), TaskStatus.failed);
-    expect(store.savedTasks.last.rawLog, contains('ssh failed'));
-    expect(store.savedTasks.last.shortSummary, contains('SSH 执行失败'));
+    expect(
+      store.savedTasks.last.turns.lastOrNull?.status,
+      NativeOutputTurnStatus.failed,
+    );
   });
 
   testWidgets('done update without result marks task turn idle',

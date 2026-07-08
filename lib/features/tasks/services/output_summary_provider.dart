@@ -901,6 +901,10 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
           '',
         )
         .replaceAll(RegExp(r'\bAuto Model\b.*', caseSensitive: false), '')
+        .replaceAll(RegExp(r'\bAuto Mode\b.*', caseSensitive: false), '')
+        .replaceAll(RegExp(r'\bTry /effort\b.*', caseSensitive: false), '')
+        .replaceAll(RegExp(r'\b/context-window\b.*', caseSensitive: false), '')
+        .replaceAll(RegExp(r'\bModel\s*·\s*ctx\b.*', caseSensitive: false), '')
         .replaceAll(
           RegExp(r'\bShift\+Tab to Auto-accept Edits\b.*',
               caseSensitive: false),
@@ -1229,6 +1233,15 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
         lower.startsWith('任务：') ||
         lower.startsWith('任务:') ||
         lower.startsWith('constraints:') ||
+        lower.startsWith('armin_diag:') ||
+        lower.contains("what's new") ||
+        lower.contains('not login please auth') ||
+        lower.contains('/release-notes for more') ||
+        lower.contains('try /effort') ||
+        lower.contains('/context-window') ||
+        lower.contains('auto mode') ||
+        lower.contains('model · ctx') ||
+        lower.contains('model  ctx') ||
         lower.startsWith('initializing... prompts will be queued') ||
         lower.startsWith('- do not ') ||
         lower.startsWith('- final answer ') ||
@@ -1469,7 +1482,7 @@ class LocalSmallModelSummaryProvider implements OutputSummaryProvider {
       );
     }
     try {
-      final available = await check().timeout(timeout);
+      final available = await check();
       return LocalSummaryCapability(
         available: available,
         message: available ? '端侧摘要模型已就绪。' : '当前设备不支持端侧摘要模型，将使用规则摘要。',

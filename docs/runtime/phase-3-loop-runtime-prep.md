@@ -95,7 +95,43 @@ Loop Runtime 的新增数据必须满足：
 - Phase 3.5 审批工作流增强已完成代码级接入：审批请求、通过、拒绝、终端选项选择和补充指令进入 `loop_approval_event` facts；恢复后 pending approval 的 WorkState 与 facts 保持一致。
 - Phase 3.6 自动摘要与结果追踪已完成代码级接入：`loop_result_summary` 只基于正式 `TurnDeliverable` 聚合 Loop 级摘要和结果索引，结果卡片与 TTS 仍只消费 turn deliverable。
 - Phase 3.7 通知与用户反馈已完成本地事件层：AppState 将 RuntimeEventBus 中的审批、等待用户、fresh deliverable、运行丢失、完成和失败事件映射为去重后的 `TaskNotificationService` 请求；当前默认 no-op，不接系统通知权限或 push。
-- 尚未启用自动下一步执行、AI follow-up 草稿、自动审批、完整 recurrence scheduler 或原生系统通知 adapter；调度 MVP、审批 facts 和本地通知事件都不能替代 Loop Runtime 主链路。
+- Native SLM 前置能力已接入 Android llama.cpp runtime，并通过 `native_slm_smoke_test.dart` 验证真模型可在 `emulator-5554` 上生成文本；模型缓存见 [Native SLM llama.cpp Smoke](native-slm-llama-smoke.md)。
+- Phase 3.8 的首个 AI 辅助用例限定为 `LoopEvaluationAssistant`：只读取 runtime status、latest `TurnDeliverable`、`loop_evaluated`、用户动作 facts 和审批 facts，生成辅助验收判断；模型不可用、超时或失败时回落到规则判断。
+- `LoopEvaluationAssistant` 已接入任务详情「动态」Tab 的 `辅助判断` 卡片，位于 `Loop 事实` 之后、规则型后续指令之前；UI 只读展示，不改变任务状态、不自动发送 follow-up、不触发 TTS。
+- 尚未启用自动下一步执行、自动审批、完整 recurrence scheduler 或原生系统通知 adapter；调度 MVP、审批 facts、本地通知事件和 AI evaluation 都不能替代 Loop Runtime 主链路。
+
+## Phase 3.8 AI 辅助 Loop Evaluation 边界
+
+Phase 3.8 的 AI 只做辅助评估，不做执行控制：
+
+- 允许：基于结构化 Loop facts 生成验收判断、阻塞风险提示和是否需要继续下一轮的理由。
+- 禁止：自动发送 follow-up、自动审批、自动标记完成/失败、替代用户验收、读取 raw terminal 大日志。
+- 输入：`TaskStatus` / runtime status、latest turn `TurnDeliverable`、`LoopEvaluation`、`LoopUserAction`、`LoopApprovalEvent`。
+- 排除：prompt echo、thinking、TUI chrome、旧 turn deliverable、reconnect snapshot、未脱敏 raw output。
+- 失败策略：native SLM 不可用或生成失败时必须 graceful fallback，不影响状态刷新、结果卡片、TTS 或继续输入。
+
+Phase 3.8 的常规验证：
+
+```bash
+flutter test test/tasks/loop_evaluation_assistant_test.dart
+flutter test test/history/task_detail_screen_loop_test.dart
+flutter test test/history/task_detail_screen_approval_test.dart --plain-name "loop evaluation assistant"
+
+DEVICE=emulator-5554 ./scripts/slm/push-gguf-model.sh .models/slm/Qwen3-0.6B-Q4_K_M.gguf
+
+flutter drive \
+  --driver=test_driver/integration_test.dart \
+  --target=integration_test/native_slm_smoke_test.dart \
+  -d emulator-5554
+```
+
+Phase 3.8 验收拆成三层：
+
+- Runtime 层：真实 qodercli 执行、`running -> turnIdle` 自动收敛、latest turn deliverable、Turn 2 隔离、`loop_evaluated` / `loop_user_action` facts 写入。
+- UI 层：任务详情「动态」Tab 展示 `Loop 事实` 和 `辅助判断`；辅助判断不包含 thinking、prompt echo、TUI chrome 或旧 turn marker。
+- Native SLM 层：`native_slm_smoke_test.dart` 证明 Android llama.cpp runtime 可以加载本地 GGUF 并生成文本；模型缺失必须明确失败，不能 fallback 成 PASS。
+
+P38 真实 qodercli 抽样验收使用 [低可靠 Agent 验收模板](low-reliability-agent-verification-template.md) 中的 `P38-LEA-REAL-01`。如果 `flutter drive` 安装测试 APK 清空了 App 历史数据，不能再打开旧任务做人工 UI 检查；此时以 UI 自动化测试和 native smoke 作为 UI / AI 层证据。
 
 ## Phase 3.0 基线冻结与 Loop 合同
 

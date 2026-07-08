@@ -481,6 +481,32 @@ Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdo
     expect(summary.displaySummary, isNot(contains('hard blocker')));
   });
 
+  test('rule provider drops runtime diagnostics and qoder chrome', () async {
+    const request = OutputSummaryRequest(
+      cleanedOutput: '''
+ARMIN_DIAG: monitor_version=phase2.6-settled-v8
+██████ ╭─ What's new (v1.0.40) ────────────────────────╮
+██ ██ Not Login Please Auth │ /release-notes for more │
+▪ ARMIN_REAL_RESULT status=PASS files_changed=0 next=WAIT
+Model · ctx ░░░░░░░░░░ 2%
+''',
+      taskTitle: '输出验证结果',
+      promptInputs: ['输出验证结果'],
+      agentCommand: 'qodercli',
+    );
+
+    final summary =
+        await const RuleBasedOutputSummaryProvider().summarize(request);
+
+    expect(
+      summary.displaySummary,
+      'ARMIN_REAL_RESULT status=PASS files_changed=0 next=WAIT',
+    );
+    expect(summary.displaySummary, isNot(contains('ARMIN_DIAG')));
+    expect(summary.displaySummary, isNot(contains("What's new")));
+    expect(summary.displaySummary, isNot(contains('Not Login')));
+  });
+
   test('rule provider strips inline do-not-ignore prefix before marker',
       () async {
     const request = OutputSummaryRequest(

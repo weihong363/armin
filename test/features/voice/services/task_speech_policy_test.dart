@@ -62,7 +62,6 @@ flutter test
   test('turn idle speech excludes follow-up input echoed in output', () async {
     final previous = _task(status: TaskStatus.running);
     final current = previous.copyWith(
-      summary: '输出 hello world\nhello',
       turns: [
         _turnWithInput(1, '检查当前项目'),
         _turnWithInput(2, '输出 hello world').copyWith(clearDeliverable: true),
@@ -113,7 +112,6 @@ runbook-copilot 是面向工程团队的 RAG 事故排障助手，用于根据�
   test('auto speech uses the latest turn card output source', () async {
     final previous = _task(status: TaskStatus.running);
     final current = previous.copyWith(
-      summary: '旧的整任务摘要，不应直接播报',
       turns: [
         _turnWithInput(1, '输出 hello'),
         _turnWithInput(2, '继续').copyWith(
@@ -133,11 +131,10 @@ runbook-copilot 是面向工程团队的 RAG 事故排障助手，用于根据�
     expect(decision.shouldSpeak, isTrue);
   });
 
-  test('auto speech uses latest raw turn output before stale cleaned output',
+  test('auto speech uses latest turn deliverable before stale notes',
       () async {
     final previous = _task(status: TaskStatus.running);
     final current = previous.copyWith(
-      summary: '旧摘要不应播报',
       turns: [
         _turnWithInput(1, '实现接口').copyWith(
           rawOutput: '旧结果',
@@ -170,7 +167,6 @@ Thinking
   test('auto speech does not fallback to stale previous turn summary',
       () async {
     final previous = _task(status: TaskStatus.turnIdle).copyWith(
-      summary: 'Turn 1 result',
       turns: [
         _turnWithInput(1, '输出旧结果').copyWith(
           cleanedOutput: 'Turn 1 result',
@@ -179,7 +175,6 @@ Thinking
       ],
     );
     final current = previous.copyWith(
-      summary: 'Turn 1 result',
       turns: [
         ...previous.turns,
         _turnWithInput(2, '继续').copyWith(
@@ -201,11 +196,9 @@ Thinking
 
   test('auto speech does not fallback to a new task summary', () async {
     final previous = _task(status: TaskStatus.turnIdle).copyWith(
-      summary: '第一轮结果',
       turns: [_turnWithInput(1, '输出旧结果')],
     );
     final current = previous.copyWith(
-      summary: '第二轮结果',
       turns: [
         ...previous.turns,
         _turnWithInput(2, '继续').copyWith(
@@ -319,7 +312,6 @@ Thinking
   test('turn idle with prompt echo only stays silent', () async {
     final previous = _task(status: TaskStatus.running);
     final current = previous.copyWith(
-      summary: '输出 hello world',
       turns: [
         _turnWithInput(1, '输出 hello world').copyWith(
           rawOutput: '',
@@ -360,7 +352,6 @@ Thinking
       () async {
     final previous = _task(status: TaskStatus.running);
     final current = previous.copyWith(
-      summary: 'Turn 1 old result should not be spoken',
       nativeApproval:
           _approval('Turn 2 needs permission to inspect build output.'),
       turns: [
@@ -405,16 +396,17 @@ Thinking
   test('settings can disable result and attention speech separately', () async {
     final previous = _task(status: TaskStatus.running);
     final completed = previous.copyWith(
-      shortSummary: '已完成',
+      turns: [
+        _turn(1).copyWith(deliverable: _deliverable('已完成')),
+      ],
     );
-    final attention = previous.copyWith(
-      shortSummary: '需要用户处理',
-    );
+    final attention = previous.copyWith();
 
     expect(
       (await policy.decide(
         previous: previous,
         current: completed,
+        currentStatus: TaskStatus.completed,
         settings: const TaskSpeechSettings(speakResults: false),
       ))
           .shouldSpeak,
@@ -424,6 +416,7 @@ Thinking
       (await policy.decide(
         previous: previous,
         current: attention,
+        currentStatus: TaskStatus.needAttention,
         settings: const TaskSpeechSettings(speakAttention: false),
       ))
           .shouldSpeak,
@@ -435,8 +428,6 @@ Thinking
       () async {
     final previous = _task(status: TaskStatus.running);
     final current = previous.copyWith(
-      summary: '初始提示词不应该被播报',
-      shortSummary: '任务已创建底下的内容不应该被播报',
       turns: [
         _turnWithInput(1, '初始任务').copyWith(
           rawOutput: '旧结果',
@@ -463,7 +454,6 @@ Thinking
   test('need attention speaks current terminal prompt only', () async {
     final previous = _task(status: TaskStatus.running);
     final current = previous.copyWith(
-      summary: '旧摘要不应该被播报',
       nativeApproval: _approval('Apply this change?'),
     );
 
@@ -480,13 +470,33 @@ Thinking
     expect(decision.text, isNot(contains('旧摘要')));
   });
 
+  test('runtime lost with deliverable still speaks latest result', () async {
+    final previous = _task(status: TaskStatus.running);
+    final current = _task(status: TaskStatus.runtimeLost).copyWith(
+      turns: [
+        _turn(1).copyWith(
+          status: NativeOutputTurnStatus.runtimeLost,
+          deliverable: _deliverable('ARMIN_LOOP_LONG_D1 status=PASS'),
+        ),
+      ],
+    );
+
+    final decision = await policy.decide(
+      previous: previous,
+      current: current,
+      currentStatus: TaskStatus.runtimeLost,
+      settings: settings,
+    );
+
+    expect(decision.shouldSpeak, isTrue);
+    expect(decision.text, contains('ARMIN_LOOP_LONG_D1'));
+  });
+
   test('stale text in a new turn is not replayed as latest speech', () async {
     final previous = _task(status: TaskStatus.turnIdle).copyWith(
-      summary: 'hello',
       turns: [_turn(1)],
     );
     final current = previous.copyWith(
-      summary: 'hello',
       turns: [
         _turn(1),
         _turn(2).copyWith(
@@ -514,10 +524,7 @@ Thinking
 
   test('speech policy ignores task summary without turn evidence', () async {
     final previous = _task(status: TaskStatus.running);
-    final current = previous.copyWith(
-      summary: '有用结果',
-      rawLog: 'raw terminal log should not be summarized',
-    );
+    final current = previous.copyWith();
     final decision = await policy.decide(
       previous: previous,
       current: current,
@@ -557,7 +564,6 @@ TaskSession _task({required TaskStatus status}) {
     constraints: const {},
     finalPrompt: 'Task',
     secretRecords: const [],
-    rawLog: '',
   );
 }
 

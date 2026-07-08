@@ -115,6 +115,5 @@ TaskSession _task({
     constraints: const {},
     finalPrompt: 'Active Task',
     secretRecords: const [],
-    rawLog: '',
   );
 }

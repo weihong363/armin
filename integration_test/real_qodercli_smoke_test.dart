@@ -71,7 +71,6 @@ void main() {
       constraints: const {},
       finalPrompt: prompt,
       secretRecords: const [],
-      rawLog: '',
       approvalMode: AgentApprovalMode.aggressive,
       turns: [
         NativeOutputTurn(
@@ -132,8 +131,7 @@ void main() {
       final task = state.tasks.where((t) => t.id == taskId).firstOrNull;
       if (task == null) continue;
       try {
-        await state.agentSessionService
-            .cleanup(controlRequest(state, task));
+        await state.agentSessionService.cleanup(controlRequest(state, task));
       } catch (_) {}
       final latest = state.tasks.where((t) => t.id == taskId).firstOrNull;
       if (latest != null && !_isTerminal(state.taskStatus(latest))) {
@@ -150,7 +148,8 @@ void main() {
       (tester) async {
     await pumpApp(tester);
 
-    final marker = 'ARMIN_REAL_TURNIDLE_${DateTime.now().millisecondsSinceEpoch}';
+    final marker =
+        'ARMIN_REAL_TURNIDLE_${DateTime.now().millisecondsSinceEpoch}';
     final taskId = await startTask(marker);
 
     // Wait for task to start running
@@ -355,11 +354,18 @@ bool _isTerminal(TaskStatus status) {
 
 class _SilentVoiceService implements VoiceService {
   const _SilentVoiceService();
-  @override bool get isAvailable => true;
-  @override Future<String> listenOnce() async => '';
-  @override Future<void> speakSummary(String s) async {}
-  @override Future<void> pauseSpeaking() async {}
-  @override Future<void> stopSpeaking() async {}
-  @override Future<void> startListening({void Function(String)? onPartial}) async {}
-  @override Future<String> stopListening() async => '';
+  @override
+  bool get isAvailable => true;
+  @override
+  Future<String> listenOnce() async => '';
+  @override
+  Future<void> speakSummary(String s) async {}
+  @override
+  Future<void> pauseSpeaking() async {}
+  @override
+  Future<void> stopSpeaking() async {}
+  @override
+  Future<void> startListening({void Function(String)? onPartial}) async {}
+  @override
+  Future<String> stopListening() async => '';
 }

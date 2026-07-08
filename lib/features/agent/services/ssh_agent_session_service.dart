@@ -313,7 +313,10 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
       needsAttention: terminalPrompt != null || snapshot.needsAttention,
       nativeApproval: _nativeApprovalFromPrompt(terminalPrompt),
       turnIdle: turnIdle,
-      done: turnIdle || snapshot.runtimeLost || terminalPrompt != null,
+      done: turnIdle ||
+          snapshot.runtimeLost ||
+          snapshot.needsAttention ||
+          terminalPrompt != null,
     );
   }
 
@@ -420,9 +423,12 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
       observerState: observerState,
       turnIdle: turnIdle,
       runtimeLost: snapshot.runtimeLost,
-      needsAttention: terminalPrompt != null,
+      needsAttention: terminalPrompt != null || snapshot.needsAttention,
       nativeApproval: _nativeApprovalFromPrompt(terminalPrompt),
-      done: turnIdle || snapshot.runtimeLost || terminalPrompt != null,
+      done: turnIdle ||
+          snapshot.runtimeLost ||
+          snapshot.needsAttention ||
+          terminalPrompt != null,
     );
   }
 

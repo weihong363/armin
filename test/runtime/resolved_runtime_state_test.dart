@@ -89,7 +89,6 @@ TaskSession _task() {
     constraints: const <TaskConstraint>{},
     finalPrompt: 'Task',
     secretRecords: const [],
-    rawLog: '',
     approvalMode: AgentApprovalMode.aggressive,
   );
 }

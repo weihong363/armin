@@ -5,6 +5,7 @@ import 'package:armin/core/models/task_status.dart';
 import 'package:armin/core/services/armin_app_state.dart';
 import 'package:armin/core/storage/task_history_store.dart';
 import 'package:armin/features/agent/services/agent_session_service.dart';
+import 'package:armin/features/ai/services/slm_client.dart';
 import 'package:armin/features/history/screens/task_detail_screen.dart';
 import 'package:armin/features/hosts/models/host_config.dart';
 import 'package:armin/features/projects/models/project_path_config.dart';
@@ -15,6 +16,7 @@ import 'package:armin/features/runtime/services/runtime_task_store.dart';
 import 'package:armin/features/tasks/models/native_output_turn.dart';
 import 'package:armin/features/tasks/models/task_constraint.dart';
 import 'package:armin/features/tasks/models/task_session.dart';
+import 'package:armin/features/tasks/services/loop_evaluation_assistant.dart';
 import 'package:armin/features/tasks/services/output_summary_provider.dart';
 import 'package:armin/features/tasks/widgets/task_card.dart';
 import 'package:armin/features/voice/services/voice_service.dart';
@@ -95,6 +97,7 @@ void main() {
       voiceService: const _SilentVoiceService(),
     );
     await state.load();
+    await state.disconnectTask(task);
 
     await tester.pumpWidget(
       AppStateScope(
@@ -137,8 +140,7 @@ void main() {
         find.byKey(const Key('runtime-control-state-badge')), findsOneWidget);
   });
 
-  testWidgets('task status overrides stale working runtime brain state',
-      (tester) async {
+  testWidgets('runtime work state drives runtime brain state', (tester) async {
     final task = _task(status: TaskStatus.turnIdle).copyWith();
     final runtime = BridgeRuntime(
       taskStore: InMemoryRuntimeTaskStore(),
@@ -165,9 +167,7 @@ void main() {
       ),
     );
 
-    expect(find.text('Executing'), findsNothing);
-    expect(find.text('Review'), findsWidgets);
-    expect(find.text('等待你的指示'), findsWidgets);
+    expect(find.text('Executing'), findsWidgets);
   });
 
   testWidgets('terminal prompt options can be selected from runtime controls',
@@ -600,6 +600,7 @@ void main() {
       voiceService: _RecognizingVoiceService('恢复任务'),
     );
     await state.load();
+    await state.pauseTask(task);
 
     await tester.pumpWidget(
       AppStateScope(
@@ -741,15 +742,19 @@ Summer 是一个海滩风格宠物。
     expect(voice.spokenSummaries.single, isNot(contains('旧语音文本')));
   });
 
-  testWidgets('timeline filters terminal chrome from stored summary',
+  testWidgets('timeline filters terminal chrome from deliverable summary',
       (tester) async {
     final task = _task().copyWith(
-      shortSummary: '''
+      turns: [
+        _turnWithDeliverable(
+          '''
 ████████████████████
 Signed in Browser Login
 Thinking...
 Summer：一位迷人的美国沙滩女孩 Codex 宠物。
 ''',
+        ),
+      ],
     );
     final state = ArminAppState(
       store: _TaskStore(task),
@@ -768,13 +773,13 @@ Summer：一位迷人的美国沙滩女孩 Codex 宠物。
     expect(find.textContaining('Signed in Browser Login'), findsNothing);
     expect(find.textContaining('Thinking'), findsNothing);
     expect(find.textContaining('█'), findsNothing);
+    await tester.pump(const Duration(seconds: 1));
   });
 
   testWidgets('result prefers latest semantic turn over stale terminal result',
       (tester) async {
     final now = DateTime(2026, 5, 18);
     final task = _task().copyWith(
-      summary: 'Signed in Browser Login',
       turns: [
         NativeOutputTurn(
           id: 'turn-task-1-2',
@@ -785,7 +790,9 @@ Summer：一位迷人的美国沙滩女孩 Codex 宠物。
           cleanedOutput: 'Summer：一位迷人的美国沙滩女孩 Codex 宠物。',
           startedAt: now,
           lastOutputAt: now,
-          status: NativeOutputTurnStatus.running,
+          idleDetectedAt: now,
+          status: NativeOutputTurnStatus.turnIdle,
+          deliverable: _deliverable('Summer：一位迷人的美国沙滩女孩 Codex 宠物。'),
         ),
       ],
     );
@@ -950,7 +957,7 @@ Summer：海滩风格 Codex 宠物。
     expect(find.textContaining('加载更多'), findsNothing);
   });
 
-  testWidgets('result card uses latest raw turn output over stale cleaned text',
+  testWidgets('result card shows latest turn deliverable over stale notes',
       (tester) async {
     tester.view.physicalSize = const Size(430, 1600);
     tester.view.devicePixelRatio = 1;
@@ -1115,6 +1122,133 @@ Thinking
     expect(find.text('补充测试证据'), findsNothing);
   });
 
+  testWidgets('loop evaluation assistant appears after latest deliverable',
+      (tester) async {
+    tester.view.physicalSize = const Size(430, 1600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final now = DateTime(2026, 5, 18);
+    final client = _FakeSlmClient(
+      response: '本轮最新结果可验收；未发现阻塞；如需继续可补充下一轮目标。',
+    );
+    final task = _task(status: TaskStatus.turnIdle).copyWith(
+      turns: [
+        NativeOutputTurn(
+          id: 'turn-task-1-1',
+          taskId: 'task-1',
+          turnIndex: 1,
+          userInput: 'Final answer only: ARMIN_LOOP_EVAL_D1 status=PASS',
+          rawOutput: 'Thinking... Final answer only: old prompt echo',
+          cleanedOutput: 'ARMIN_LOOP_EVAL_D1 status=PASS',
+          startedAt: now,
+          lastOutputAt: now,
+          status: NativeOutputTurnStatus.turnIdle,
+          deliverable: _deliverable(
+            'ARMIN_LOOP_EVAL_D1 status=PASS files_changed=0',
+          ),
+        ),
+      ],
+    );
+    final state = ArminAppState(
+      store: _TaskStore(task),
+      agentSessionService: const _NoopAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await tester.pumpWidget(
+      AppStateScope(
+        state: state,
+        child: MaterialApp(
+          home: TaskDetailScreen(
+            taskId: 'task-1',
+            loopEvaluationAssistant: LoopEvaluationAssistant(client: client),
+          ),
+        ),
+      ),
+    );
+    await _tapDetailTab(tester, '时间线');
+    await tester.pumpAndSettle();
+
+    final evaluationCard = find.byKey(const Key('loop-evaluation-card'));
+    expect(find.text('Loop 事实'), findsOneWidget);
+    expect(find.text('辅助判断'), findsOneWidget);
+    expect(evaluationCard, findsOneWidget);
+    expect(
+      find.descendant(
+        of: evaluationCard,
+        matching: find.textContaining('本轮最新结果可验收'),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: evaluationCard, matching: find.text('来源 端侧模型')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+          of: evaluationCard, matching: find.textContaining('Thinking')),
+      findsNothing,
+    );
+    expect(
+      find.descendant(
+          of: evaluationCard, matching: find.textContaining('qodercli')),
+      findsNothing,
+    );
+    expect(
+      find.descendant(
+        of: evaluationCard,
+        matching: find.textContaining('Final answer only'),
+      ),
+      findsNothing,
+    );
+    expect(client.generateCount, 1);
+  });
+
+  testWidgets('loop evaluation assistant is hidden while turn is running',
+      (tester) async {
+    final client = _FakeSlmClient(response: 'should not be used');
+    final task = _task(status: TaskStatus.running).copyWith(
+      turns: [
+        NativeOutputTurn(
+          id: 'turn-task-1-1',
+          taskId: 'task-1',
+          turnIndex: 1,
+          userInput: 'Task',
+          rawOutput: 'Thinking...',
+          cleanedOutput: 'Thinking...',
+          startedAt: DateTime(2026, 5, 18),
+          lastOutputAt: DateTime(2026, 5, 18),
+          status: NativeOutputTurnStatus.running,
+        ),
+      ],
+    );
+    final state = ArminAppState(
+      store: _TaskStore(task),
+      agentSessionService: const _NoopAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await tester.pumpWidget(
+      AppStateScope(
+        state: state,
+        child: MaterialApp(
+          home: TaskDetailScreen(
+            taskId: 'task-1',
+            loopEvaluationAssistant: LoopEvaluationAssistant(client: client),
+          ),
+        ),
+      ),
+    );
+    await _tapDetailTab(tester, '时间线');
+    await tester.pumpAndSettle();
+
+    expect(find.text('辅助判断'), findsNothing);
+    expect(client.generateCount, 0);
+  });
+
   testWidgets('result omits turns waiting for terminal interaction',
       (tester) async {
     tester.view.physicalSize = const Size(430, 1600);
@@ -1166,15 +1300,12 @@ Allow this command to run? Redirection detected.
     await _tapDetailTab(tester, '结果');
 
     expect(find.text('摘要 1'), findsNothing);
-    expect(find.textContaining('正式结果会在任务完成'), findsOneWidget);
+    expect(find.textContaining('任务正在等待你的处理'), findsOneWidget);
   });
 
   testWidgets('result panel ignores task summary without turn evidence',
       (tester) async {
-    final task = _task().copyWith(
-      summary: '任务摘要已生成。',
-      shortSummary: 'SHORT_SUMMARY_SHOULD_NOT_RENDER',
-    );
+    final task = _task();
     final state = ArminAppState(
       store: _TaskStore(task),
       agentSessionService: const _NoopAgent(),
@@ -1326,6 +1457,234 @@ README.md 已写入，包含三种模式的完整使用示例、公共参数表�
     expect(find.textContaining('world'), findsWidgets);
   });
 
+  testWidgets('result appears when deliverable is saved for current turn',
+      (tester) async {
+    final now = DateTime(2026, 5, 18);
+    final initialTask = _task().copyWith(
+      updatedAt: now,
+      turns: [
+        NativeOutputTurn(
+          id: 'turn-task-1-1',
+          taskId: 'task-1',
+          turnIndex: 1,
+          userInput: '输出项目简介',
+          rawOutput: '',
+          cleanedOutput: '项目简介已生成。',
+          startedAt: now,
+          lastOutputAt: now,
+          status: NativeOutputTurnStatus.turnIdle,
+        ),
+      ],
+    );
+    final store = _TaskStore(initialTask);
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: const _NoopAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await tester.pumpWidget(
+      AppStateScope(
+        state: state,
+        child: const MaterialApp(home: TaskDetailScreen(taskId: 'task-1')),
+      ),
+    );
+    await _tapDetailTab(tester, '结果');
+
+    expect(find.textContaining('最近进展'), findsOneWidget);
+    expect(find.textContaining('项目简介已生成'), findsOneWidget);
+
+    store.task = initialTask.copyWith(
+      updatedAt: now.add(const Duration(seconds: 1)),
+      turns: [
+        initialTask.turns.single.copyWith(
+          deliverable: _deliverable('项目简介已生成，测试覆盖通过。'),
+        ),
+      ],
+    );
+    await state.load();
+    state.runtimeEventBus.publish(
+      RuntimeEvent(
+        type: RuntimeEventType.deliverableUpdated,
+        taskId: 'task-1',
+        createdAt: DateTime.now(),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('项目简介已生成，测试覆盖通过'), findsOneWidget);
+  });
+
+  testWidgets('result empty state follows runtime attention status',
+      (tester) async {
+    final now = DateTime(2026, 5, 18);
+    final task = _task(status: TaskStatus.needAttention).copyWith(
+      updatedAt: now,
+      turns: [
+        NativeOutputTurn(
+          id: 'turn-task-1-1',
+          taskId: 'task-1',
+          turnIndex: 1,
+          userInput: '输出项目简介',
+          rawOutput: '',
+          cleanedOutput: '需要你补充下一步。',
+          startedAt: now,
+          lastOutputAt: now,
+          status: NativeOutputTurnStatus.needAttention,
+        ),
+      ],
+    );
+    final state = ArminAppState(
+      store: _TaskStore(task),
+      agentSessionService: const _NoopAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await tester.pumpWidget(
+      AppStateScope(
+        state: state,
+        child: const MaterialApp(home: TaskDetailScreen(taskId: 'task-1')),
+      ),
+    );
+    await _tapDetailTab(tester, '结果');
+
+    expect(find.textContaining('最近进展'), findsOneWidget);
+    expect(find.textContaining('需要你补充下一步'), findsOneWidget);
+    expect(find.textContaining('任务仍在执行'), findsNothing);
+  });
+
+  testWidgets('result shows need-attention turn when deliverable exists',
+      (tester) async {
+    final now = DateTime(2026, 5, 18);
+    final task = _task(status: TaskStatus.needAttention).copyWith(
+      updatedAt: now,
+      turns: [
+        NativeOutputTurn(
+          id: 'turn-task-1-1',
+          taskId: 'task-1',
+          turnIndex: 1,
+          userInput: '输出项目简介',
+          rawOutput: '',
+          cleanedOutput: '',
+          startedAt: now,
+          lastOutputAt: now,
+          status: NativeOutputTurnStatus.needAttention,
+          deliverable: _deliverable('项目简介已生成，等待下一步验收。'),
+        ),
+      ],
+    );
+    final state = ArminAppState(
+      store: _TaskStore(task),
+      agentSessionService: const _NoopAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await tester.pumpWidget(
+      AppStateScope(
+        state: state,
+        child: const MaterialApp(home: TaskDetailScreen(taskId: 'task-1')),
+      ),
+    );
+    await _tapDetailTab(tester, '结果');
+
+    expect(find.textContaining('项目简介已生成，等待下一步验收'), findsOneWidget);
+    expect(find.textContaining('暂无可展示的正式结果'), findsNothing);
+  });
+
+  testWidgets('result panel suppresses diagnostic-only deliverable',
+      (tester) async {
+    final now = DateTime(2026, 5, 18);
+    final task = _task(status: TaskStatus.needAttention).copyWith(
+      updatedAt: now,
+      turns: [
+        NativeOutputTurn(
+          id: 'turn-task-1-1',
+          taskId: 'task-1',
+          turnIndex: 1,
+          userInput: '输出项目简介',
+          rawOutput: '',
+          cleanedOutput: '',
+          startedAt: now,
+          lastOutputAt: now,
+          status: NativeOutputTurnStatus.needAttention,
+          deliverable: _deliverable('''
+ARMIN_DIAG: monitor_version=phase2.6-settled-v8
+██████ ╭─ What's new (v1.0.40) ────────────────────────╮
+██ ██ Not Login Please Auth │ /release-notes for more │
+'''),
+        ),
+      ],
+    );
+    final state = ArminAppState(
+      store: _TaskStore(task),
+      agentSessionService: const _NoopAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await tester.pumpWidget(
+      AppStateScope(
+        state: state,
+        child: const MaterialApp(home: TaskDetailScreen(taskId: 'task-1')),
+      ),
+    );
+    await _tapDetailTab(tester, '结果');
+
+    expect(find.text('暂无结果'), findsOneWidget);
+    expect(find.textContaining('ARMIN_DIAG'), findsNothing);
+    expect(find.textContaining('Not Login'), findsNothing);
+  });
+
+  testWidgets('result panel shows progress when cli produced no final result',
+      (tester) async {
+    final now = DateTime(2026, 5, 18);
+    final task = _task(status: TaskStatus.needAttention).copyWith(
+      updatedAt: now,
+      turns: [
+        NativeOutputTurn(
+          id: 'turn-task-1-1',
+          taskId: 'task-1',
+          turnIndex: 1,
+          userInput: '输出项目简介',
+          rawOutput: '',
+          cleanedOutput: '''
+▪ Let me check the test directory more thoroughly.
+▪ Glob('test/**/*.dart')
+  └ No files found
+▪ Let me check the lib directory structure more carefully.
+▪ Read(/Users/.../countdown_widgets.dart)
+  └ Read 6 lines
+''',
+          startedAt: now,
+          lastOutputAt: now,
+          status: NativeOutputTurnStatus.needAttention,
+        ),
+      ],
+    );
+    final state = ArminAppState(
+      store: _TaskStore(task),
+      agentSessionService: const _NoopAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await tester.pumpWidget(
+      AppStateScope(
+        state: state,
+        child: const MaterialApp(home: TaskDetailScreen(taskId: 'task-1')),
+      ),
+    );
+    await _tapDetailTab(tester, '结果');
+
+    expect(find.text('最近进展（非最终结果）'), findsOneWidget);
+    expect(find.textContaining('目标 CLI 尚未输出正式结果'), findsOneWidget);
+    expect(find.textContaining('已检查 test/**/*.dart'), findsOneWidget);
+    expect(find.textContaining('已读取 countdown_widgets.dart'), findsOneWidget);
+  });
+
   testWidgets('resuming the app does not force the result tab', (tester) async {
     tester.view.physicalSize = const Size(430, 900);
     tester.view.devicePixelRatio = 1;
@@ -1344,6 +1703,7 @@ README.md 已写入，包含三种模式的完整使用示例、公共参数表�
           startedAt: now,
           lastOutputAt: now,
           status: NativeOutputTurnStatus.turnIdle,
+          deliverable: _deliverable('Taro 是一只小型疲惫兔子开发者桌面宠物。'),
         ),
         NativeOutputTurn(
           id: 'turn-task-1-2',
@@ -1485,6 +1845,7 @@ Taro 是一只小型疲惫兔子开发者桌面宠物。
           startedAt: now,
           lastOutputAt: now,
           status: NativeOutputTurnStatus.turnIdle,
+          deliverable: _deliverable('Summer 是一个桌面宠物。'),
         ),
         NativeOutputTurn(
           id: 'turn-task-1-2',
@@ -1525,21 +1886,12 @@ Summer 是一个桌面宠物。
       ),
     );
 
+    await _tapDetailTab(tester, '动态');
     await tester.scrollUntilVisible(
       find.text('上下文更新输出 2'),
       300,
       scrollable: find.byType(Scrollable).last,
     );
-    await tester.pumpAndSettle();
-
-    expect(
-      tester.getTopLeft(find.text('上下文更新输出 2')).dy,
-      lessThan(tester.getTopLeft(find.text('初始任务输出')).dy),
-    );
-    expect(find.text('显示原始输出'), findsNWidgets(2));
-    expect(find.textContaining('Summer 是一个桌面宠物'), findsNothing);
-
-    await tester.tap(find.text('显示原始输出').first);
     await tester.pumpAndSettle();
 
     expect(find.textContaining('Summer 是一个桌面宠物'), findsOneWidget);
@@ -1550,7 +1902,6 @@ Summer 是一个桌面宠物。
       (tester) async {
     final task = _task().copyWith(
       completedAt: DateTime(2026, 5, 18, 11, 42),
-      shortSummary: 'SSH 执行失败',
     );
     final state = ArminAppState(
       store: _TaskStore(task),
@@ -1656,6 +2007,7 @@ Summer 是一个桌面宠物。
       voiceService: const _SilentVoiceService(),
     );
     await state.load();
+    await state.pauseTask(task);
 
     await tester.pumpWidget(
       AppStateScope(
@@ -1664,13 +2016,13 @@ Summer 是一个桌面宠物。
       ),
     );
 
-    expect(find.text('连接已暂停'), findsWidgets);
-    expect(find.text('连接已暂停'), findsWidgets);
+    expect(find.text('已暂停'), findsWidgets);
+    await _tapDetailTab(tester, '日志');
 
     await tester.tap(find.text('标记完成'));
     await tester.pumpAndSettle();
 
-    expect(state.taskStatus(state.tasks.single), TaskStatus.userCompleted);
+    expect(state.taskStatus(state.tasks.single), TaskStatus.completed);
   });
 
   testWidgets('detail banner demotes project cli and keeps editable title',
@@ -1931,7 +2283,6 @@ TaskSession _task({TaskStatus status = TaskStatus.running}) {
     _ => null,
   };
   final isObserverDetached = status == TaskStatus.observerDetached;
-  final isPaused = status == TaskStatus.paused;
   return TaskSession(
     id: 'task-1',
     host: HostConfig(
@@ -1961,10 +2312,6 @@ TaskSession _task({TaskStatus status = TaskStatus.running}) {
     constraints: const {},
     finalPrompt: 'Task',
     secretRecords: const [],
-    rawLog: isObserverDetached
-        ? 'Observer detached by user.'
-        : (isPaused ? 'Task paused by user.' : ''),
-    shortSummary: isObserverDetached ? '已断开手机监听' : (isPaused ? '连接已暂停' : ''),
     turns: [
       if (turnStatus != null || isObserverDetached)
         NativeOutputTurn(
@@ -2011,6 +2358,46 @@ TurnDeliverable _deliverable(String display, {String? speech}) {
     speechSummary: speech ?? display,
     evidenceFingerprint: display.hashCode.toString(),
   );
+}
+
+NativeOutputTurn _turnWithDeliverable(String display) {
+  final now = DateTime(2026, 5, 18);
+  return NativeOutputTurn(
+    id: 'turn-task-1-1',
+    taskId: 'task-1',
+    turnIndex: 1,
+    userInput: '输出结果',
+    rawOutput: '',
+    cleanedOutput: display,
+    startedAt: now,
+    lastOutputAt: now,
+    idleDetectedAt: now,
+    status: NativeOutputTurnStatus.turnIdle,
+    deliverable: _deliverable(display),
+  );
+}
+
+class _FakeSlmClient implements SlmClient {
+  _FakeSlmClient({required this.response});
+
+  final String response;
+  int generateCount = 0;
+
+  @override
+  Future<SlmCapability> capability({String? modelPath}) async {
+    return SlmCapability(
+      available: true,
+      message: 'ready',
+      backend: 'fake',
+      modelPath: modelPath,
+    );
+  }
+
+  @override
+  Future<SlmGenerationResponse> generate(SlmGenerationRequest request) async {
+    generateCount += 1;
+    return SlmGenerationResponse(text: response, backend: 'fake');
+  }
 }
 
 class _TaskStore extends TaskHistoryStore {

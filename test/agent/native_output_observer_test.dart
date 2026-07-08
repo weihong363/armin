@@ -340,6 +340,39 @@ Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdo
     expect(snapshot.turnIdle, isFalse);
   });
 
+  test('qoder idle input prompt after unfinished work needs attention', () {
+    final observer = NativeOutputObserver(
+      idleThreshold: const Duration(seconds: 1),
+    );
+    const output = '''
+▪ Let me read the pubspec.yaml file first to understand the project configuration.
+
+▪ Read(/Users/.../pubspec.yaml)
+  └ Read 21 lines
+
+▪ Let me check the lib/ directory structure to understand the key widgets.
+
+▪ Glob('**/*' within lib/)
+  └ Found 2 matching file(s) (Ctrl+O to expand)
+
+▪ Let me check the src/ directory structure to find the actual widget files.
+
+────────────────────────────────────────────────────────────────────────────────
+ YOLO Shift+Tab to Auto Mode                                  Try /model to switch models
+*   Type your message or @path/to/file
+Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdown_widgets
+''';
+
+    final snapshot = observer.observeSettled(
+      output,
+      now: DateTime(2026, 7, 7, 12),
+    );
+
+    expect(snapshot.state, NativeOutputObserverState.needAttention);
+    expect(snapshot.needsAttention, isTrue);
+    expect(snapshot.turnIdle, isFalse);
+  });
+
   test('real qoder thinking after interim summary stays running', () {
     final observer = NativeOutputObserver(
       idleThreshold: const Duration(seconds: 1),

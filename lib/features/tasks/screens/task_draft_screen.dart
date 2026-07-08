@@ -472,9 +472,20 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
     return _promptBuilder.build(
       taskDescription: _taskController.text,
       context: _contextController.text,
-      constraints: _constraints,
+      constraints: _effectiveConstraintsFor(_taskController.text),
       secrets: _secrets,
     );
+  }
+
+  Set<TaskConstraint> _effectiveConstraintsFor(String taskText) {
+    final effective = <TaskConstraint>{
+      ..._constraints,
+      ..._extractor.extract(taskText),
+    };
+    if (effective.contains(TaskConstraint.analyzeOnly)) {
+      effective.remove(TaskConstraint.allowChanges);
+    }
+    return Set.unmodifiable(effective);
   }
 
   void _refreshPreview() {
@@ -581,6 +592,7 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
     final now = DateTime.now();
     final taskId = 'task-${now.microsecondsSinceEpoch}';
     final prompt = _buildPrompt();
+    final effectiveConstraints = _effectiveConstraintsFor(taskText);
     final tmuxSessionName = _taskTmuxSessionName(host.tmuxSessionName, taskId);
     final approvalMode = _executionMode.toApprovalMode();
     final taskHost = host
@@ -604,10 +616,9 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
       cleanedDraft: _cleanedDraft,
       userText: taskText,
       context: _contextController.text.trim(),
-      constraints: Set.unmodifiable(_constraints),
+      constraints: effectiveConstraints,
       finalPrompt: prompt,
       secretRecords: secretRecords,
-      rawLog: '',
       approvalMode: approvalMode,
       voiceInputs: [
         if (_rawStt.isNotEmpty)
@@ -625,7 +636,7 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
         cleanedText: _cleanedDraft,
         userEditedText: taskText,
         contextText: _contextController.text.trim(),
-        constraints: Set.unmodifiable(_constraints),
+        constraints: effectiveConstraints,
         createdAt: now,
         updatedAt: now,
       ),

@@ -112,6 +112,28 @@ class NativeOutputObserver {
     }
     _reconnectStartedAt = null;
 
+    final terminalWindow = [
+      ...terminalSignalLines,
+      ...rawTerminalSignalLines,
+    ];
+    final workWindow = [
+      ...workSignalLines,
+      ...rawWorkSignalLines,
+    ];
+    if (_runtimeAdapter.containsIdleInputPrompt(terminalWindow) &&
+        _runtimeAdapter.hasAgentWorkEvidence(workWindow) &&
+        !_runtimeAdapter.containsActiveExecutionChrome(terminalWindow) &&
+        !_runtimeAdapter.hasHighConfidenceDeliverable(workWindow)) {
+      return NativeOutputSnapshot(
+        rawOutput: output,
+        cleanedOutput: cleaned,
+        state: NativeOutputObserverState.needAttention,
+        turnIdle: false,
+        runtimeLost: false,
+        needsAttention: true,
+      );
+    }
+
     if (_runtimeAdapter
         .containsActiveWork([...workSignalLines, ...rawWorkSignalLines])) {
       return NativeOutputSnapshot(

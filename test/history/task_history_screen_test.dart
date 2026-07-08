@@ -63,8 +63,6 @@ TaskSession _task() {
     constraints: const {},
     finalPrompt: '',
     secretRecords: const [],
-    rawLog: '',
-    shortSummary: '已完成',
   );
 }
 

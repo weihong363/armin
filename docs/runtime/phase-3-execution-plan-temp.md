@@ -206,7 +206,10 @@ Phase 3 从 Phase 2.6/2.7 已验证的单任务可靠执行继续推进到轻量
 
 - Android 侧已接入 llama.cpp native runtime，`native_slm_smoke_test.dart` 可验证本地 GGUF 真模型生成。
 - 已新增 `LoopEvaluationAssistant`，输入限定为 runtime status、latest `TurnDeliverable`、`loop_evaluated`、`loop_user_action`、`loop_approval_event`。
-- 已接入任务详情「动态」Tab 的 `辅助判断` 卡片，只读展示，不改变状态、不触发 TTS、不自动发送 follow-up。
+- 已新增 `LoopNextAction` 与 `LoopActionPolicyGate`：AI/规则层可以提出下一步 action，但低风险自动执行、高风险确认的边界由 Runtime policy 决定。
+- 已新增 `ArminAppState.runAutopilotNextAction` Runtime 入口：只接受 `autoAllowed` action，写入 `loop_auto_action` fact，按 turn / evidence / action 去重，并复用现有 `sendFollowUp` 主链路创建下一轮 Turn。
+- 已将 Autopilot 开关绑定到 `aggressive` / YOLO 执行模式：fresh deliverable 后可自动执行低风险下一步；native terminal approval 可自动 approve，但仍先记录 requested fact，再走现有 approval resolution 路径。
+- 已接入任务详情「动态」Tab 的 `辅助判断` 卡片，展示辅助判断、下一步 action 和执行策略；不绕过 `sendFollowUp` 主链路，不触发 TTS。
 - 模型不可用、超时、空输出或异常时回落到规则判断；fallback 不影响结果卡片、状态刷新或继续输入。
 
 验收拆成三层：
@@ -217,8 +220,8 @@ Phase 3 从 Phase 2.6/2.7 已验证的单任务可靠执行继续推进到轻量
 
 限制：
 
-- 当前 AI 只做验收辅助判断，不做自动 follow-up。
-- 当前 AI 不自动审批、不标记完成/失败、不替代用户验收。
+- 当前 AI 可以生成结构化下一步 action；Autopilot 只能在 YOLO 模式下执行 `LoopActionPolicyGate` 允许的低风险 action。
+- 当前 AI 不直接审批；只有 YOLO 模式下的 Runtime Policy Gate 可以自动 approve native terminal approval，且不能标记完成/失败或替代用户最终验收。
 - 模型文件仍通过 `.models/slm/Qwen3-0.6B-Q4_K_M.gguf` 本地缓存推送到模拟器；不提交 GGUF。
 - 端侧生成耗时约 18 秒，不能放入同步 UI 关键路径。
 

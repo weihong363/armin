@@ -248,6 +248,47 @@ ARMIN_LOOP_LONG_D1 status=PASS files_changed=0 next=WAIT
     expect(source.latestCandidate(turns), isNull);
     expect(source.candidateCount(turns), 0);
   });
+
+  test(
+      'attention qoder final marker after agent output is deliverable evidence',
+      () {
+    final now = DateTime(2026, 7, 9);
+    const prompt = '''
+Read pubspec.yaml. Final answer must include:
+ARMIN_REAL_QODER_REGRESSION_D1 status=PASS files_changed=0 next=WAIT
+''';
+    final turns = [
+      _turn(
+        id: 'turn-1',
+        index: 1,
+        input: prompt,
+        output: '''
+> Read pubspec.yaml. Final answer must include:
+  ARMIN_REAL_QODER_REGRESSION_D1 status=PASS files_changed=0 next=WAIT
+
+▪ Let me read the pubspec.yaml file first.
+▪ Read(/Users/.../pubspec.yaml)
+  └ Read 21 lines
+
+▪ The pubspec.yaml file shows this is a Flutter package named "countdown_widgets".
+
+  ARMIN_REAL_QODER_REGRESSION_D1 status=PASS files_changed=0 next=WAIT
+
+YOLO Shift+Tab to Auto
+Mode Try /effort or /context-window to adjust model settings
+* Type your message or @path/to/file
+Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdown_widgets
+''',
+        now: now,
+        status: NativeOutputTurnStatus.needAttention,
+      ),
+    ];
+    const source = TaskDeliverableSource();
+
+    expect(source.latestCandidate(turns)?.turn.id, 'turn-1');
+    expect(source.evidenceFor(turns, source.latestCandidate(turns)!)?.text,
+        contains('ARMIN_REAL_QODER_REGRESSION_D1'));
+  });
 }
 
 class _CapturingSummaryProvider implements OutputSummaryProvider {

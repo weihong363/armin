@@ -273,10 +273,14 @@ class TaskDeliverableSource {
 
   bool _hasFinalMarkerLine(String text, String prompt) {
     final compactPrompt = _compactForEcho(prompt);
+    var sawAgentOutputBeforeMarker = false;
     for (final line in text.split('\n')) {
       final trimmed = line.trim();
       if (trimmed.isEmpty) {
         continue;
+      }
+      if (_looksLikeAgentOutputLine(trimmed)) {
+        sawAgentOutputBeforeMarker = true;
       }
       if (!RegExp(r'^(?:[▪■●]\s*)?ARMIN[A-Z0-9_]*\b').hasMatch(trimmed)) {
         continue;
@@ -287,7 +291,7 @@ class TaskDeliverableSource {
           compactPrompt.contains(compactLine);
       final isAgentBullet =
           RegExp(r'^[▪■●]\s*ARMIN[A-Z0-9_]*\b').hasMatch(trimmed);
-      if (!isPromptEcho || isAgentBullet) {
+      if (!isPromptEcho || isAgentBullet || sawAgentOutputBeforeMarker) {
         return true;
       }
     }
@@ -303,17 +307,54 @@ class TaskDeliverableSource {
     if (compactPrompt.length < 8) {
       return text;
     }
+    var sawAgentOutputBeforeMarker = false;
     return text.split('\n').where((line) {
       final trimmed = line.trim();
       if (trimmed.isEmpty) {
         return false;
       }
+      if (_looksLikeAgentOutputLine(trimmed)) {
+        sawAgentOutputBeforeMarker = true;
+      }
       if (RegExp(r'^[▪■●]\s*ARMIN[A-Z0-9_]*\b').hasMatch(trimmed)) {
         return true;
       }
       final compactLine = _compactForEcho(trimmed);
+      final isPlainMarker = RegExp(r'^ARMIN[A-Z0-9_]*\b').hasMatch(trimmed);
+      if (isPlainMarker && sawAgentOutputBeforeMarker) {
+        return true;
+      }
       return compactLine.length < 8 || !compactPrompt.contains(compactLine);
     }).join('\n');
+  }
+
+  bool _looksLikeAgentOutputLine(String line) {
+    if (!RegExp(r'^[▪■●]\s+').hasMatch(line)) {
+      return false;
+    }
+    final text = line.replaceFirst(RegExp(r'^[▪■●]\s+'), '').trim();
+    if (text.isEmpty) {
+      return false;
+    }
+    if (_looksLikeToolCallLine(text)) {
+      return false;
+    }
+    final lower = text.toLowerCase();
+    return !lower.startsWith('let me ') &&
+        !lower.startsWith('i will ') &&
+        !lower.startsWith("i'll ");
+  }
+
+  bool _looksLikeToolCallLine(String line) {
+    final lower = line.trim().toLowerCase();
+    return lower.startsWith('bash(') ||
+        lower.startsWith('grep(') ||
+        lower.startsWith('glob(') ||
+        lower.startsWith('read(') ||
+        lower.startsWith('write(') ||
+        lower.startsWith('edit(') ||
+        lower.startsWith('multiedit(') ||
+        lower.startsWith('list(');
   }
 
   String _fingerprint(String text) {

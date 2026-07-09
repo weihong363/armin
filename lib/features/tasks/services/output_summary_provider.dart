@@ -189,15 +189,42 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
 
   List<String> _finalMarkerDeliverableLines(String cleaned) {
     final markerParts = <String>[];
-    final markerPattern = RegExp(r'^[▪■●]\s*(ARMIN[A-Z0-9_]*(?:\s+.*)?)\s*$');
+    final currentBlock = <String>[];
+    final markerPattern =
+        RegExp(r'^(?:[▪■●]\s*)?(ARMIN[A-Z0-9_]*(?:\s+.*)?)\s*$');
+    var sawAgentOutputBeforeMarker = false;
     for (final rawLine in cleaned.split('\n')) {
       final trimmed = rawLine.trim();
       final match = markerPattern.firstMatch(trimmed);
       if (match != null) {
+        final isAgentBullet =
+            RegExp(r'^[▪■●]\s*ARMIN[A-Z0-9_]*\b').hasMatch(trimmed);
+        if (!isAgentBullet && !sawAgentOutputBeforeMarker) {
+          continue;
+        }
         markerParts
           ..clear()
+          ..addAll(isAgentBullet ? const [] : currentBlock)
           ..add(_semanticLine(match.group(1)?.trim() ?? ''));
+        currentBlock.clear();
         continue;
+      }
+      if (_looksLikeAgentOutputLine(trimmed)) {
+        sawAgentOutputBeforeMarker = true;
+        currentBlock.clear();
+        final semantic = _semanticLine(trimmed);
+        if (semantic.isNotEmpty && !_looksLikeLowValueLine(semantic)) {
+          currentBlock.add(semantic);
+        }
+        continue;
+      }
+      if (currentBlock.isNotEmpty) {
+        final semantic = _semanticLine(trimmed);
+        if (semantic.isNotEmpty &&
+            !_looksLikeLowValueLine(semantic) &&
+            !_looksLikeBulletToolCall(semantic)) {
+          currentBlock.add(semantic);
+        }
       }
       if (markerParts.isEmpty) {
         continue;
@@ -208,15 +235,32 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
           !_looksLikeMarkerContinuation(semantic)) {
         continue;
       }
-      markerParts.add(semantic);
+      markerParts[markerParts.length - 1] =
+          '${markerParts.last} $semantic'.trim();
     }
-    final marker = markerParts.join(' ').trim();
-    return marker.isEmpty ? const [] : [marker];
+    return markerParts.where((line) => line.trim().isNotEmpty).toList();
   }
 
   bool _looksLikeMarkerContinuation(String line) {
     final trimmed = line.trim();
     return RegExp(r'^[A-Za-z_][A-Za-z0-9_]*=').hasMatch(trimmed);
+  }
+
+  bool _looksLikeAgentOutputLine(String line) {
+    if (!RegExp(r'^[▪■●]\s+').hasMatch(line)) {
+      return false;
+    }
+    final text = line.replaceFirst(RegExp(r'^[▪■●]\s+'), '').trim();
+    if (text.isEmpty) {
+      return false;
+    }
+    if (_looksLikeBulletToolCall(text)) {
+      return false;
+    }
+    final lower = text.toLowerCase();
+    return !lower.startsWith('let me ') &&
+        !lower.startsWith('i will ') &&
+        !lower.startsWith("i'll ");
   }
 
   bool _looksLikeBulletToolCall(String line) {
@@ -1219,6 +1263,7 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
         _looksLikeEncodedPromptEchoLine(lower) ||
         lower == 'none' ||
         lower == '*' ||
+        lower == 'mode' ||
         lower == 'not_run' ||
         lower.startsWith('```') ||
         lower.startsWith('import ') ||

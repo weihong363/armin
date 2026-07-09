@@ -1059,18 +1059,20 @@ Thinking
     await _tapDetailTab(tester, '时间线');
 
     expect(find.text('建议后续指令'), findsOneWidget);
-    expect(find.text('补充测试证据'), findsOneWidget);
+    expect(find.text('补充测试证据'), findsAtLeastNWidgets(1));
 
     await tester.tap(find.text('使用草稿').first);
     await tester.pumpAndSettle();
 
     final editable = tester.widget<EditableText>(find.byType(EditableText));
     expect(editable.controller.text, contains('请运行与本次修改相关的最小测试'));
+    expect(editable.controller.text, contains('未运行原因'));
 
     await tester.tap(find.text('发送'));
     await tester.pumpAndSettle();
 
     expect(agent.lastFollowUp, contains('请运行与本次修改相关的最小测试'));
+    expect(agent.lastFollowUp, contains('未运行原因'));
   });
 
   testWidgets('loop suggestions stay hidden while a new turn is running',

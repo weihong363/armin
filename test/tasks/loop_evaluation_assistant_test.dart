@@ -100,6 +100,76 @@ void main() {
     expect(summary.usedAi, isFalse);
     expect(summary.text, contains('待处理审批'));
   });
+
+  test('allows low-risk next action to auto execute in aggressive mode',
+      () async {
+    final assistant = LoopEvaluationAssistant(
+      client: _FakeSlmClient(available: false),
+    );
+
+    final summary = await assistant.evaluate(
+      _task(
+        deliverableSummary: '已实现倒计时组件交互和状态更新。',
+        approvalMode: AgentApprovalMode.aggressive,
+      ),
+      runtimeStatus: 'turnIdle',
+    );
+
+    expect(summary.nextAction?.id, 'request_test_evidence');
+    expect(summary.nextAction?.policy, LoopNextActionPolicy.autoAllowed);
+    expect(summary.nextAction?.canAutoExecute, isTrue);
+  });
+
+  test('keeps low-risk next action assisted in balanced mode', () async {
+    final assistant = LoopEvaluationAssistant(
+      client: _FakeSlmClient(available: false),
+    );
+
+    final summary = await assistant.evaluate(
+      _task(
+        deliverableSummary: '已实现倒计时组件交互和状态更新。',
+        approvalMode: AgentApprovalMode.balanced,
+      ),
+      runtimeStatus: 'turnIdle',
+    );
+
+    expect(summary.nextAction?.id, 'request_test_evidence');
+    expect(summary.nextAction?.policy, LoopNextActionPolicy.assisted);
+    expect(summary.nextAction?.canAutoExecute, isFalse);
+  });
+
+  test('requires confirmation for blockers even in aggressive mode', () async {
+    final assistant = LoopEvaluationAssistant(
+      client: _FakeSlmClient(available: false),
+    );
+
+    final summary = await assistant.evaluate(
+      _task(
+        deliverableSummary: '执行失败，permission denied，当前被权限问题阻塞。',
+        approvalMode: AgentApprovalMode.aggressive,
+      ),
+      runtimeStatus: 'turnIdle',
+    );
+
+    expect(summary.nextAction?.id, 'resolve_blocker');
+    expect(
+      summary.nextAction?.policy,
+      LoopNextActionPolicy.confirmationRequired,
+    );
+  });
+
+  test('does not propose auto action while task is running', () async {
+    final assistant = LoopEvaluationAssistant(
+      client: _FakeSlmClient(available: false),
+    );
+
+    final summary = await assistant.evaluate(
+      _task(deliverableSummary: null),
+      runtimeStatus: 'running',
+    );
+
+    expect(summary.nextAction, isNull);
+  });
 }
 
 class _FakeSlmClient implements SlmClient {
@@ -135,6 +205,7 @@ TaskSession _task({
   required String? deliverableSummary,
   String rawOutput = '',
   List<MetricEvent> metricEvents = const [],
+  AgentApprovalMode approvalMode = AgentApprovalMode.aggressive,
 }) {
   final now = DateTime(2026, 7, 6);
   return TaskSession(
@@ -163,7 +234,7 @@ TaskSession _task({
     constraints: const {},
     finalPrompt: '测试任务',
     secretRecords: const [],
-    approvalMode: AgentApprovalMode.aggressive,
+    approvalMode: approvalMode,
     metricEvents: metricEvents,
     turns: [
       NativeOutputTurn(

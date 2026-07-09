@@ -1480,6 +1480,49 @@ Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdo
     expect(summary.displaySummary, isNot(contains('Let me read')));
   });
 
+  test('rule provider keeps plain qoder final marker after agent output',
+      () async {
+    const request = OutputSummaryRequest(
+      cleanedOutput: '''
+> Read pubspec.yaml. Final answer must include:
+  ARMIN_REAL_QODER_REGRESSION_D1 status=PASS files_changed=0 next=WAIT
+▪ Let me read the pubspec.yaml file first.
+▪ Read(/Users/.../pubspec.yaml)
+  └ Read 21 lines
+▪ The project is a Flutter package named "countdown_widgets".
+
+  ARMIN_REAL_QODER_REGRESSION_D1 status=PASS files_changed=0 next=WAIT
+
+YOLO Shift+Tab to Auto
+Mode                  Try /effort or /context-window to adjust model settings
+* Type your message or @path/to/file
+Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdown_widgets
+''',
+      taskTitle: 'Real qodercli deliverable regression',
+      promptInputs: [
+        'Read pubspec.yaml. Final answer must include: '
+            'ARMIN_REAL_QODER_REGRESSION_D1 status=PASS '
+            'files_changed=0 next=WAIT',
+      ],
+      agentCommand: 'qodercli',
+    );
+
+    final summary = await const RuleBasedOutputSummaryProvider().summarize(
+      request,
+    );
+
+    expect(
+        summary.displaySummary, contains('The project is a Flutter package'));
+    expect(
+      summary.displaySummary,
+      contains(
+        'ARMIN_REAL_QODER_REGRESSION_D1 status=PASS files_changed=0 next=WAIT',
+      ),
+    );
+    expect(summary.displaySummary, isNot(contains('Try /effort')));
+    expect(summary.displaySummary, isNot(contains('Mode')));
+  });
+
   test('rule provider keeps middle dot list items in one deliverable block',
       () async {
     const request = OutputSummaryRequest(

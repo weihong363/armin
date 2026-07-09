@@ -96,16 +96,20 @@ Loop Runtime 的新增数据必须满足：
 - Phase 3.6 自动摘要与结果追踪已完成代码级接入：`loop_result_summary` 只基于正式 `TurnDeliverable` 聚合 Loop 级摘要和结果索引，结果卡片与 TTS 仍只消费 turn deliverable。
 - Phase 3.7 通知与用户反馈已完成本地事件层：AppState 将 RuntimeEventBus 中的审批、等待用户、fresh deliverable、运行丢失、完成和失败事件映射为去重后的 `TaskNotificationService` 请求；当前默认 no-op，不接系统通知权限或 push。
 - Native SLM 前置能力已接入 Android llama.cpp runtime，并通过 `native_slm_smoke_test.dart` 验证真模型可在 `emulator-5554` 上生成文本；模型缓存见 [Native SLM llama.cpp Smoke](native-slm-llama-smoke.md)。
-- Phase 3.8 的首个 AI 辅助用例限定为 `LoopEvaluationAssistant`：只读取 runtime status、latest `TurnDeliverable`、`loop_evaluated`、用户动作 facts 和审批 facts，生成辅助验收判断；模型不可用、超时或失败时回落到规则判断。
-- `LoopEvaluationAssistant` 已接入任务详情「动态」Tab 的 `辅助判断` 卡片，位于 `Loop 事实` 之后、规则型后续指令之前；UI 只读展示，不改变任务状态、不自动发送 follow-up、不触发 TTS。
-- 尚未启用自动下一步执行、自动审批、完整 recurrence scheduler 或原生系统通知 adapter；调度 MVP、审批 facts、本地通知事件和 AI evaluation 都不能替代 Loop Runtime 主链路。
+- Phase 3.8 的 AI 辅助用例限定为 `LoopEvaluationAssistant`：只读取 runtime status、latest `TurnDeliverable`、`loop_evaluated`、用户动作 facts 和审批 facts，生成辅助验收判断和结构化 `LoopNextAction`；模型不可用、超时或失败时回落到规则判断。
+- `LoopEvaluationAssistant` 已接入任务详情「动态」Tab 的 `辅助判断` 卡片，位于 `Loop 事实` 之后、规则型后续指令之前；UI 展示 action 与执行策略，但不绕过 Runtime 主链路。
+- 自动下一步执行必须经过 `LoopActionPolicyGate`：低风险 action 可通过 `ArminAppState.runAutopilotNextAction` 复用 `sendFollowUp` 创建下一轮 Turn，并记录 `loop_auto_action` fact；阻塞、约束冲突、删除、Git、安装依赖、配置修改等高风险 action 必须等待用户确认。
+- Autopilot 开关绑定任务执行模式：`aggressive` / YOLO 模式下，fresh deliverable 产生后允许自动执行低风险下一步 action；`safe` 和 `balanced` 只展示辅助判断与草稿，不自动续跑。
+- YOLO 模式下允许自动审批 native terminal approval，但必须先记录 pending approval，再复用现有 approval resolution 路径发送 approve，并记录 `approval_auto_approved` / `loop_approval_event(approved)`；非 YOLO 模式不自动审批。
+- 尚未启用非 YOLO 自动审批、完整 recurrence scheduler 或原生系统通知 adapter；调度 MVP、审批 facts、本地通知事件和 AI evaluation 都不能替代 Loop Runtime 主链路。
 
 ## Phase 3.8 AI 辅助 Loop Evaluation 边界
 
-Phase 3.8 的 AI 只做辅助评估，不做执行控制：
+Phase 3.8 的 AI 可以生成下一步 action，但执行权属于 Runtime Policy Gate：
 
-- 允许：基于结构化 Loop facts 生成验收判断、阻塞风险提示和是否需要继续下一轮的理由。
-- 禁止：自动发送 follow-up、自动审批、自动标记完成/失败、替代用户验收、读取 raw terminal 大日志。
+- 允许：基于结构化 Loop facts 生成验收判断、阻塞风险提示、是否需要继续下一轮的理由，以及结构化 `LoopNextAction`。
+- 自动执行边界：只有低风险 action 可进入 Autopilot 自动创建下一轮 Turn；高风险 action 必须确认；每次自动续跑必须写入 `loop_auto_action`，并按 turn + evidence fingerprint + action 去重。
+- 禁止：非 YOLO 模式自动审批、自动标记完成/失败、替代用户验收、读取 raw terminal 大日志、绕过 `sendFollowUp` 主链路。
 - 输入：`TaskStatus` / runtime status、latest turn `TurnDeliverable`、`LoopEvaluation`、`LoopUserAction`、`LoopApprovalEvent`。
 - 排除：prompt echo、thinking、TUI chrome、旧 turn deliverable、reconnect snapshot、未脱敏 raw output。
 - 失败策略：native SLM 不可用或生成失败时必须 graceful fallback，不影响状态刷新、结果卡片、TTS 或继续输入。

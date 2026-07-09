@@ -5,26 +5,57 @@ import '../../ai/services/slm_client.dart';
 import '../models/loop_evaluation.dart';
 import '../models/metric_event.dart';
 import '../models/task_session.dart';
+import 'loop_follow_up_advisor.dart';
 
 class LoopEvaluationSummary {
   const LoopEvaluationSummary({
     required this.text,
     required this.source,
     required this.usedAi,
+    this.nextAction,
   });
 
   final String text;
   final String source;
   final bool usedAi;
+  final LoopNextAction? nextAction;
+}
+
+enum LoopNextActionPolicy {
+  manualOnly,
+  assisted,
+  autoAllowed,
+  confirmationRequired,
+}
+
+class LoopNextAction {
+  const LoopNextAction({
+    required this.id,
+    required this.title,
+    required this.reason,
+    required this.draft,
+    required this.policy,
+  });
+
+  final String id;
+  final String title;
+  final String reason;
+  final String draft;
+  final LoopNextActionPolicy policy;
+
+  bool get canAutoExecute => policy == LoopNextActionPolicy.autoAllowed;
 }
 
 class LoopEvaluationAssistant {
   const LoopEvaluationAssistant({
     SlmClient client = const NativeSlmClient(),
+    LoopActionPolicyGate policyGate = const LoopActionPolicyGate(),
     this.maxSummaryChars = 1600,
-  }) : _client = client;
+  })  : _client = client,
+        _policyGate = policyGate;
 
   final SlmClient _client;
+  final LoopActionPolicyGate _policyGate;
   final int maxSummaryChars;
 
   Future<LoopEvaluationSummary> evaluate(
@@ -32,7 +63,8 @@ class LoopEvaluationAssistant {
     required String runtimeStatus,
   }) async {
     final facts = _factsFor(task, runtimeStatus: runtimeStatus);
-    final fallback = _fallbackFor(facts);
+    final nextAction = nextActionFor(task, runtimeStatus: runtimeStatus);
+    final fallback = _fallbackFor(facts, nextAction: nextAction);
     if (!facts.hasDeliverable) {
       return fallback;
     }
@@ -56,10 +88,31 @@ class LoopEvaluationAssistant {
         text: _truncate(text, 800),
         source: 'native_slm',
         usedAi: true,
+        nextAction: nextAction,
       );
     } catch (_) {
       return fallback;
     }
+  }
+
+  LoopNextAction? nextActionFor(
+    TaskSession task, {
+    required String runtimeStatus,
+  }) {
+    if (runtimeStatus == 'running' || runtimeStatus == 'needApproval') {
+      return null;
+    }
+    final suggestion = const LoopFollowUpAdvisor().suggest(task).firstOrNull;
+    if (suggestion == null) {
+      return null;
+    }
+    return LoopNextAction(
+      id: suggestion.id,
+      title: suggestion.title,
+      reason: suggestion.reason,
+      draft: suggestion.draft,
+      policy: _policyGate.policyFor(task, suggestion),
+    );
   }
 
   _LoopEvaluationFacts _factsFor(
@@ -129,7 +182,8 @@ class LoopEvaluationAssistant {
 你是 Armin 的端侧 Loop Evaluation 助手。只基于下列结构化事实判断本轮任务状态。
 
 边界：
-- 不要提出自动执行、自动审批或自动发送 follow-up。
+- 可以判断是否存在下一轮动作需求，但不要声称你已经执行。
+- 自动执行必须由 Runtime Policy Gate 决定；你不能自动审批或越过高风险确认。
 - 不要补充事实之外的信息。
 - 不要引用 raw terminal、thinking、prompt echo 或旧 turn。
 - 输出中文，最多 4 行。
@@ -144,7 +198,10 @@ ${jsonEncode(facts.toJson())}
 ''';
   }
 
-  LoopEvaluationSummary _fallbackFor(_LoopEvaluationFacts facts) {
+  LoopEvaluationSummary _fallbackFor(
+    _LoopEvaluationFacts facts, {
+    LoopNextAction? nextAction,
+  }) {
     if (facts.runtimeStatus == 'running' && !facts.hasDeliverable) {
       return const LoopEvaluationSummary(
         text: '任务仍在执行，暂不做完成判断。',
@@ -168,10 +225,11 @@ ${jsonEncode(facts.toJson())}
         usedAi: false,
       );
     }
-    return const LoopEvaluationSummary(
+    return LoopEvaluationSummary(
       text: '本轮已有正式结果，建议先验收结果完整性，再决定继续或收尾。',
       source: 'rules',
       usedAi: false,
+      nextAction: nextAction,
     );
   }
 
@@ -180,6 +238,51 @@ ${jsonEncode(facts.toJson())}
       return value;
     }
     return value.substring(value.length - maxChars);
+  }
+}
+
+class LoopActionPolicyGate {
+  const LoopActionPolicyGate();
+
+  LoopNextActionPolicy policyFor(
+    TaskSession task,
+    LoopFollowUpSuggestion suggestion,
+  ) {
+    if (_isDangerous(suggestion.draft)) {
+      return LoopNextActionPolicy.confirmationRequired;
+    }
+    if (_requiresHumanDecision(suggestion.id)) {
+      return LoopNextActionPolicy.confirmationRequired;
+    }
+    return switch (task.approvalMode.name) {
+      'aggressive' => LoopNextActionPolicy.autoAllowed,
+      'balanced' => LoopNextActionPolicy.assisted,
+      _ => LoopNextActionPolicy.confirmationRequired,
+    };
+  }
+
+  bool _requiresHumanDecision(String suggestionId) {
+    return suggestionId == 'resolve_blocker' ||
+        suggestionId == 'check_constraints';
+  }
+
+  bool _isDangerous(String draft) {
+    final lower = draft.toLowerCase();
+    const blocked = [
+      'git commit',
+      'git push',
+      '删除',
+      'delete ',
+      'rm ',
+      '安装依赖',
+      'install ',
+      'brew ',
+      'npm install',
+      'flutter pub add',
+      '修改配置',
+      'change config',
+    ];
+    return blocked.any(lower.contains);
   }
 }
 

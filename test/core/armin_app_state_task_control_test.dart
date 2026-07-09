@@ -20,10 +20,36 @@ import 'package:armin/features/tasks/models/metric_event.dart';
 import 'package:armin/features/tasks/models/native_output_turn.dart';
 import 'package:armin/features/tasks/models/task_constraint.dart';
 import 'package:armin/features/tasks/models/task_session.dart';
+import 'package:armin/features/tasks/services/loop_evaluation_assistant.dart';
 import 'package:armin/features/voice/services/voice_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('saveTask preserves existing deliverables from stale task snapshots',
+      () async {
+    final taskWithDeliverable = _taskWithSettledTurn();
+    final staleTask = taskWithDeliverable.copyWith(
+      turns: [
+        taskWithDeliverable.turns.single.copyWith(clearDeliverable: true),
+      ],
+      metricEvents: const [],
+    );
+    final store = _TaskStore(taskWithDeliverable);
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: _ControlAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await state.saveTask(staleTask);
+
+    final savedTurn = store.task!.turns.single;
+    expect(savedTurn.deliverable?.displaySummary, '完成结果');
+    expect(state.taskListenable(store.task!.id).value?.turns.single.deliverable,
+        isNotNull);
+  });
+
   test('pauseTask persists paused status', () async {
     final task = _task(status: TaskStatus.running);
     final store = _TaskStore(task);
@@ -776,6 +802,71 @@ Thinking
     expect(approvalEvents.single.approvalId, approval.id);
     expect(approvalEvents.single.selectedOptionKey, '1');
     expect(agent.lastExecuteRequest?.attachOnly, isTrue);
+  });
+
+  test('aggressive mode auto-approves native terminal approval', () async {
+    final task = _task(status: TaskStatus.running).copyWith(
+      approvalMode: AgentApprovalMode.aggressive,
+    );
+    final store = _TaskStore(task);
+    final agent = _OneShotApprovalAgent();
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: agent,
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    state.startTaskExecution(task, const AgentExecutionRequest(prompt: 'Task'));
+
+    await _waitUntil(
+      () => agent.selectedTerminalOption == 'approve',
+      timeout: const Duration(seconds: 1),
+    );
+
+    expect(agent.events, contains('selectTerminalOption'));
+    expect(state.taskStatus(store.task!), TaskStatus.running);
+    expect(store.task!.nativeApproval, isNull);
+    expect(store.task!.nativeApprovalRequests.single.state,
+        ApprovalState.resolved);
+    expect(
+      _loopApprovalEvents(store.task!).map((event) => event.kind),
+      contains(LoopApprovalEventKind.approved),
+    );
+    expect(
+      store.task!.metricEvents
+          .where((event) => event.eventType == 'approval_auto_approved'),
+      hasLength(1),
+    );
+  });
+
+  test('balanced mode keeps native terminal approval pending', () async {
+    final task = _task(status: TaskStatus.running).copyWith(
+      approvalMode: AgentApprovalMode.balanced,
+    );
+    final store = _TaskStore(task);
+    final agent = _OneShotApprovalAgent();
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: agent,
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    state.startTaskExecution(task, const AgentExecutionRequest(prompt: 'Task'));
+
+    await _waitUntil(
+      () => state.taskStatus(store.task!) == TaskStatus.needApproval,
+      timeout: const Duration(seconds: 1),
+    );
+
+    expect(agent.events, isNot(contains('selectTerminalOption')));
+    expect(store.task!.nativeApproval?.state, ApprovalState.pending);
+    expect(
+      store.task!.metricEvents
+          .where((event) => event.eventType == 'approval_auto_approved'),
+      isEmpty,
+    );
   });
 
   test('terminal prompt update persists selectable terminal actions', () async {
@@ -2931,6 +3022,82 @@ Model · ctx ░░░░░░░░░░ 2%
     expect(store.task!.metricEvents.last.eventType, 'loop_result_rejected');
   });
 
+  test('runAutopilotNextAction sends low risk action through follow-up',
+      () async {
+    final task = _taskWithSettledTurn();
+    final store = _TaskStore(task);
+    final agent = _ControlAgent();
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: agent,
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    final executed = await state.runAutopilotNextAction(
+      task,
+      _autoAction(policy: LoopNextActionPolicy.autoAllowed),
+    );
+
+    expect(executed, isTrue);
+    expect(agent.events, contains('sendFollowUp'));
+    expect(agent.lastFollowUp, contains('运行最小测试'));
+    expect(agent.lastFollowUp,
+        contains('ARMIN_AUTOPILOT_REQUEST_TEST_EVIDENCE_T2 status=PASS'));
+    expect(store.task!.turns, hasLength(2));
+    final autoActions = _loopAutoActions(store.task!);
+    expect(autoActions.single.state, LoopAutoActionState.sent);
+    expect(autoActions.single.actionId, 'request_test_evidence');
+  });
+
+  test('runAutopilotNextAction dedupes same turn evidence and action',
+      () async {
+    final task = _taskWithSettledTurn();
+    final store = _TaskStore(task);
+    final agent = _ControlAgent();
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: agent,
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+    final action = _autoAction(policy: LoopNextActionPolicy.autoAllowed);
+
+    final first = await state.runAutopilotNextAction(task, action);
+    final afterFirst = store.task!;
+    final second = await state.runAutopilotNextAction(afterFirst, action);
+
+    expect(first, isTrue);
+    expect(second, isFalse);
+    expect(
+        agent.events.where((event) => event == 'sendFollowUp'), hasLength(1));
+    expect(_loopAutoActions(store.task!), hasLength(1));
+  });
+
+  test('runAutopilotNextAction rejects non-auto policy without follow-up',
+      () async {
+    final task = _taskWithSettledTurn();
+    final store = _TaskStore(task);
+    final agent = _ControlAgent();
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: agent,
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    final executed = await state.runAutopilotNextAction(
+      task,
+      _autoAction(policy: LoopNextActionPolicy.confirmationRequired),
+    );
+
+    expect(executed, isFalse);
+    expect(agent.events, isNot(contains('sendFollowUp')));
+    expect(store.task!.turns, hasLength(1));
+    expect(_loopAutoActions(store.task!).single.state,
+        LoopAutoActionState.rejected);
+  });
+
   test('load restores loop user action facts without controls or speech',
       () async {
     final task = _taskWithSettledTurn();
@@ -3630,6 +3797,25 @@ List<LoopResultSummary> _loopResultSummaries(TaskSession task) {
       .toList(growable: false);
 }
 
+List<LoopAutoAction> _loopAutoActions(TaskSession task) {
+  return task.metricEvents
+      .where((event) => event.eventType == LoopAutoAction.metricEventType)
+      .map((event) => LoopAutoAction.fromJson(
+            jsonDecode(event.payloadJson) as Map<String, Object?>,
+          ))
+      .toList(growable: false);
+}
+
+LoopNextAction _autoAction({required LoopNextActionPolicy policy}) {
+  return LoopNextAction(
+    id: 'request_test_evidence',
+    title: '补充测试证据',
+    reason: '需要验证证据。',
+    draft: '请运行最小测试，并输出测试命令和结果。',
+    policy: policy,
+  );
+}
+
 NativeTerminalApproval _nativeApproval({
   required String question,
   List<NativeApprovalOption> options = const [
@@ -4193,6 +4379,34 @@ class _RepeatedLogUpdateAgent extends _ControlAgent {
 class _ApprovalAgent extends _ControlAgent {
   @override
   Stream<AgentExecutionUpdate> execute(AgentExecutionRequest request) async* {
+    yield AgentExecutionUpdate(
+      rawOutput: 'approval',
+      nativeApproval: NativeTerminalApproval(
+        id: 'approval-1',
+        taskId: 'task-1',
+        question: '删除临时构建产物，风险中等。',
+        options: const [
+          NativeApprovalOption(key: 'approve', label: 'Approve'),
+          NativeApprovalOption(key: 'reject', label: 'Reject'),
+        ],
+        state: ApprovalState.pending,
+        createdAt: DateTime(2026, 6, 1),
+      ),
+    );
+  }
+}
+
+class _OneShotApprovalAgent extends _ControlAgent {
+  bool _emitted = false;
+
+  @override
+  Stream<AgentExecutionUpdate> execute(AgentExecutionRequest request) async* {
+    lastExecuteRequest = request;
+    if (_emitted) {
+      return;
+    }
+    _emitted = true;
+    await Future<void>.delayed(Duration.zero);
     yield AgentExecutionUpdate(
       rawOutput: 'approval',
       nativeApproval: NativeTerminalApproval(

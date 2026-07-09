@@ -2251,25 +2251,11 @@ class _ResultPanelState extends State<_ResultPanel> {
     return parts.isEmpty ? normalized : parts.last.replaceAll(')', '');
   }
 
-  bool _isResultTurn(NativeOutputTurnStatus status) {
-    return switch (status) {
-      NativeOutputTurnStatus.running => false,
-      NativeOutputTurnStatus.needAttention ||
-      NativeOutputTurnStatus.turnIdle ||
-      NativeOutputTurnStatus.runtimeLost ||
-      NativeOutputTurnStatus.failed ||
-      NativeOutputTurnStatus.completedByUser ||
-      NativeOutputTurnStatus.failedByUser ||
-      NativeOutputTurnStatus.stopped =>
-        true,
-    };
-  }
-
   List<_IndexedTurn> _resultTurns(TaskSession task, {required int limit}) {
     final turns = <_IndexedTurn>[];
     for (var index = task.turns.length - 1; index >= 0; index--) {
       final turn = task.turns[index];
-      if (_isResultTurn(turn.status) && turn.deliverable != null) {
+      if (turn.deliverable != null) {
         turns.add(_IndexedTurn(index: index, turn: turn));
         if (turns.length >= limit) {
           break;
@@ -2280,9 +2266,7 @@ class _ResultPanelState extends State<_ResultPanel> {
   }
 
   int _resultTurnCount(TaskSession task) {
-    return task.turns
-        .where((turn) => _isResultTurn(turn.status) && turn.deliverable != null)
-        .length;
+    return task.turns.where((turn) => turn.deliverable != null).length;
   }
 
   String _displaySummaryText(String displaySummary) {
@@ -2699,10 +2683,11 @@ class _LoopEvaluationCard extends StatelessWidget {
             final summary = snapshot.data;
             final text = summary?.text.trim() ?? '暂时无法生成辅助判断。';
             final source = summary?.usedAi == true ? '端侧模型' : '规则判断';
+            final nextAction = summary?.nextAction;
             return AnimatedSwitcher(
               duration: const Duration(milliseconds: 180),
               child: Column(
-                key: ValueKey('$source:$text'),
+                key: ValueKey('$source:$text:${nextAction?.id ?? ''}'),
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
@@ -2710,12 +2695,54 @@ class _LoopEvaluationCard extends StatelessWidget {
                     style:
                         textTheme.bodyMedium?.copyWith(color: ArminTheme.ink),
                   ),
+                  if (nextAction != null) ...[
+                    const SizedBox(height: 10),
+                    _LoopNextActionView(action: nextAction),
+                  ],
                   const SizedBox(height: 10),
                   _FactChip(label: '来源', value: source),
                 ],
               ),
             );
           },
+        ),
+      ),
+    );
+  }
+}
+
+class _LoopNextActionView extends StatelessWidget {
+  const _LoopNextActionView({required this.action});
+
+  final LoopNextAction action;
+
+  @override
+  Widget build(BuildContext context) {
+    final label = switch (action.policy) {
+      LoopNextActionPolicy.autoAllowed => '低风险，可自动执行',
+      LoopNextActionPolicy.assisted => '辅助草稿，需用户确认',
+      LoopNextActionPolicy.confirmationRequired => '高风险，必须确认',
+      LoopNextActionPolicy.manualOnly => '仅手动',
+    };
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        border: Border.all(color: ArminTheme.primary.withValues(alpha: 0.14)),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(10),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              action.title,
+              style: Theme.of(context).textTheme.labelLarge,
+            ),
+            const SizedBox(height: 4),
+            Text(action.reason),
+            const SizedBox(height: 8),
+            _FactChip(label: '执行策略', value: label),
+          ],
         ),
       ),
     );
@@ -3278,25 +3305,11 @@ class _TaskNeedsPanelState extends State<_TaskNeedsPanel> {
   _IndexedTurn? _latestResultTurn(TaskSession task) {
     for (var index = task.turns.length - 1; index >= 0; index--) {
       final turn = task.turns[index];
-      if (_isReadableResultTurn(turn.status) && turn.deliverable != null) {
+      if (turn.deliverable != null) {
         return _IndexedTurn(index: index, turn: turn);
       }
     }
     return null;
-  }
-
-  bool _isReadableResultTurn(NativeOutputTurnStatus status) {
-    return switch (status) {
-      NativeOutputTurnStatus.running => false,
-      NativeOutputTurnStatus.needAttention ||
-      NativeOutputTurnStatus.turnIdle ||
-      NativeOutputTurnStatus.runtimeLost ||
-      NativeOutputTurnStatus.failed ||
-      NativeOutputTurnStatus.completedByUser ||
-      NativeOutputTurnStatus.failedByUser ||
-      NativeOutputTurnStatus.stopped =>
-        true,
-    };
   }
 }
 

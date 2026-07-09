@@ -31,6 +31,7 @@ import '../../features/tasks/models/native_output_turn.dart';
 import '../../features/tasks/models/task_constraint.dart';
 import '../../features/tasks/models/task_session.dart';
 import '../../features/tasks/models/voice_input.dart';
+import '../../features/tasks/services/loop_evaluation_assistant.dart';
 import '../../features/tasks/services/output_summary_provider.dart';
 import '../../features/tasks/services/secret_redactor.dart';
 import '../../features/tasks/services/task_deliverable_source.dart';
@@ -46,7 +47,9 @@ OutputSummaryProvider _defaultOutputSummaryProvider() =>
 
 class ArminAppState extends ChangeNotifier {
   static const _deliverableSource = TaskDeliverableSource();
+  static const _loopEvaluationAssistant = LoopEvaluationAssistant();
   static const _appDiagnosticsEnabled = bool.fromEnvironment('ARMIN_APP_DIAG');
+  static const _maxAutopilotActionsPerTask = 3;
 
   ArminAppState({
     required TaskHistoryStore store,
@@ -127,9 +130,12 @@ class ArminAppState extends ChangeNotifier {
   final Set<String> _bridgedTaskIds = {};
   final Map<String, Future<void>> _bridgeCreateFutures = {};
   final Map<String, Future<void>> _runtimeSyncChains = {};
+  Future<void> _autopilotQueue = Future<void>.value();
   final Map<String, String> _publishedDeliverableFingerprints = {};
   final Map<String, int> _lastRuntimeOutputHashes = {};
   final Map<String, DateTime> _lastRuntimeOutputNotifiedAt = {};
+  final Set<String> _autoApprovalsInFlight = {};
+  final Set<String> _keepObserverAttachedTaskIds = {};
   final Map<String, ValueNotifier<TaskSession?>> _taskSnapshots = {};
   final ValueNotifier<HomeTaskSnapshot> homeSnapshot =
       ValueNotifier(HomeTaskSnapshot.empty());
@@ -358,14 +364,17 @@ class ArminAppState extends ChangeNotifier {
       await Future.wait(_runtimeSyncChains.values.toList(growable: false));
     }
 
-    // 3. Wait for queued speech callbacks that may have been triggered by
+    // 3. Wait for queued autopilot callbacks triggered by fresh deliverables.
+    await _autopilotQueue;
+
+    // 4. Wait for queued speech callbacks that may have been triggered by
     // fresh deliverables.
     await _speechQueue;
 
-    // 4. Wait for queued notification callbacks.
+    // 5. Wait for queued notification callbacks.
     await _notificationQueue;
 
-    // 5. Allow a microtask tick for any remaining callbacks to flush.
+    // 6. Allow a microtask tick for any remaining callbacks to flush.
     await Future<void>.delayed(Duration.zero);
   }
 
@@ -415,33 +424,82 @@ class ArminAppState extends ChangeNotifier {
     bool publishDeliverable = true,
   }) async {
     final previous = _latestTask(task.id);
-    await _store.saveTask(task);
+    final taskToSave =
+        previous == null ? task : _mergeRuntimeArtifacts(previous, task);
+    await _store.saveTask(taskToSave);
     final updatedTasks = [...tasks];
     // Dedup: remove ALL existing entries with this id before inserting.
-    updatedTasks.removeWhere((item) => item.id == task.id);
-    updatedTasks.insert(0, task);
+    updatedTasks.removeWhere((item) => item.id == taskToSave.id);
+    updatedTasks.insert(0, taskToSave);
     tasks = updatedTasks;
-    _syncScheduledTaskTimer(task);
+    _syncScheduledTaskTimer(taskToSave);
     _reconcileMissStreak.remove(task.id);
     final statusChanged = previous == null ||
-        _projectedStatusSignature(previous) != _projectedStatusSignature(task);
+        _projectedStatusSignature(previous) !=
+            _projectedStatusSignature(taskToSave);
     if (statusChanged) {
       unawaited(
-        _enqueueRuntimeSync(task).then((_) {
-          _updateTaskSnapshot(task);
+        _enqueueRuntimeSync(taskToSave).then((_) {
+          _updateTaskSnapshot(taskToSave);
           _updateHomeSnapshot(force: true);
+          _queueAggressiveAutoApproveIfNeeded(taskToSave);
         }),
       );
       if (publishDeliverable) {
-        unawaited(_publishDeliverableIfAvailable(task));
+        unawaited(_publishDeliverableIfAvailable(taskToSave));
       }
       return;
     }
-    _updateTaskSnapshot(task);
+    _updateTaskSnapshot(taskToSave);
     _updateHomeSnapshot();
+    _queueAggressiveAutoApproveIfNeeded(taskToSave);
     if (publishDeliverable) {
-      unawaited(_publishDeliverableIfAvailable(task));
+      unawaited(_publishDeliverableIfAvailable(taskToSave));
     }
+  }
+
+  void _queueAggressiveAutoApproveIfNeeded(TaskSession task) {
+    final latest = _latestTask(task.id) ?? task;
+    if (_taskStatus(latest) != TaskStatus.needApproval &&
+        _projectedTaskStatus(latest) != TaskStatus.needApproval) {
+      return;
+    }
+    unawaited(_maybeAutoApproveAggressive(latest));
+  }
+
+  TaskSession _mergeRuntimeArtifacts(TaskSession previous, TaskSession next) {
+    final previousTurnsById = {
+      for (final turn in previous.turns) turn.id: turn,
+    };
+    final mergedTurns = [
+      for (final turn in next.turns)
+        if (turn.deliverable == null &&
+            previousTurnsById[turn.id]?.deliverable != null)
+          turn.copyWith(deliverable: previousTurnsById[turn.id]!.deliverable)
+        else
+          turn,
+    ];
+    final mergedEvents = _mergeMetricEvents(
+      previous.metricEvents,
+      next.metricEvents,
+    );
+    return next.copyWith(turns: mergedTurns, metricEvents: mergedEvents);
+  }
+
+  List<MetricEvent> _mergeMetricEvents(
+    List<MetricEvent> previous,
+    List<MetricEvent> next,
+  ) {
+    final byKey = <String, MetricEvent>{};
+    for (final event in [...previous, ...next]) {
+      byKey[event.mergeKey] = event;
+    }
+    final events = byKey.values.toList(growable: false)
+      ..sort((a, b) => a.createdAt.compareTo(b.createdAt));
+    if (events.length <= MetricEvent.maxStoredEvents) {
+      return events;
+    }
+    return events.sublist(events.length - MetricEvent.maxStoredEvents);
   }
 
   Future<void> refreshTasks() async {
@@ -804,6 +862,9 @@ class ArminAppState extends ChangeNotifier {
       await agentSessionService.sendFollowUp(
         await _controlRequest(saved, instruction: instruction),
       );
+      _runtimeDiag(
+        'FOLLOW_UP_SENT task=${saved.id} chars=${instruction.trim().length}',
+      );
     } catch (error) {
       _cancelRunningObserver(saved.id);
       final latestAfterFailure = _latestTask(saved.id) ?? saved;
@@ -824,6 +885,316 @@ class ArminAppState extends ChangeNotifier {
       rethrow;
     }
   }
+
+  Future<bool> runAutopilotNextAction(
+    TaskSession task,
+    LoopNextAction action,
+  ) async {
+    final latest = _latestTask(task.id) ?? task;
+    if (!action.canAutoExecute) {
+      _runtimeDiag(
+        'AUTOPILOT_REJECT task=${latest.id} reason=policy '
+        'policy=${action.policy.name}',
+      );
+      await _recordLoopAutoAction(
+        latest,
+        action,
+        state: LoopAutoActionState.rejected,
+      );
+      return false;
+    }
+    if (!_canAutopilotContinue(latest)) {
+      _runtimeDiag(
+        'AUTOPILOT_SKIP task=${latest.id} reason=not_continuable '
+        'status=${_projectedTaskStatus(latest).name} '
+        'turn=${latest.turns.lastOrNull?.status.name ?? 'none'} '
+        'hasDeliverable=${latest.turns.lastOrNull?.deliverable != null}',
+      );
+      await _recordLoopAutoAction(
+        latest,
+        action,
+        state: LoopAutoActionState.skipped,
+      );
+      return false;
+    }
+    if (_hasAutoAction(latest, action)) {
+      _runtimeDiag(
+        'AUTOPILOT_SKIP task=${latest.id} reason=duplicate '
+        'action=${action.id}',
+      );
+      return false;
+    }
+    if (_sentAutoActionCount(latest) >= _maxAutopilotActionsPerTask) {
+      _runtimeDiag(
+        'AUTOPILOT_SKIP task=${latest.id} reason=max_actions '
+        'count=${_sentAutoActionCount(latest)}',
+      );
+      await _recordLoopAutoAction(
+        latest,
+        action,
+        state: LoopAutoActionState.skipped,
+      );
+      return false;
+    }
+    await _recordLoopAutoAction(
+      latest,
+      action,
+      state: LoopAutoActionState.sent,
+    );
+    final saved = _latestTask(latest.id) ?? latest;
+    final instruction = _autopilotInstruction(saved, action);
+    _runtimeDiag(
+      'AUTOPILOT_SEND task=${saved.id} action=${action.id} '
+      'chars=${instruction.trim().length}',
+    );
+    _keepObserverAttachedTaskIds.add(saved.id);
+    try {
+      await sendFollowUp(saved, instruction);
+    } catch (_) {
+      _keepObserverAttachedTaskIds.remove(saved.id);
+      rethrow;
+    }
+    return true;
+  }
+
+  String _autopilotInstruction(TaskSession task, LoopNextAction action) {
+    final nextTurnIndex = (task.turns.lastOrNull?.turnIndex ?? 0) + 1;
+    final markerAction = action.id
+        .replaceAll(RegExp(r'[^a-zA-Z0-9]+'), '_')
+        .replaceAll(RegExp(r'_+'), '_')
+        .toUpperCase();
+    final marker = 'ARMIN_AUTOPILOT_${markerAction}_T$nextTurnIndex';
+    return '''
+${action.draft.trim()}
+
+Armin autopilot verification:
+- Stop after this follow-up result.
+- Final answer must include:
+$marker status=PASS next=WAIT
+''';
+  }
+
+  Future<bool> _maybeRunAggressiveAutopilot(TaskSession task) async {
+    final latest = _latestTask(task.id) ?? task;
+    if (latest.approvalMode != AgentApprovalMode.aggressive) {
+      _runtimeDiag('AUTOPILOT_SKIP task=${latest.id} reason=mode');
+      return false;
+    }
+    final projectedStatus = _projectedTaskStatus(latest);
+    final action = _loopEvaluationAssistant.nextActionFor(
+      latest,
+      runtimeStatus: projectedStatus.name,
+    );
+    if (action == null) {
+      _runtimeDiag(
+        'AUTOPILOT_SKIP task=${latest.id} reason=no_action '
+        'status=${projectedStatus.name}',
+      );
+      return false;
+    }
+    _runtimeDiag(
+      'AUTOPILOT_RUN task=${latest.id} action=${action.id} '
+      'policy=${action.policy.name} status=${projectedStatus.name}',
+    );
+    return runAutopilotNextAction(latest, action);
+  }
+
+  void _queueAggressiveAutopilot(TaskSession task) {
+    _autopilotQueue = _autopilotQueue.then((_) async {
+      try {
+        await _maybeRunAggressiveAutopilot(task);
+      } catch (error) {
+        debugPrint('Aggressive autopilot skipped: $error');
+      }
+    });
+    unawaited(_autopilotQueue);
+  }
+
+  Future<bool> _maybeAutoApproveAggressive(TaskSession task) async {
+    final latest = _latestTask(task.id) ?? task;
+    if (latest.approvalMode != AgentApprovalMode.aggressive) {
+      _runtimeDiag('AUTO_APPROVE_SKIP task=${latest.id} reason=mode');
+      return false;
+    }
+    final status = _taskStatus(latest);
+    if (status != TaskStatus.needApproval &&
+        _projectedTaskStatus(latest) != TaskStatus.needApproval) {
+      _runtimeDiag(
+        'AUTO_APPROVE_SKIP task=${latest.id} reason=status '
+        'status=${status.name} projected=${_projectedTaskStatus(latest).name}',
+      );
+      return false;
+    }
+    final approval = _nativeApprovalForTask(latest);
+    if (approval == null || approval.state != ApprovalState.pending) {
+      _runtimeDiag('AUTO_APPROVE_SKIP task=${latest.id} reason=no_approval');
+      return false;
+    }
+    final inFlightKey = '${latest.id}|${approval.id}';
+    if (_autoApprovalsInFlight.contains(inFlightKey)) {
+      _runtimeDiag(
+        'AUTO_APPROVE_SKIP task=${latest.id} reason=in_flight '
+        'approval=${approval.id}',
+      );
+      return false;
+    }
+    _runtimeDiag(
+      'AUTO_APPROVE_RUN task=${latest.id} approval=${approval.id} '
+      'options=${approval.options.length}',
+    );
+    _autoApprovalsInFlight.add(inFlightKey);
+    try {
+      if (approval.options.isNotEmpty) {
+        final optionKey = _nativeApprovalOptionKeyForDecision(approval, true);
+        final option = approval.options.firstWhere(
+          (item) => item.key == optionKey,
+          orElse: () => approval.options.first,
+        );
+        await _selectNativeApprovalOption(
+          latest,
+          approval,
+          option,
+          approved: true,
+        );
+        await _recordAutoApproval(_latestTask(latest.id) ?? latest, approval);
+        return true;
+      }
+      await resolveApproval(latest, approved: true);
+      await _recordAutoApproval(_latestTask(latest.id) ?? latest, approval);
+      return true;
+    } finally {
+      _autoApprovalsInFlight.remove(inFlightKey);
+    }
+  }
+
+  Future<void> _recordAutoApproval(
+    TaskSession task,
+    NativeTerminalApproval approval,
+  ) async {
+    final latest = _latestTask(task.id) ?? task;
+    final now = DateTime.now();
+    await saveTask(
+      latest.copyWith(
+        metricEvents: _metricEventsWithCreated(
+          latest.metricEvents,
+          taskId: latest.id,
+          eventType: 'approval_auto_approved',
+          payloadJson: jsonEncode({
+            'approvalId': approval.id,
+            'mode': latest.approvalMode.name,
+            'optionCount': approval.options.length,
+          }),
+          now: now,
+        ),
+      ),
+      publishDeliverable: false,
+    );
+  }
+
+  bool _canAutopilotContinue(TaskSession task) {
+    final status = _projectedTaskStatus(task);
+    if (status != TaskStatus.turnIdle && status != TaskStatus.needAttention) {
+      return false;
+    }
+    final latestTurn = task.turns.lastOrNull;
+    return latestTurn?.deliverable != null &&
+        _isAutopilotSafeTurnStatus(latestTurn!.status);
+  }
+
+  bool _isAutopilotSafeTurnStatus(NativeOutputTurnStatus status) {
+    return status == NativeOutputTurnStatus.turnIdle ||
+        status == NativeOutputTurnStatus.needAttention;
+  }
+
+  bool _hasAutoAction(TaskSession task, LoopNextAction action) {
+    final latestTurn = task.turns.lastOrNull;
+    final deliverable = latestTurn?.deliverable;
+    if (latestTurn == null || deliverable == null) {
+      return false;
+    }
+    final key = _autoActionDedupeKey(
+      turnId: latestTurn.id,
+      evidenceFingerprint: deliverable.evidenceFingerprint,
+      actionId: action.id,
+    );
+    return task.metricEvents.any((event) {
+      if (event.eventType != LoopAutoAction.metricEventType) {
+        return false;
+      }
+      try {
+        final autoAction = LoopAutoAction.fromJson(
+          jsonDecode(event.payloadJson) as Map<String, Object?>,
+        );
+        return autoAction.state == LoopAutoActionState.sent &&
+            autoAction.dedupeKey == key;
+      } catch (_) {
+        return false;
+      }
+    });
+  }
+
+  int _sentAutoActionCount(TaskSession task) {
+    var count = 0;
+    for (final event in task.metricEvents) {
+      if (event.eventType != LoopAutoAction.metricEventType) {
+        continue;
+      }
+      try {
+        final autoAction = LoopAutoAction.fromJson(
+          jsonDecode(event.payloadJson) as Map<String, Object?>,
+        );
+        if (autoAction.state == LoopAutoActionState.sent) {
+          count++;
+        }
+      } catch (_) {}
+    }
+    return count;
+  }
+
+  Future<void> _recordLoopAutoAction(
+    TaskSession task,
+    LoopNextAction action, {
+    required LoopAutoActionState state,
+  }) async {
+    final latest = _latestTask(task.id) ?? task;
+    final latestTurn = latest.turns.lastOrNull;
+    final deliverable = latestTurn?.deliverable;
+    if (latestTurn == null || deliverable == null) {
+      return;
+    }
+    final now = DateTime.now();
+    final autoAction = LoopAutoAction(
+      id: 'loop-auto-${latest.id}-${now.microsecondsSinceEpoch}',
+      taskId: latest.id,
+      actionId: action.id,
+      createdAt: now,
+      turnId: latestTurn.id,
+      turnIndex: latestTurn.turnIndex,
+      evidenceFingerprint: deliverable.evidenceFingerprint,
+      policy: action.policy.name,
+      state: state,
+      instructionLength: action.draft.trim().length,
+    );
+    final updated = latest.copyWith(
+      metricEvents: MetricEvent.appendControlled(
+        latest.metricEvents,
+        MetricEvent.create(
+          taskId: latest.id,
+          eventType: LoopAutoAction.metricEventType,
+          payloadJson: jsonEncode(autoAction.toJson()),
+          now: now,
+        ),
+      ),
+    );
+    await saveTask(updated, publishDeliverable: false);
+  }
+
+  String _autoActionDedupeKey({
+    required String turnId,
+    required String evidenceFingerprint,
+    required String actionId,
+  }) =>
+      '$turnId|$evidenceFingerprint|$actionId';
 
   Future<void> selectTerminalOption(
       TaskSession task, NativeApprovalOption option,
@@ -1446,6 +1817,15 @@ class ArminAppState extends ChangeNotifier {
             task = _taskWithExecutionUpdate(previousTask, effectiveUpdate);
             await saveTask(task);
             final savedStatus = _projectedTaskStatus(task);
+            final runtimeStatus = _taskStatus(task);
+            if (savedStatus == TaskStatus.needApproval ||
+                runtimeStatus == TaskStatus.needApproval) {
+              try {
+                await _maybeAutoApproveAggressive(task);
+              } catch (error) {
+                debugPrint('Aggressive auto approval skipped: $error');
+              }
+            }
             if (savedStatus == TaskStatus.turnIdle ||
                 _isTerminal(savedStatus)) {
               _stopObserverForSettledTurn(task.id, subscription);
@@ -1550,6 +1930,10 @@ class ArminAppState extends ChangeNotifier {
 
   void _scheduleAutoDetach(String taskId) {
     _cancelAutoDetachTimer(taskId);
+    if (_keepObserverAttachedTaskIds.contains(taskId)) {
+      _runtimeDiag('AUTO_DETACH_SKIP task=$taskId reason=autopilot');
+      return;
+    }
     if (AgentRuntimeConfig.autoDetachDuration <= Duration.zero) {
       return;
     }
@@ -1577,6 +1961,7 @@ class ArminAppState extends ChangeNotifier {
       return;
     }
     _runningExecutions.remove(taskId);
+    _keepObserverAttachedTaskIds.remove(taskId);
     _cancelAutoDetachTimer(taskId);
     unawaited(subscription.cancel());
   }
@@ -2372,6 +2757,7 @@ Apply this decision to the pending approval request.
       'turn=${resolved.provenance.turnId} '
       'summary=${resolved.displaySummary.length}',
     );
+    _queueAggressiveAutopilot(syncedLatest);
     await bridgeRuntime.notifyDeliverableUpdated(
       task.id,
       deliverableSummary: resolved.displaySummary,
@@ -3017,7 +3403,19 @@ Apply this decision to the pending approval request.
   }
 
   NativeTerminalApproval? _nativeApprovalForTask(TaskSession task) {
-    return task.nativeApproval;
+    if (task.nativeApproval?.state == ApprovalState.pending) {
+      return task.nativeApproval;
+    }
+    final runtimeApproval = bridgeRuntime.workState(task.id)?.approval;
+    if (runtimeApproval?.state == ApprovalState.pending) {
+      return runtimeApproval;
+    }
+    for (final approval in task.nativeApprovalRequests.reversed) {
+      if (approval.state == ApprovalState.pending) {
+        return approval;
+      }
+    }
+    return null;
   }
 
   NativeTerminalApproval? _nativeApprovalFromTerminalPrompt(

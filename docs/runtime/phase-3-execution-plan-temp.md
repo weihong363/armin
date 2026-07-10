@@ -212,6 +212,8 @@ Phase 3 从 Phase 2.6/2.7 已验证的单任务可靠执行继续推进到轻量
 - 已接入任务详情「动态」Tab 的 `辅助判断` 卡片，展示辅助判断、下一步 action 和执行策略；不绕过 `sendFollowUp` 主链路，不触发 TTS。
 - 模型不可用、超时、空输出或异常时回落到规则判断；fallback 不影响结果卡片、状态刷新或继续输入。
 
+本轮执行记录（2026-07-10）：Phase 3.8 聚焦回归 183/183、完整 Runtime Gate 14/14 通过；native SLM、真实 qodercli deliverable/Turn 2、真实 qodercli YOLO 审批与自动 follow-up 通过。spinner 收敛、session cleanup、终态合同、SSH teardown、自动审批 Runtime 状态和 notifier 生命周期问题均已修复。动态页视觉和真实音频仅保留为发布前人工抽样。
+
 验收拆成三层：
 
 - Runtime 层：真实 qodercli P38 抽样验证 Turn 1 / Turn 2 自动收敛、deliverable 隔离和 loop facts 写入。

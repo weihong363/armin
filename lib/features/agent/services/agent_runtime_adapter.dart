@@ -87,6 +87,7 @@ class AgentRuntimeAdapter {
           lower.contains('completed successfully') ||
           lower.contains('tests passed') ||
           lower.contains('all tests passed') ||
+          lower.contains('all checks passed') ||
           normalized.contains('已完成') ||
           normalized.contains('已创建') ||
           normalized.contains('全部通过') ||

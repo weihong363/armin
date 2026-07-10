@@ -120,7 +120,7 @@ void main() {
     expect(command, contains('Enter'));
     expect(command, contains('stable_count'));
     expect(command, contains('__ARMIN_SETTLED_CANDIDATE__'));
-    expect(command, contains('monitor_version=phase2.6-settled-v8'));
+    expect(command, contains('monitor_version=phase2.6-settled-v9'));
     expect(command, contains('STABLE_POLLS=4'));
     expect(command, contains(r'next if $line =~ /[\x{2800}-\x{28ff}]/;'));
     expect(command, contains(r'stable_count" -ge "$STABLE_POLLS"'));
@@ -435,6 +435,7 @@ __ARMIN_SNAPSHOT_END__
 
     expect(command, contains("has-session -t 'armin-2800'"));
     expect(command, contains("capture-pane -p -t 'armin-2800' -S -40"));
+    expect(command, contains('__ARMIN_PROBE_SESSION_EXISTS__'));
     expect(command, contains('__ARMIN_PROBE_SESSION_MISSING__'));
     expect(command, isNot(contains('send-keys')));
     expect(command, isNot(contains('new-session')));
@@ -444,6 +445,7 @@ __ARMIN_SNAPSHOT_END__
     final service = SSHAgentSessionService();
 
     final probe = service.parseRemoteTaskProbeForTest('''
+__ARMIN_PROBE_SESSION_EXISTS__
 Apply this change?
 
   ❯ 1. Allow once
@@ -467,6 +469,7 @@ Armin Codex exited with status 0.
     final service = SSHAgentSessionService();
 
     final probe = service.parseRemoteTaskProbeForTest('''
+__ARMIN_PROBE_SESSION_EXISTS__
 Apply this change?
 
   ❯ 1. Allow once
@@ -479,6 +482,15 @@ Apply this change?
     expect(probe.needsAttention, isTrue);
     expect(probe.hasApprovalPrompt, isTrue);
     expect(probe.hasTerminalPrompt, isTrue);
+  });
+
+  test('probe parser rejects output without a session marker', () {
+    final service = SSHAgentSessionService();
+
+    expect(
+      () => service.parseRemoteTaskProbeForTest('shell startup noise'),
+      throwsFormatException,
+    );
   });
 
   test('missing readable result log keeps captured pane output', () {
@@ -1048,6 +1060,24 @@ decision: approved
     expect(command, contains("'#{pane_id}'"));
     expect(command, contains(r'send-keys -t "$pane"'));
     expect(command, contains("-- '1' C-m"));
+  });
+
+  test('cleanup waits until the tmux session is gone', () {
+    final service = SSHAgentSessionService();
+    const request = AgentControlRequest(
+      host: '127.0.0.1',
+      port: 22,
+      username: 'ironion',
+      tmuxSessionName: 'armin-2800',
+      password: 'secret-password',
+    );
+
+    final command = service.buildKillSessionCommandForTest(request);
+
+    expect(command, contains("kill-session -t 'armin-2800'"));
+    expect(command, contains("has-session -t 'armin-2800'"));
+    expect(command, contains(r'if [ "$attempt" -ge 20 ]'));
+    expect(command, contains('exit 1'));
   });
 
   // ── Semantic pane inline filter ─────────────────────────────────

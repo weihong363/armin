@@ -275,22 +275,33 @@ void main() {
           marker,
           approvalMode: mode,
         );
-        final pending = await waitForTask(
-          tester,
-          state,
-          taskId,
-          description: 'B03 ${mode.name} pending approval',
-          timeout: const Duration(seconds: 60),
-          predicate: (task) =>
-              state.taskStatus(task) == TaskStatus.needApproval &&
-              state.workState(taskId)?.approval?.state == ApprovalState.pending,
-        );
-        final approval = state.workState(taskId)!.approval!;
-        expect(approval.question, isNotEmpty);
-        expect(approval.options, isNotEmpty);
-
-        await state.resolveApproval(pending, approved: true);
         final approvalStopwatch = Stopwatch()..start();
+        if (mode == AgentApprovalMode.aggressive) {
+          await waitUntil(
+            tester,
+            description: 'B03 aggressive auto approval recorded',
+            timeout: const Duration(seconds: 60),
+            predicate: () => currentTask(state, taskId)
+                .metricEvents
+                .any((event) => event.eventType == 'approval_auto_approved'),
+          );
+        } else {
+          final pending = await waitForTask(
+            tester,
+            state,
+            taskId,
+            description: 'B03 ${mode.name} pending approval',
+            timeout: const Duration(seconds: 60),
+            predicate: (task) =>
+                state.taskStatus(task) == TaskStatus.needApproval &&
+                state.workState(taskId)?.approval?.state ==
+                    ApprovalState.pending,
+          );
+          final approval = state.workState(taskId)!.approval!;
+          expect(approval.question, isNotEmpty);
+          expect(approval.options, isNotEmpty);
+          await state.resolveApproval(pending, approved: true);
+        }
         await waitForRemoteMarker(tester, state, taskId, marker);
         await waitUntil(
           tester,
@@ -377,8 +388,7 @@ void main() {
         } else {
           await state.markTaskFailed(running);
         }
-        final expected =
-            completed ? TaskStatus.userCompleted : TaskStatus.userFailed;
+        final expected = completed ? TaskStatus.completed : TaskStatus.failed;
         expect(state.taskStatus(currentTask(state, taskId)), expected);
         await waitForRemoteSessionExists(
           tester,

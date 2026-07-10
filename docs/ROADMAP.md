@@ -175,6 +175,8 @@ Phase 3 起步必须遵守 [Phase 3 Loop Runtime 前置设计](runtime/phase-3-l
 
 当前状态：Phase 3.0-3.8 已完成首轮代码级收口，临时执行跟踪见 [Phase 3 临时执行计划](runtime/phase-3-execution-plan-temp.md)。当前已覆盖 Loop facts、事实状态视图、恢复与续跑门禁、规则型验收辅助建议纯服务、单次任务调度 MVP、审批 facts / 审批恢复增强、只基于正式 deliverable 的 Loop 级摘要与结果追踪、基于 RuntimeEventBus 的本地通知事件层，以及端侧 native SLM 驱动的 `LoopEvaluationAssistant`。AI 辅助可以生成结构化下一步 action，但执行权必须经过 `LoopActionPolicyGate`；YOLO / aggressive 模式下低风险 action 可自动复用 `sendFollowUp` 创建下一轮 Turn，native terminal approval 可自动 approve；高风险 action、标记完成/失败、完整 recurrence scheduler、原生系统通知 adapter 和通知点击跳转仍需独立验证后再进入。
 
+Phase 3.8 回归记录（2026-07-10）：聚焦 Runtime/observer/SSH/AppState 测试 183/183 通过，完整 Runtime Gate 14/14 通过；native SLM、真实 qodercli deliverable/Turn 2、真实 qodercli YOLO 审批与自动 follow-up 均通过。spinner-and-final 可在 TUI chrome 持续刷新时收敛，stop/标记完成/失败会等待 observer 取消并确认 tmux session 清理，自动审批完整发布 resolving/resolved 状态。Phase 3.8 自动化与设备 Runtime 验收完成，动态页视觉与真实音频仅保留为发布前人工抽样。
+
 - Runtime 持久化边界收敛到 SQLite：任务、turn、runtime event、work state、approval state、session binding、watcher offset 和 deliverable 可恢复
 - Flutter 内 Bridge Runtime 作为过渡实现，支持 App 重启后的状态重建
 - 断线/重连后的 watcher offset 与 event replay，避免通过完整 `capture-pane` 重新猜测状态

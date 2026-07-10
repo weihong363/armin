@@ -440,6 +440,7 @@ class ArminAppState extends ChangeNotifier {
     if (statusChanged) {
       unawaited(
         _enqueueRuntimeSync(taskToSave).then((_) {
+          if (_disposed) return;
           _updateTaskSnapshot(taskToSave);
           _updateHomeSnapshot(force: true);
           _queueAggressiveAutoApproveIfNeeded(taskToSave);
@@ -1050,12 +1051,19 @@ $marker status=PASS next=WAIT
           (item) => item.key == optionKey,
           orElse: () => approval.options.first,
         );
-        await _selectNativeApprovalOption(
-          latest,
-          approval,
-          option,
-          approved: true,
-        );
+        bridgeRuntime.notifyApprovalResolving(latest.id);
+        try {
+          await _selectNativeApprovalOption(
+            latest,
+            approval,
+            option,
+            approved: true,
+          );
+          bridgeRuntime.notifyApprovalResolved(latest.id);
+        } catch (_) {
+          bridgeRuntime.notifyApprovalFailed(latest.id);
+          rethrow;
+        }
         await _recordAutoApproval(_latestTask(latest.id) ?? latest, approval);
         return true;
       }
@@ -1343,6 +1351,7 @@ $marker status=PASS next=WAIT
     TaskSession task, {
     String rawVoiceText = '',
   }) async {
+    await _cancelRunningObserverAndWait(task.id);
     final latest = _withVoiceInput(
       _latestTask(task.id) ?? task,
       rawVoiceText,
@@ -1631,6 +1640,15 @@ $marker status=PASS next=WAIT
     }
   }
 
+  Future<void> _cancelRunningObserverAndWait(String taskId) async {
+    final subscription = _runningExecutions.remove(taskId);
+    _keepObserverAttachedTaskIds.remove(taskId);
+    _cancelAutoDetachTimer(taskId);
+    if (subscription != null) {
+      await subscription.cancel();
+    }
+  }
+
   bool _hasNewerWorkOutputAfterAttention(
     String snapshot,
     TerminalPrompt? terminalPrompt,
@@ -1703,6 +1721,7 @@ $marker status=PASS next=WAIT
     TaskSession task, {
     String rawVoiceText = '',
   }) async {
+    await _cancelRunningObserverAndWait(task.id);
     final latest = _withVoiceInput(
       _latestTask(task.id) ?? task,
       rawVoiceText,
@@ -1726,6 +1745,7 @@ $marker status=PASS next=WAIT
     TaskSession task, {
     String rawVoiceText = '',
   }) async {
+    await _cancelRunningObserverAndWait(task.id);
     final latest = _withVoiceInput(
       _latestTask(task.id) ?? task,
       rawVoiceText,
@@ -2009,6 +2029,7 @@ $marker status=PASS next=WAIT
 
   Future<void> _cleanupTaskSession(TaskSession task) async {
     try {
+      await _cancelRunningObserverAndWait(task.id);
       await agentSessionService.cleanup(await _controlRequest(task));
     } catch (error) {
       await _recordCleanupFailure(task, error);
@@ -3002,6 +3023,7 @@ Apply this decision to the pending approval request.
   }
 
   void _updateTaskSnapshot(TaskSession task) {
+    if (_disposed) return;
     final snapshot = _taskSnapshots[task.id];
     if (snapshot != null && snapshot.value != task) {
       snapshot.value = task;
@@ -3016,6 +3038,7 @@ Apply this decision to the pending approval request.
   }
 
   void _updateHomeSnapshot({bool force = false}) {
+    if (_disposed) return;
     final signature = _homeSignatureFor(tasks, ready: ready);
     if (!force && signature == _homeSnapshotSignature) {
       return;

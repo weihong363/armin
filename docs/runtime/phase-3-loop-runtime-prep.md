@@ -137,6 +137,8 @@ Phase 3.8 验收拆成三层：
 
 P38 真实 qodercli 抽样验收使用 [低可靠 Agent 验收模板](low-reliability-agent-verification-template.md) 中的 `P38-LEA-REAL-01`。如果 `flutter drive` 安装测试 APK 清空了 App 历史数据，不能再打开旧任务做人工 UI 检查；此时以 UI 自动化测试和 native smoke 作为 UI / AI 层证据。
 
+本轮回归记录（2026-07-10）：聚焦测试 183/183、完整 Runtime Gate 14/14 通过；native SLM、真实 qodercli deliverable/Turn 2、真实 qodercli YOLO 审批与自动 follow-up 通过。monitor v9 已覆盖 spinner chrome 后最终结果收敛，终态控制会等待 observer 取消并确认 tmux session 清理，自动审批发布完整 approval resolving/resolved 状态。Phase 3.8 自动化与设备 Runtime 验收完成；动态页视觉和真实音频保留为发布前人工抽样。
+
 ## Phase 3.0 基线冻结与 Loop 合同
 
 Phase 3.0 的作用是把 Phase 2.6/2.7 已经验证的任务执行能力固定为 Phase 3 的入口合同。它不新增 Runtime 行为，也不把 Loop Runtime 提前做成 workflow engine。

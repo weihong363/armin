@@ -88,6 +88,28 @@ void main() {
     expect(snapshot.turnIdle, isTrue);
   });
 
+  test('qoder adapter settles completed checks before infinite spinner', () {
+    final observer = NativeOutputObserver(
+      runtimeAdapter: const AgentRuntimeAdapter(AgentType.qoder),
+      idleThreshold: const Duration(seconds: 1),
+    );
+    const output = '''
+▪ P26-B01-D1-AUTO
+  Result: P26-B01-D1-AUTO
+  All checks passed.
+  Verification step 1: OK
+ ⠴ Thinking... (esc to cancel)  Auto Model · ctx 25%
+''';
+
+    final snapshot = observer.observeSettled(
+      output,
+      now: DateTime(2026, 7, 10, 12),
+    );
+
+    expect(snapshot.state, NativeOutputObserverState.turnIdle);
+    expect(snapshot.turnIdle, isTrue);
+  });
+
   test('codex adapter keeps active bash work running', () {
     final observer = NativeOutputObserver(
       runtimeAdapter: const AgentRuntimeAdapter(AgentType.codex),

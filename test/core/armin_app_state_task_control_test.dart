@@ -838,6 +838,10 @@ Thinking
           .where((event) => event.eventType == 'approval_auto_approved'),
       hasLength(1),
     );
+    expect(
+      state.runtimeDiagnostics(task.id)?.approvalState,
+      ApprovalState.resolved,
+    );
   });
 
   test('balanced mode keeps native terminal approval pending', () async {

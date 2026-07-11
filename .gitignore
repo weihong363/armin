@@ -33,6 +33,9 @@ migrate_working_dir/
 /build/
 /coverage/
 
+# Local AI model cache. GGUF files are large and should not be committed.
+/.models/
+
 # Symbolication related
 app.*.symbols
 

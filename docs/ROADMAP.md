@@ -173,7 +173,9 @@ Phase 3 的优先级不变，核心是 “Loops > Prompts”：Loop Engine、日
 
 Phase 3 起步必须遵守 [Phase 3 Loop Runtime 前置设计](runtime/phase-3-loop-runtime-prep.md)：先做单任务 Loop Runtime 的事实记录、事实状态视图和恢复能力，不直接进入多 Agent 调度、通用 workflow engine 或完整 scheduler。过渡阶段可以做规则型验收辅助建议，但必须基于 latest deliverable、用户目标、约束和 loop facts，不能用低价值状态按钮建议替代。
 
-当前状态：Phase 3.0-3.7 已完成代码级收口，临时执行跟踪见 [Phase 3 临时执行计划](runtime/phase-3-execution-plan-temp.md)。当前已覆盖 Loop facts、事实状态视图、恢复与续跑门禁、规则型验收辅助建议纯服务、单次任务调度 MVP、审批 facts / 审批恢复增强、只基于正式 deliverable 的 Loop 级摘要与结果追踪，以及基于 RuntimeEventBus 的本地通知事件层；AI 辅助、自动审批、完整 recurrence scheduler、原生系统通知 adapter 和通知点击跳转仍需在后续阶段独立验证后再进入。
+当前状态：Phase 3.0-3.8 已完成首轮代码级收口，临时执行跟踪见 [Phase 3 临时执行计划](runtime/phase-3-execution-plan-temp.md)。当前已覆盖 Loop facts、事实状态视图、恢复与续跑门禁、规则型验收辅助建议纯服务、单次任务调度 MVP、审批 facts / 审批恢复增强、只基于正式 deliverable 的 Loop 级摘要与结果追踪、基于 RuntimeEventBus 的本地通知事件层，以及端侧 native SLM 驱动的 `LoopEvaluationAssistant`。AI 辅助可以生成结构化下一步 action，但执行权必须经过 `LoopActionPolicyGate`；YOLO / aggressive 模式下低风险 action 可自动复用 `sendFollowUp` 创建下一轮 Turn，native terminal approval 可自动 approve；高风险 action、标记完成/失败、完整 recurrence scheduler、原生系统通知 adapter 和通知点击跳转仍需独立验证后再进入。
+
+Phase 3.8 回归记录（2026-07-10）：聚焦 Runtime/observer/SSH/AppState 测试 183/183 通过，完整 Runtime Gate 14/14 通过；native SLM、真实 qodercli deliverable/Turn 2、真实 qodercli YOLO 审批与自动 follow-up 均通过。spinner-and-final 可在 TUI chrome 持续刷新时收敛，stop/标记完成/失败会等待 observer 取消并确认 tmux session 清理，自动审批完整发布 resolving/resolved 状态。Phase 3.8 自动化与设备 Runtime 验收完成，动态页视觉与真实音频仅保留为发布前人工抽样。
 
 - Runtime 持久化边界收敛到 SQLite：任务、turn、runtime event、work state、approval state、session binding、watcher offset 和 deliverable 可恢复
 - Flutter 内 Bridge Runtime 作为过渡实现，支持 App 重启后的状态重建
@@ -183,6 +185,7 @@ Phase 3 起步必须遵守 [Phase 3 Loop Runtime 前置设计](runtime/phase-3-l
 - 任务级上下文延续
 - Loop 事实记录：输入长度、输出摘要长度、等待时间、审批次数、重试次数、用户后续动作
 - 规则型验收辅助建议：基于 latest turn deliverable、用户目标、约束和可验证信号生成可编辑 follow-up 草稿；不接 AI、不自动执行
+- AI 辅助 Loop Evaluation：基于 latest turn deliverable、loop facts、审批 facts 和用户动作 facts 生成验收辅助判断与结构化下一步 action；Android llama.cpp native runtime 可加载本地 GGUF，失败时回落规则判断，不进入同步 UI 关键路径，自动执行必须经过 Runtime Policy Gate
 - 通知入口：基于 RuntimeEventBus 的审批、等待用户、fresh deliverable、运行丢失、完成和失败事件生成去重后的本地通知请求；当前不接 push 或系统通知权限
 - 手动子任务组织
 - 委托质量和注意力成本指标
@@ -190,13 +193,140 @@ Phase 3 起步必须遵守 [Phase 3 Loop Runtime 前置设计](runtime/phase-3-l
 - 基于历史任务循环反馈优化下一次任务提示和上下文组织
 - 可搜索/可导出的审计历史
 
-## Phase 4+（未来）
+## 第四阶段：Runtime Foundation
 
-Phase 4+ 用于记录长期架构方向，不改变 Phase 2.5 和 Phase 3 的开发优先级。用户采纳和任务完成率比基础设施复杂度更重要；在实现安全远端执行器前，Armin 必须先验证用户会稳定使用语音任务创建、采用 Loop-based 工作流、运行长生命周期编码任务，并确实需要多设备远程访问。
+Phase 4 不正式引入多 Worker、Work Stealing 或分布式 Runtime，而是完成未来 Runtime Scheduler 所需的基础设施建设。
 
-### Secure Remote Executor Infrastructure
+核心原则：
 
-目标：为运行在用户自有机器上的 Codex、Claude Code 或其他编码 Agent 提供安全远程访问能力。
+- Runtime First，而不是 Scheduler First
+- Event First，而不是 Prompt First
+- Archive First，而不是 Context First
+- State 由 Event 派生，而不是直接修改
+- 保持单 Worker Runtime，不提前引入复杂调度
+
+### Runtime Brain
+
+建立 Runtime Brain，统一 Runtime 的事实记录、状态管理、恢复能力和未来调度接口。
+
+Runtime Brain 是 Runtime 的唯一事实来源（Source of Truth）。
+
+核心能力：
+
+- Runtime Event Log（Append-only）
+- Event Sourcing
+- Runtime State Reducer
+- Runtime Facts
+- Runtime Checkpoint
+- Runtime Replay
+- Runtime Recovery
+- Runtime Summary
+
+### Runtime Archive
+
+长任务 Runtime 不依赖无限增长的 Prompt Context。
+
+所有 Runtime History 采用轻量 Archive。
+
+Archive 使用 Segment Rolling 管理，而不是单一历史文件。
+
+每个 Segment 包含：
+
+- Runtime Events
+- Runtime Facts
+- Summary
+- Checkpoint
+- Metadata
+
+支持：
+
+- Segment Rolling
+- Runtime Search
+- Runtime Replay
+- Runtime Audit
+- Runtime Recovery
+
+移动端默认仅保留：
+
+- Current Runtime State
+- Recent Events
+- Latest Summary
+
+完整 Archive 保存在远端 Runtime。
+
+### Runtime Scheduling Foundation
+
+建立未来 Scheduler 所需要的数据结构，但当前仍保持单 Worker。
+
+新增 Runtime Metadata：
+
+- Global Event Id
+- Runtime Partition（预留）
+- Partition Offset
+- Runtime Dependency
+- Runtime Resource Scope
+- Runtime Queue
+- Runtime Lease（预留）
+- Runtime Barrier（预留）
+- Runtime Metadata
+
+当前阶段：
+
+- 单 Runtime
+- 单 Worker
+- 单 Partition
+
+未来无需迁移数据结构即可升级到多 Worker Runtime。
+
+### Remote Runtime Daemon
+
+远端增加 Runtime Daemon，对 tmux 进行包装，而不是直接操作 tmux。
+
+tmux 仅作为 Terminal Multiplexer。
+
+Runtime Daemon 负责：
+
+- Runtime Event
+- Runtime State
+- Runtime Archive
+- Runtime Checkpoint
+- Runtime Replay
+- Runtime Recovery
+- Runtime Summary
+- Runtime Watcher
+
+Mobile App 不直接管理 tmux。
+
+Mobile App 仅作为 Runtime Controller。
+
+真正的 Runtime 全部运行在远端。
+
+### Runtime Goals
+
+完成 Runtime Foundation 后，应具备：
+
+- Runtime Event Sourcing
+- Runtime Archive
+- Runtime Recovery
+- Runtime Replay
+- Runtime Checkpoint
+- Runtime Brain
+- Remote Runtime Daemon
+
+但仍保持：
+
+- 单 Worker
+- 单 Runtime
+- 无 Work Stealing
+- 无分布式调度
+
+## 第五阶段：Secure Runtime Infrastructure
+
+目标：建立安全、可信的远端 Runtime 基础设施，为未来多 Worker Runtime 提供安全边界。
+
+### Secure Remote Executor
+
+目标：为运行在用户自有机器上的 Codex、Claude Code 或其他终端 Agent 提供安全远程访问能力。
 
 潜在能力：
 
@@ -210,29 +340,135 @@ Phase 4+ 用于记录长期架构方向，不改变 Phase 2.5 和 Phase 3 的开
 - Multi-Executor Routing
 - Secure Session Management
 
-示例架构：
+### Runtime Permission Model
 
-```text
-Mobile App
-↓
-Encrypted Relay
-↓
-Executor
-↓
-Codex / Claude Code / Other Agents
-```
+建立 Runtime 权限模型。
 
-Relay 应被视为不可信组件。长期上，所有敏感通信都应由 Mobile App 与 Executor 之间的端到端加密保护。
+能力包括：
+
+- Runtime Permission
+- Worker Permission
+- Runtime Resource ACL
+- Runtime Resource Ownership
+- Runtime Lock Policy
+- Runtime Isolation Policy
+
+确保未来多个 Worker 能够在同一 Runtime 内安全协作，而不会发生资源冲突。
 
 ### Session Manager Daemon
 
-在远端部署独立 Go 后台 daemon 管理 terminal session 生命周期，Armin 不再直接操作 tmux。设计决策记录见 [Session Manager Daemon 设计](runtime/session-manager-daemon.md)。
+在远端部署独立 Daemon 管理 Runtime 生命周期。
 
-优先级排序：
+优先级：
 
-1. **attach + kill**（最高优先级）：WebSocket 实时输出流替代 `pipe-pane` + `capture-pane` 轮询；可靠清理 + 自动 GC 杜绝残留 session。
-2. **create / send / probe / list**（完整替换）：逐步替换 SSH shell 脚本生成逻辑。
-3. **自建 PTY 管理**（可选终极方案）：完全替代 tmux，实现终端复用器选型自由。
+1. attach + kill
+2. create / send / probe / list
+3. 自建 PTY Runtime（长期）
+
+## 第六阶段：Distributed Runtime
+
+Phase 6 正式引入多 Worker Runtime。
+
+所有能力均建立在 Runtime Foundation 和 Secure Runtime Infrastructure 之上。
+
+### Runtime Scheduler
+
+Runtime Scheduler 不调度 Prompt，而调度 Runtime Event。
+
+支持：
+
+- Worker Pool
+- Runtime Work Queue
+- Runtime Scheduling
+- Runtime Dispatch
+- Runtime Retry
+- Runtime Recovery
+
+### Runtime Partition
+
+正式启用 Runtime Partition。
+
+支持：
+
+- Runtime Partition
+- Partition Offset
+- Global Event Id
+- Runtime Barrier
+- Runtime Dependency Graph
+
+默认保持 Partition 内顺序。
+
+严格模式下支持 Global Event Ordering。
+
+### Work Stealing
+
+Work Stealing 作为 Runtime Scheduler 的一种调度策略正式引入。
+
+能力包括：
+
+- Worker Claim
+- Worker Lease
+- Worker Release
+- Idle Worker Detection
+- Pending Queue
+- Runtime Resource Lock
+- Conflict Detection
+- Worker Retry
+- Worker Recovery
+
+Work Stealing 不直接调度 Prompt，而调度 Runtime Event、Runtime Queue 和 Runtime Partition。
+
+### Scheduler Policy
+
+Scheduler 保持可插拔。
+
+支持：
+
+- FIFO
+- Priority Queue
+- Resource Aware Scheduling
+- Token Aware Scheduling
+- Cost Aware Scheduling
+- Latency Aware Scheduling
+- Work Stealing
+
+### Distributed Runtime Goals
+```
+最终 Runtime 架构：
+
+Mobile App
+
+↓
+
+Runtime Brain
+
+↓
+
+Runtime Scheduler
+
+↓
+
+Worker Pool
+
+↓
+
+Remote Runtime
+
+↓
+
+Codex / Qoder / Claude Code / Other Terminal Agents
+
+实现：
+
+- 多 Worker Runtime
+- 高吞吐 Runtime
+- Runtime Recovery
+- Runtime Replay
+- Runtime Archive
+- Runtime Partition
+- Runtime Scheduling
+- Runtime Work Stealing
+```
 
 ### 其他未来方向
 

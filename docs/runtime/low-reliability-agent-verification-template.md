@@ -134,6 +134,49 @@ Final answer must include:
 - 重进详情、切 Tab、手动刷新、重复 `DELIVERABLE_UPDATED` 事件不会增加自动播报次数。
 - 手动朗读仍读取 latest turn 的同一 `speechSummary` / `displaySummary` 来源。
 
+### P38-LEA-REAL-01：AI 辅助 Loop Evaluation 抽样
+
+目标：确认真实 qodercli、Loop Runtime、latest turn deliverable、loop facts 和端侧模型辅助判断可以一起工作。
+
+开始前必须先推送本地模型缓存；不得重新下载模型：
+
+```sh
+DEVICE=emulator-5554 ./scripts/slm/push-gguf-model.sh .models/slm/Qwen3-0.6B-Q4_K_M.gguf
+```
+
+Turn 1：
+
+```text
+Read pubspec.yaml. Do not modify files.
+
+Final answer only:
+ARMIN_LOOP_EVAL_D1 status=PASS project=countdown_widgets files_changed=0 next=WAIT
+```
+
+Turn 2：
+
+```text
+Continue from the previous result. Do not modify files.
+
+Final answer only:
+ARMIN_LOOP_EVAL_D2 status=PASS previous_case_repeated=false files_changed=0 next=COMPLETE
+```
+
+通过条件：
+
+- Turn 1 自动 `running -> turnIdle`，不手动刷新。
+- Turn 1 结果卡片包含 `ARMIN_LOOP_EVAL_D1`、`status=PASS`、`files_changed=0`。
+- 发送 Turn 2 前不手动刷新；Turn 2 执行期间回到 `running`。
+- Turn 2 自动 `running -> turnIdle`，不手动刷新。
+- Turn 2 最新结果卡片包含 `ARMIN_LOOP_EVAL_D2`、`previous_case_repeated=false`、`files_changed=0`。
+- Turn 2 最新结果不得把 Turn 1 作为当前结果。
+- `loop_evaluated` 每个 turn 至少写入一次；继续动作写入 `loop_user_action`。
+- 若可通过 UI 自动化或人工截图确认，任务详情「动态」Tab 必须显示 `Loop 事实` 和 `辅助判断`。
+- `辅助判断` 来源应为 `端侧模型`；若显示 `规则判断`，Runtime 层可 PASS，但 AI UI 层为 FAIL。
+- `辅助判断` 内容不得包含 `Thinking`、`qodercli`、`Final answer only`、用户 prompt 原文或旧 turn marker。
+
+说明：如果 `flutter drive` 安装测试 APK 后清空了历史任务，不能把“无法打开旧任务”判为 Runtime 失败；此时必须用代码级 UI 测试和 native smoke 补齐 UI / AI 层证据。
+
 ## 报告格式
 
 执行完成后只输出一个 JSON。不要写散文总结，不要夹带未执行的推测。
@@ -167,6 +210,13 @@ Final answer must include:
       "failure_or_block_reason": ""
     }
   ],
+  "phase38": {
+    "runtime_layer": "PASS | FAIL | BLOCKED | NOT_RUN",
+    "ui_layer": "PASS | FAIL | BLOCKED | NOT_RUN",
+    "native_slm_layer": "PASS | FAIL | BLOCKED | NOT_RUN",
+    "ai_source": "端侧模型 | 规则判断 | missing | NOT_RUN",
+    "manual_ui_inspection_used": false
+  },
   "overall": "PASS | FAIL | BLOCKED",
   "failed_case_ids": [],
   "blocked_case_ids": [],

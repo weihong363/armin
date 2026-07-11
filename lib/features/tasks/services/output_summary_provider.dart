@@ -7,7 +7,7 @@ import 'secret_redactor.dart';
 class OutputSummaryRequest {
   const OutputSummaryRequest({
     required this.cleanedOutput,
-    required this.status,
+    this.status = TaskStatus.turnIdle,
     this.taskTitle = '',
     this.promptInputs = const [],
     this.agentCommand = '',
@@ -189,15 +189,42 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
 
   List<String> _finalMarkerDeliverableLines(String cleaned) {
     final markerParts = <String>[];
-    final markerPattern = RegExp(r'^[▪■●]\s*(ARMIN[A-Z0-9_]*(?:\s+.*)?)\s*$');
+    final currentBlock = <String>[];
+    final markerPattern =
+        RegExp(r'^(?:[▪■●]\s*)?(ARMIN[A-Z0-9_]*(?:\s+.*)?)\s*$');
+    var sawAgentOutputBeforeMarker = false;
     for (final rawLine in cleaned.split('\n')) {
       final trimmed = rawLine.trim();
       final match = markerPattern.firstMatch(trimmed);
       if (match != null) {
+        final isAgentBullet =
+            RegExp(r'^[▪■●]\s*ARMIN[A-Z0-9_]*\b').hasMatch(trimmed);
+        if (!isAgentBullet && !sawAgentOutputBeforeMarker) {
+          continue;
+        }
         markerParts
           ..clear()
+          ..addAll(isAgentBullet ? const [] : currentBlock)
           ..add(_semanticLine(match.group(1)?.trim() ?? ''));
+        currentBlock.clear();
         continue;
+      }
+      if (_looksLikeAgentOutputLine(trimmed)) {
+        sawAgentOutputBeforeMarker = true;
+        currentBlock.clear();
+        final semantic = _semanticLine(trimmed);
+        if (semantic.isNotEmpty && !_looksLikeLowValueLine(semantic)) {
+          currentBlock.add(semantic);
+        }
+        continue;
+      }
+      if (currentBlock.isNotEmpty) {
+        final semantic = _semanticLine(trimmed);
+        if (semantic.isNotEmpty &&
+            !_looksLikeLowValueLine(semantic) &&
+            !_looksLikeBulletToolCall(semantic)) {
+          currentBlock.add(semantic);
+        }
       }
       if (markerParts.isEmpty) {
         continue;
@@ -208,15 +235,32 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
           !_looksLikeMarkerContinuation(semantic)) {
         continue;
       }
-      markerParts.add(semantic);
+      markerParts[markerParts.length - 1] =
+          '${markerParts.last} $semantic'.trim();
     }
-    final marker = markerParts.join(' ').trim();
-    return marker.isEmpty ? const [] : [marker];
+    return markerParts.where((line) => line.trim().isNotEmpty).toList();
   }
 
   bool _looksLikeMarkerContinuation(String line) {
     final trimmed = line.trim();
     return RegExp(r'^[A-Za-z_][A-Za-z0-9_]*=').hasMatch(trimmed);
+  }
+
+  bool _looksLikeAgentOutputLine(String line) {
+    if (!RegExp(r'^[▪■●]\s+').hasMatch(line)) {
+      return false;
+    }
+    final text = line.replaceFirst(RegExp(r'^[▪■●]\s+'), '').trim();
+    if (text.isEmpty) {
+      return false;
+    }
+    if (_looksLikeBulletToolCall(text)) {
+      return false;
+    }
+    final lower = text.toLowerCase();
+    return !lower.startsWith('let me ') &&
+        !lower.startsWith('i will ') &&
+        !lower.startsWith("i'll ");
   }
 
   bool _looksLikeBulletToolCall(String line) {
@@ -901,6 +945,10 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
           '',
         )
         .replaceAll(RegExp(r'\bAuto Model\b.*', caseSensitive: false), '')
+        .replaceAll(RegExp(r'\bAuto Mode\b.*', caseSensitive: false), '')
+        .replaceAll(RegExp(r'\bTry /effort\b.*', caseSensitive: false), '')
+        .replaceAll(RegExp(r'\b/context-window\b.*', caseSensitive: false), '')
+        .replaceAll(RegExp(r'\bModel\s*·\s*ctx\b.*', caseSensitive: false), '')
         .replaceAll(
           RegExp(r'\bShift\+Tab to Auto-accept Edits\b.*',
               caseSensitive: false),
@@ -1215,6 +1263,7 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
         _looksLikeEncodedPromptEchoLine(lower) ||
         lower == 'none' ||
         lower == '*' ||
+        lower == 'mode' ||
         lower == 'not_run' ||
         lower.startsWith('```') ||
         lower.startsWith('import ') ||
@@ -1229,6 +1278,15 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
         lower.startsWith('任务：') ||
         lower.startsWith('任务:') ||
         lower.startsWith('constraints:') ||
+        lower.startsWith('armin_diag:') ||
+        lower.contains("what's new") ||
+        lower.contains('not login please auth') ||
+        lower.contains('/release-notes for more') ||
+        lower.contains('try /effort') ||
+        lower.contains('/context-window') ||
+        lower.contains('auto mode') ||
+        lower.contains('model · ctx') ||
+        lower.contains('model  ctx') ||
         lower.startsWith('initializing... prompts will be queued') ||
         lower.startsWith('- do not ') ||
         lower.startsWith('- final answer ') ||
@@ -1469,7 +1527,7 @@ class LocalSmallModelSummaryProvider implements OutputSummaryProvider {
       );
     }
     try {
-      final available = await check().timeout(timeout);
+      final available = await check();
       return LocalSummaryCapability(
         available: available,
         message: available ? '端侧摘要模型已就绪。' : '当前设备不支持端侧摘要模型，将使用规则摘要。',

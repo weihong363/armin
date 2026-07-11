@@ -33,6 +33,7 @@ enum AgentType {
   codex,
   qoder,
   claude,
+
   /// 未识别的 CLI，不传审批参数，仅依赖 Prompt 内治理规则。
   custom,
 }
@@ -89,7 +90,9 @@ class AgentApprovalConfig {
     return switch (mode) {
       AgentApprovalMode.safe => ['--permission-mode', 'plan'],
       AgentApprovalMode.balanced => const [],
-      AgentApprovalMode.aggressive => ['--dangerously-skip-permissions'],
+      // Armin's YOLO mode keeps the terminal approval channel observable and
+      // auto-approves through Runtime. Do not bypass qodercli permissions here.
+      AgentApprovalMode.aggressive => const [],
     };
   }
 

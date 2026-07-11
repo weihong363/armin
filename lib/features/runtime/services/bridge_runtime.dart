@@ -107,6 +107,36 @@ class BridgeRuntime {
     return taskStore.loadTask(taskId);
   }
 
+  Future<RuntimeTaskSnapshot> projectTaskState({
+    required String taskId,
+    required RuntimeTaskStatus status,
+    required WorkState workState,
+    String summary = '',
+    DateTime? now,
+  }) async {
+    _validateTaskId(taskId);
+    final observedAt = now ?? DateTime.now();
+    final current = await _requireTask(taskId);
+    final projectedWorkState = workState.copyWith(updatedAt: observedAt);
+    final updated = current.copyWith(
+      status: status,
+      updatedAt: observedAt,
+      summary: summary.trim().isEmpty ? current.summary : summary.trim(),
+      workState: projectedWorkState,
+    );
+    await taskStore.saveTask(updated);
+    _workStates[taskId] = projectedWorkState;
+    await _saveWorkState(projectedWorkState);
+    _diagnosticsUpdate(
+      taskId,
+      (d) => d.copyWith(
+        workPhase: projectedWorkState.phase,
+        updatedAt: observedAt,
+      ),
+    );
+    return updated;
+  }
+
   Future<void> restoreDurableState() async {
     final store = taskStore;
     if (store is! RuntimePersistenceStore) {
@@ -210,8 +240,54 @@ class BridgeRuntime {
     await taskStore.saveTask(task);
     _publish(RuntimeEventType.taskCreated, task);
     _ensureDiagnostics(task.taskId);
-    _updateWorkState(task.taskId, WorkPhase.idle, 'Task created.', '');
+    final explicitWorkState = task.workState;
+    if (explicitWorkState != null) {
+      _workStates[task.taskId] = explicitWorkState;
+      await _saveWorkState(explicitWorkState);
+      _diagnosticsUpdate(
+        task.taskId,
+        (d) => d.copyWith(
+          workPhase: explicitWorkState.phase,
+          updatedAt: explicitWorkState.updatedAt ?? task.updatedAt,
+        ),
+      );
+    } else {
+      final phase = _phaseForTaskStatus(task.status);
+      _updateWorkState(
+        task.taskId,
+        phase,
+        _headlineForPhase(phase),
+        task.summary,
+      );
+    }
     return task;
+  }
+
+  WorkPhase _phaseForTaskStatus(RuntimeTaskStatus status) {
+    return switch (status) {
+      RuntimeTaskStatus.pending => WorkPhase.idle,
+      RuntimeTaskStatus.running => WorkPhase.working,
+      RuntimeTaskStatus.waitingUser => WorkPhase.turnIdle,
+      RuntimeTaskStatus.completed => WorkPhase.completed,
+      RuntimeTaskStatus.failed => WorkPhase.failed,
+      RuntimeTaskStatus.cancelled => WorkPhase.stopped,
+    };
+  }
+
+  String _headlineForPhase(WorkPhase phase) {
+    return switch (phase) {
+      WorkPhase.idle => 'Task created.',
+      WorkPhase.working => 'Agent started.',
+      WorkPhase.quieting => 'Observer detached.',
+      WorkPhase.turnIdle => '等待你的指示',
+      WorkPhase.needsApproval => 'Waiting for approval.',
+      WorkPhase.needsDecision => 'Waiting for decision.',
+      WorkPhase.needsInstruction => 'Waiting for instruction.',
+      WorkPhase.needsReview => 'Waiting for review.',
+      WorkPhase.completed => 'Task completed.',
+      WorkPhase.failed => 'Task failed.',
+      WorkPhase.stopped => 'Task stopped.',
+    };
   }
 
   Future<RuntimeTaskSnapshot> startTask({
@@ -319,6 +395,7 @@ class BridgeRuntime {
               observerState: 'detached',
               updatedAt: observedAt,
             ));
+    _updateWorkState(taskId, WorkPhase.quieting, 'Observer detached.', '');
   }
 
   /// Publish connection lost event.
@@ -331,6 +408,7 @@ class BridgeRuntime {
               observerState: 'connection_lost',
               updatedAt: observedAt,
             ));
+    _updateWorkState(taskId, WorkPhase.quieting, '连接已暂停', '');
   }
 
   /// Publish connection restored event.

@@ -1,5 +1,4 @@
 import 'package:armin/app_state_scope.dart';
-import 'package:armin/core/models/task_status.dart';
 import 'package:armin/core/services/armin_app_state.dart';
 import 'package:armin/core/storage/task_history_store.dart';
 import 'package:armin/features/history/screens/task_history_screen.dart';
@@ -55,7 +54,6 @@ TaskSession _task() {
       updatedAt: now,
     ),
     title: '修复登录流程',
-    status: TaskStatus.completed,
     createdAt: now,
     updatedAt: now,
     rawSttText: '',
@@ -65,8 +63,6 @@ TaskSession _task() {
     constraints: const {},
     finalPrompt: '',
     secretRecords: const [],
-    rawLog: '',
-    shortSummary: '已完成',
   );
 }
 

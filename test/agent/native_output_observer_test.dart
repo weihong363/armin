@@ -1,3 +1,5 @@
+import 'package:armin/features/agent/models/agent_approval_config.dart';
+import 'package:armin/features/agent/services/agent_runtime_adapter.dart';
 import 'package:armin/features/agent/services/agent_runtime_config.dart';
 import 'package:armin/features/agent/services/native_output_observer.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -62,6 +64,71 @@ void main() {
     );
 
     expect(snapshot.state, isNot(NativeOutputObserverState.turnIdle));
+    expect(snapshot.turnIdle, isFalse);
+  });
+
+  test('qoder adapter ignores infinite spinner after final output', () {
+    final observer = NativeOutputObserver(
+      runtimeAdapter: const AgentRuntimeAdapter(AgentType.qoder),
+      idleThreshold: const Duration(seconds: 1),
+    );
+    const output = '''
+▪ ARMIN_REAL_SESSION_CHECK status=PASS project=countdown_widgets files_changed=0
+  Result: ARMIN_REAL_SESSION_CHECK
+  All checks passed.
+ ⠴ Thinking... (esc to cancel)  Auto Model · ctx 25%
+''';
+
+    final snapshot = observer.observeSettled(
+      output,
+      now: DateTime(2026, 7, 6, 12),
+    );
+
+    expect(snapshot.state, NativeOutputObserverState.turnIdle);
+    expect(snapshot.turnIdle, isTrue);
+  });
+
+  test('qoder adapter settles completed checks before infinite spinner', () {
+    final observer = NativeOutputObserver(
+      runtimeAdapter: const AgentRuntimeAdapter(AgentType.qoder),
+      idleThreshold: const Duration(seconds: 1),
+    );
+    const output = '''
+▪ P26-B01-D1-AUTO
+  Result: P26-B01-D1-AUTO
+  All checks passed.
+  Verification step 1: OK
+ ⠴ Thinking... (esc to cancel)  Auto Model · ctx 25%
+''';
+
+    final snapshot = observer.observeSettled(
+      output,
+      now: DateTime(2026, 7, 10, 12),
+    );
+
+    expect(snapshot.state, NativeOutputObserverState.turnIdle);
+    expect(snapshot.turnIdle, isTrue);
+  });
+
+  test('codex adapter keeps active bash work running', () {
+    final observer = NativeOutputObserver(
+      runtimeAdapter: const AgentRuntimeAdapter(AgentType.codex),
+      idleThreshold: const Duration(seconds: 1),
+    );
+    const output = '''
+▪ Let me run the requested command.
+
+▫ Bash(sleep 180 && echo LONGTASK_DONE)
+
+⠹ Thinking... (esc to cancel, 48s)
+''';
+
+    final snapshot = observer.observeSettled(
+      output,
+      now: DateTime(2026, 7, 6, 12),
+    );
+
+    expect(snapshot.state, NativeOutputObserverState.running);
     expect(snapshot.turnIdle, isFalse);
   });
 
@@ -292,6 +359,39 @@ Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdo
     );
 
     expect(snapshot.state, isNot(NativeOutputObserverState.turnIdle));
+    expect(snapshot.turnIdle, isFalse);
+  });
+
+  test('qoder idle input prompt after unfinished work needs attention', () {
+    final observer = NativeOutputObserver(
+      idleThreshold: const Duration(seconds: 1),
+    );
+    const output = '''
+▪ Let me read the pubspec.yaml file first to understand the project configuration.
+
+▪ Read(/Users/.../pubspec.yaml)
+  └ Read 21 lines
+
+▪ Let me check the lib/ directory structure to understand the key widgets.
+
+▪ Glob('**/*' within lib/)
+  └ Found 2 matching file(s) (Ctrl+O to expand)
+
+▪ Let me check the src/ directory structure to find the actual widget files.
+
+────────────────────────────────────────────────────────────────────────────────
+ YOLO Shift+Tab to Auto Mode                                  Try /model to switch models
+*   Type your message or @path/to/file
+Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdown_widgets
+''';
+
+    final snapshot = observer.observeSettled(
+      output,
+      now: DateTime(2026, 7, 7, 12),
+    );
+
+    expect(snapshot.state, NativeOutputObserverState.needAttention);
+    expect(snapshot.needsAttention, isTrue);
     expect(snapshot.turnIdle, isFalse);
   });
 

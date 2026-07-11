@@ -9,6 +9,7 @@ import '../services/voice_task_command_processor.dart';
 class AddContextSheet extends StatelessWidget {
   const AddContextSheet({
     required this.task,
+    required this.status,
     required this.title,
     required this.hintText,
     required this.onSubmit,
@@ -19,6 +20,7 @@ class AddContextSheet extends StatelessWidget {
   });
 
   final TaskSession task;
+  final TaskStatus status;
   final String title;
   final String hintText;
   final NativeTerminalApproval? approval;
@@ -34,6 +36,7 @@ class AddContextSheet extends StatelessWidget {
   static Future<void> show(
     BuildContext context, {
     required TaskSession task,
+    required TaskStatus status,
     String title = '继续任务',
     String hintText = '接下来需要做什么？',
     NativeTerminalApproval? approval,
@@ -52,6 +55,7 @@ class AddContextSheet extends StatelessWidget {
       showDragHandle: true,
       builder: (_) => AddContextSheet(
         task: task,
+        status: status,
         title: title,
         hintText: hintText,
         approval: approval,
@@ -67,6 +71,7 @@ class AddContextSheet extends StatelessWidget {
     return _AddContextControllerHost(
       builder: (controller) => _AddContextSheetBody(
         task: task,
+        status: status,
         title: title,
         hintText: hintText,
         approval: approval,
@@ -82,6 +87,7 @@ class AddContextSheet extends StatelessWidget {
 class _AddContextSheetBody extends StatefulWidget {
   const _AddContextSheetBody({
     required this.task,
+    required this.status,
     required this.title,
     required this.hintText,
     required this.controller,
@@ -92,6 +98,7 @@ class _AddContextSheetBody extends StatefulWidget {
   });
 
   final TaskSession task;
+  final TaskStatus status;
   final String title;
   final String hintText;
   final TextEditingController controller;
@@ -473,8 +480,7 @@ class _AddContextSheetBodyState extends State<_AddContextSheetBody> {
         }
         return;
       }
-      _voiceCommand =
-          widget.interpretVoiceCommand?.call(raw, widget.task.status);
+      _voiceCommand = widget.interpretVoiceCommand?.call(raw, widget.status);
       if (mounted) {
         setState(() {
           _busy = false;

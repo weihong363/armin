@@ -259,8 +259,12 @@ class AgentOutputCleaner {
         lower.startsWith('model:') ||
         lower.startsWith('directory:') ||
         lower.startsWith('gpt-') ||
+        lower.startsWith('armin_diag:') ||
         lower.startsWith('tip:') ||
         lower.startsWith('use /skills ') ||
+        lower.contains("what's new") ||
+        lower.contains('not login please auth') ||
+        lower.contains('/release-notes for more') ||
         lower.startsWith('armin context governance') ||
         lower.startsWith('## user task') ||
         lower.startsWith('## user constraints') ||

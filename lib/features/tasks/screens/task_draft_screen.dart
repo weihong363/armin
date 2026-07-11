@@ -3,13 +3,15 @@ import 'package:flutter/material.dart';
 import '../../../app_state_scope.dart';
 import '../../../core/models/task_status.dart';
 import '../../../shared/theme/armin_theme.dart';
-import '../../agent/services/agent_session_service.dart';
 import '../../agent/models/agent_approval_config.dart';
-import '../../hosts/models/host_config.dart';
+import '../../agent/services/agent_session_service.dart';
 import '../../history/screens/task_detail_screen.dart';
+import '../../hosts/models/host_config.dart';
 import '../../projects/models/project_path_config.dart';
-import '../../voice/services/voice_service.dart';
 import '../../voice/models/normalization_result.dart';
+import '../../voice/services/transcript_normalizer.dart';
+import '../../voice/services/voice_service.dart';
+import '../../voice/widgets/normalization_confirmation_sheet.dart';
 import '../models/metric_event.dart';
 import '../models/native_output_turn.dart';
 import '../models/prompt_record.dart';
@@ -19,8 +21,6 @@ import '../models/task_draft.dart';
 import '../models/task_session.dart';
 import '../models/voice_input.dart';
 import '../services/agent_instruction_discovery.dart';
-import '../../voice/services/transcript_normalizer.dart';
-import '../../voice/widgets/normalization_confirmation_sheet.dart';
 import '../services/constraint_extractor.dart';
 import '../services/prompt_template_builder.dart';
 import '../services/secret_redactor.dart';
@@ -472,9 +472,20 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
     return _promptBuilder.build(
       taskDescription: _taskController.text,
       context: _contextController.text,
-      constraints: _constraints,
+      constraints: _effectiveConstraintsFor(_taskController.text),
       secrets: _secrets,
     );
+  }
+
+  Set<TaskConstraint> _effectiveConstraintsFor(String taskText) {
+    final effective = <TaskConstraint>{
+      ..._constraints,
+      ..._extractor.extract(taskText),
+    };
+    if (effective.contains(TaskConstraint.analyzeOnly)) {
+      effective.remove(TaskConstraint.allowChanges);
+    }
+    return Set.unmodifiable(effective);
   }
 
   void _refreshPreview() {
@@ -554,7 +565,7 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
     }
 
     final activeCount = state.tasks
-        .where((t) => switch (t.status) {
+        .where((t) => switch (state.taskStatus(t)) {
               TaskStatus.completed ||
               TaskStatus.userCompleted ||
               TaskStatus.failed ||
@@ -581,6 +592,7 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
     final now = DateTime.now();
     final taskId = 'task-${now.microsecondsSinceEpoch}';
     final prompt = _buildPrompt();
+    final effectiveConstraints = _effectiveConstraintsFor(taskText);
     final tmuxSessionName = _taskTmuxSessionName(host.tmuxSessionName, taskId);
     final approvalMode = _executionMode.toApprovalMode();
     final taskHost = host
@@ -597,7 +609,6 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
       id: taskId,
       host: taskHost,
       title: _taskTitleFor(taskText),
-      status: TaskStatus.running,
       createdAt: now,
       updatedAt: now,
       startedAt: now,
@@ -605,10 +616,9 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
       cleanedDraft: _cleanedDraft,
       userText: taskText,
       context: _contextController.text.trim(),
-      constraints: Set.unmodifiable(_constraints),
+      constraints: effectiveConstraints,
       finalPrompt: prompt,
       secretRecords: secretRecords,
-      rawLog: '',
       approvalMode: approvalMode,
       voiceInputs: [
         if (_rawStt.isNotEmpty)
@@ -626,7 +636,7 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
         cleanedText: _cleanedDraft,
         userEditedText: taskText,
         contextText: _contextController.text.trim(),
-        constraints: Set.unmodifiable(_constraints),
+        constraints: effectiveConstraints,
         createdAt: now,
         updatedAt: now,
       ),

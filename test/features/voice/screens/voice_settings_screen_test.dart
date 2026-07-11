@@ -1,11 +1,10 @@
 import 'package:armin/app_state_scope.dart';
-import 'package:armin/core/models/task_status.dart';
 import 'package:armin/core/services/armin_app_state.dart';
 import 'package:armin/core/storage/in_memory_task_history_store.dart';
+import 'package:armin/features/tasks/services/output_summary_provider.dart';
 import 'package:armin/features/voice/screens/voice_settings_screen.dart';
 import 'package:armin/features/voice/services/device_voice_service.dart';
 import 'package:armin/features/voice/services/voice_service.dart';
-import 'package:armin/features/tasks/services/output_summary_provider.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -20,6 +19,7 @@ void main() {
       store: InMemoryTaskHistoryStore(),
       agentSessionService: MockAgentSessionService(),
       voiceService: voice,
+      outputSummaryProvider: _unavailableNativeSummaryProvider(),
     );
     await tester.pumpWidget(
       AppStateScope(
@@ -43,6 +43,7 @@ void main() {
       store: InMemoryTaskHistoryStore(),
       agentSessionService: MockAgentSessionService(),
       voiceService: voice,
+      outputSummaryProvider: _unavailableNativeSummaryProvider(),
     );
     await tester.pumpWidget(
       AppStateScope(
@@ -66,6 +67,7 @@ void main() {
       store: InMemoryTaskHistoryStore(),
       agentSessionService: MockAgentSessionService(),
       voiceService: MockVoiceService(),
+      outputSummaryProvider: _unavailableNativeSummaryProvider(),
     );
     await tester.pumpWidget(
       AppStateScope(
@@ -75,7 +77,8 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.textContaining('当前未安装端侧摘要模型'), findsOneWidget);
+    final capability = await state.localSummaryCapability();
+    expect(capability.message, contains('当前设备不支持端侧摘要模型'));
     await tester.tap(find.text('端侧摘要增强（实验）'));
     await tester.pumpAndSettle();
 
@@ -83,11 +86,10 @@ void main() {
     final summary = await state.outputSummaryProvider.summarize(
       const OutputSummaryRequest(
         cleanedOutput: '已找到结果。',
-        status: TaskStatus.turnIdle,
       ),
     );
     expect(summary.displaySummary, '已找到结果。');
-    expect(summary.fallbackReason, 'local small model unavailable');
+    expect(summary.fallbackReason, 'local small model not supported');
   });
 }
 
@@ -96,4 +98,16 @@ class _FailingPreviewVoiceService extends MockVoiceService {
   Future<void> speakSummary(String summary) async {
     throw const VoiceUnavailableException('系统语音引擎未开始朗读');
   }
+}
+
+OutputSummaryProvider _unavailableNativeSummaryProvider() {
+  return SelectableOutputSummaryProvider(
+    localModel: LocalSmallModelSummaryProvider(
+      runner: (_) async => const OutputSummary(
+        displaySummary: 'native summary',
+        speechSummary: 'native summary',
+      ),
+      availabilityCheck: () async => false,
+    ),
+  );
 }

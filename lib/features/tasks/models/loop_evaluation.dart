@@ -268,6 +268,73 @@ class LoopUserAction {
   }
 }
 
+enum LoopAutoActionState {
+  sent,
+  skipped,
+  rejected,
+}
+
+class LoopAutoAction {
+  static const metricEventType = 'loop_auto_action';
+
+  const LoopAutoAction({
+    required this.id,
+    required this.taskId,
+    required this.actionId,
+    required this.createdAt,
+    required this.turnId,
+    required this.turnIndex,
+    required this.evidenceFingerprint,
+    required this.policy,
+    required this.state,
+    required this.instructionLength,
+  });
+
+  final String id;
+  final String taskId;
+  final String actionId;
+  final DateTime createdAt;
+  final String turnId;
+  final int turnIndex;
+  final String evidenceFingerprint;
+  final String policy;
+  final LoopAutoActionState state;
+  final int instructionLength;
+
+  String get dedupeKey => '$turnId|$evidenceFingerprint|$actionId';
+
+  factory LoopAutoAction.fromJson(Map<String, Object?> json) {
+    return LoopAutoAction(
+      id: json['id'] as String? ?? '',
+      taskId: json['taskId'] as String? ?? '',
+      actionId: json['actionId'] as String? ?? '',
+      createdAt: DateTime.tryParse(json['createdAt'] as String? ?? '') ??
+          DateTime.now(),
+      turnId: json['turnId'] as String? ?? '',
+      turnIndex: _int(json['turnIndex']),
+      evidenceFingerprint: json['evidenceFingerprint'] as String? ?? '',
+      policy: json['policy'] as String? ?? '',
+      state: _autoActionState(json['state']),
+      instructionLength: _int(json['instructionLength']),
+    );
+  }
+
+  Map<String, Object?> toJson() {
+    return {
+      'id': id,
+      'taskId': taskId,
+      'actionId': actionId,
+      'createdAt': createdAt.toIso8601String(),
+      'turnId': turnId,
+      'turnIndex': turnIndex,
+      'evidenceFingerprint': evidenceFingerprint,
+      'policy': policy,
+      'state': state.name,
+      'instructionLength': instructionLength,
+    };
+  }
+}
+
 enum LoopApprovalEventKind {
   requested,
   approved,
@@ -368,6 +435,14 @@ LoopUserActionKind _userActionKind(Object? value) {
   return LoopUserActionKind.values.firstWhere(
     (kind) => kind.name == name,
     orElse: () => LoopUserActionKind.continueTask,
+  );
+}
+
+LoopAutoActionState _autoActionState(Object? value) {
+  final raw = value as String? ?? '';
+  return LoopAutoActionState.values.firstWhere(
+    (kind) => kind.name == raw,
+    orElse: () => LoopAutoActionState.skipped,
   );
 }
 

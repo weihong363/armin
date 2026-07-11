@@ -10,6 +10,7 @@ import '../../tasks/services/agent_instruction_discovery.dart';
 import '../parsers/terminal_prompt.dart';
 import '../parsers/terminal_prompt_parser.dart';
 import 'agent_output_cleaner.dart';
+import 'agent_runtime_adapter.dart';
 import 'agent_runtime_config.dart';
 import 'agent_session_service.dart';
 import 'native_output_observer.dart';
@@ -18,7 +19,9 @@ import 'runtime_policy.dart';
 class SSHAgentSessionService
     implements AgentSessionService, RemoteTaskProbeService {
   static const _staleExitMarker = '__ARMIN_STALE_EXIT_MARKER__';
-  static const _monitorScriptVersion = 'phase2.6-settled-v4';
+  static const _probeSessionExistsMarker = '__ARMIN_PROBE_SESSION_EXISTS__';
+  static const _probeSessionMissingMarker = '__ARMIN_PROBE_SESSION_MISSING__';
+  static const _monitorScriptVersion = 'phase2.6-settled-v9';
   static const _monitorDiagnosticsVerbose =
       bool.fromEnvironment('ARMIN_MONITOR_DIAG_VERBOSE');
   static const _controlCommandTimeout = Duration(seconds: 15);
@@ -141,6 +144,7 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
       final runtimePolicy = _runtimePolicyFor(request);
       final observer = NativeOutputObserver(
         cleaner: _cleaner,
+        runtimeAdapter: AgentRuntimeAdapter.forCommand(request.agentCommand),
         idleThreshold: runtimePolicy.idleThreshold,
         reconnectThreshold: runtimePolicy.reconnectThreshold,
       );
@@ -311,7 +315,10 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
       needsAttention: terminalPrompt != null || snapshot.needsAttention,
       nativeApproval: _nativeApprovalFromPrompt(terminalPrompt),
       turnIdle: turnIdle,
-      done: turnIdle || snapshot.runtimeLost || terminalPrompt != null,
+      done: turnIdle ||
+          snapshot.runtimeLost ||
+          snapshot.needsAttention ||
+          terminalPrompt != null,
     );
   }
 
@@ -418,9 +425,12 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
       observerState: observerState,
       turnIdle: turnIdle,
       runtimeLost: snapshot.runtimeLost,
-      needsAttention: terminalPrompt != null,
+      needsAttention: terminalPrompt != null || snapshot.needsAttention,
       nativeApproval: _nativeApprovalFromPrompt(terminalPrompt),
-      done: turnIdle || snapshot.runtimeLost || terminalPrompt != null,
+      done: turnIdle ||
+          snapshot.runtimeLost ||
+          snapshot.needsAttention ||
+          terminalPrompt != null,
     );
   }
 
@@ -566,19 +576,23 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
     final tmux = _tmuxCommand(request.tmuxCommand);
     final session = _shellQuote(request.tmuxSessionName);
     return '''
-if ! $tmux has-session -t $session 2>/dev/null; then
-  printf '%s\\n' '__ARMIN_PROBE_SESSION_MISSING__'
-  exit 0
+if $tmux has-session -t $session 2>/dev/null; then
+  printf '%s\\n' '$_probeSessionExistsMarker'
+  $tmux capture-pane -p -t $session -S -${_runtimePolicy.monitorCaptureLines} 2>/dev/null || true
+else
+  printf '%s\\n' '$_probeSessionMissingMarker'
 fi
-$tmux capture-pane -p -t $session -S -${_runtimePolicy.monitorCaptureLines} 2>/dev/null || true
 ''';
   }
 
   RemoteTaskProbe _parseRemoteTaskProbe(String output) {
-    if (output.contains('__ARMIN_PROBE_SESSION_MISSING__')) {
+    if (output.contains(_probeSessionMissingMarker)) {
       return const RemoteTaskProbe.missingSession();
     }
-    final snapshot = output.trim();
+    if (!output.contains(_probeSessionExistsMarker)) {
+      throw const FormatException('Remote probe returned no session marker.');
+    }
+    final snapshot = output.replaceFirst(_probeSessionExistsMarker, '').trim();
     final terminalPrompt = _terminalPromptParser.parse(snapshot);
     final currentAttention =
         !_hasNewerWorkOutputAfterAttention(snapshot, terminalPrompt);
@@ -654,6 +668,8 @@ $tmux capture-pane -p -t $session -S -${_runtimePolicy.monitorCaptureLines} 2>/d
       username: username,
       identities: authPlan.identities,
       onPasswordRequest: authPlan.onPasswordRequest,
+      // dartssh2 2.17 can leave a periodic ping in flight after close().
+      keepAliveInterval: null,
     );
   }
 
@@ -737,16 +753,30 @@ $tmux send-keys -t "\$pane" C-m$clearHistory
   }
 
   Future<void> _killSession(AgentControlRequest request) async {
-    final tmux = _tmuxCommand(request.tmuxCommand);
-    final command = '$tmux kill-session -t '
-        '${_shellQuote(request.tmuxSessionName)} 2>/dev/null || true';
     await _runControlCommand(
         request,
         _wrapRemoteCommand(
-          command,
+          _buildKillSessionCommand(request),
           pathPrepend: request.pathPrepend,
           shellWrapper: request.shellWrapper,
         ));
+  }
+
+  String _buildKillSessionCommand(AgentControlRequest request) {
+    final tmux = _tmuxCommand(request.tmuxCommand);
+    final session = _shellQuote(request.tmuxSessionName);
+    return '''
+$tmux kill-session -t $session 2>/dev/null || true
+attempt=0
+while $tmux has-session -t $session 2>/dev/null; do
+  attempt=\$((attempt + 1))
+  if [ "\$attempt" -ge 20 ]; then
+    echo "Armin could not remove tmux session $session." >&2
+    exit 1
+  fi
+  sleep 0.1
+done
+''';
   }
 
   Future<String> _runControlCommand(
@@ -910,7 +940,15 @@ armin_pane_semantic() {
     s/\\e\\[[0-?]*[ -\\/]*[@-~]//g;
     s/[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F\\x7F]//g;
     for my \$line (split /\\n/) {
+      next if \$line =~ /[\\x{2800}-\\x{28ff}]/;
+      \$line =~ s/\\s*[\\x{2800}-\\x{28ff}]\\s+(?:Thinking|.{1,80}\\.\\.\\.).*\$//i;
+      \$line =~ s/\\s*\\b(?:Auto\\s+)?Model\\b.*\\bctx\\b.*\$//i;
+      \$line =~ s/\\s*\\bctx\\b\\s*[^\\s]*\\s*\\d+%.*\$//i;
       next if \$line =~ /\\besc to cancel\\b/i;
+      next if \$line =~ /\\b(?:Auto\\s+)?Model\\b.*\\bctx\\b/i;
+      next if \$line =~ /\\bctx\\b\\s*\\d+%/i;
+      next if \$line =~ /^\\s*[\\x{2800}-\\x{28ff}]\\s+.{1,80}\\.\\.\\.\\s*\$/;
+      next if \$line =~ /^\\s*[\\x{2800}-\\x{28ff}]?\\s*Thinking[. …]*(?:\\([^)]*\\))?\\s*\$/i;
       \$line =~ s/\\bType your message or \\@path\\/to\\/file\\b.*//i;
       \$line =~ s/(?:YOLO\\s+)?\\bShift\\+Tab to Auto(?:-accept Edits| Mode)?\\b.*//i;
       \$line =~ s/\\bAuto Model\\b.*//i;
@@ -1207,6 +1245,11 @@ fi
   }
 
   @visibleForTesting
+  String buildKillSessionCommandForTest(AgentControlRequest request) {
+    return _buildKillSessionCommand(request);
+  }
+
+  @visibleForTesting
   RemoteTaskProbe parseRemoteTaskProbeForTest(String output) {
     return _parseRemoteTaskProbe(output);
   }
@@ -1267,10 +1310,12 @@ fi
   List<AgentExecutionUpdate> streamingUpdatesForChunksForTest(
     List<String> chunks, {
     Duration idleThreshold = const Duration(milliseconds: 1),
+    String agentCommand = 'qodercli',
   }) {
     final output = _ExecutionOutputState();
     final observer = NativeOutputObserver(
       cleaner: _cleaner,
+      runtimeAdapter: AgentRuntimeAdapter.forCommand(agentCommand),
       idleThreshold: idleThreshold,
     );
     return chunks.map((chunk) {
@@ -1283,6 +1328,7 @@ fi
   AgentExecutionUpdate streamCompletionUpdateForTextForTest(
     String text, {
     Duration idleThreshold = const Duration(milliseconds: 1),
+    String agentCommand = 'qodercli',
   }) {
     final output = _ExecutionOutputState();
     output.write(
@@ -1292,6 +1338,7 @@ fi
     );
     final observer = NativeOutputObserver(
       cleaner: _cleaner,
+      runtimeAdapter: AgentRuntimeAdapter.forCommand(agentCommand),
       idleThreshold: idleThreshold,
     );
     observer.observe(output.observedText);

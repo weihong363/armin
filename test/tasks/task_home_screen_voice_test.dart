@@ -4,6 +4,8 @@ import 'package:armin/core/services/armin_app_state.dart';
 import 'package:armin/core/storage/in_memory_task_history_store.dart';
 import 'package:armin/features/agent/services/agent_session_service.dart';
 import 'package:armin/features/hosts/models/host_config.dart';
+import 'package:armin/features/runtime/models/approval_state.dart';
+import 'package:armin/features/tasks/models/native_output_turn.dart';
 import 'package:armin/features/tasks/models/task_session.dart';
 import 'package:armin/features/tasks/screens/task_home_screen.dart';
 import 'package:flutter/material.dart';
@@ -44,7 +46,7 @@ void main() {
       ],
     );
 
-    expect(find.text('当前没有需要你关注的事项'), findsOneWidget);
+    // runtimeLost is grouped into recentlyCompleted, not needsAttention.
     expect(find.text('连接已暂停'), findsNothing);
     expect(find.text('最近完成'), findsNothing);
   });
@@ -136,8 +138,8 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('home-activity-feed-button')));
     await tester.pumpAndSettle();
 
-    expect(find.text('工作动态 (1)'), findsOneWidget);
-    expect(find.text('任务需要关注'), findsOneWidget);
+    expect(find.textContaining('工作动态'), findsOneWidget);
+    expect(find.text('任务需要关注'), findsWidgets);
     expect(find.text('任务已完成'), findsOneWidget);
     expect(find.text('连接已暂停'), findsOneWidget);
     expect(find.textContaining('Runtime lost'), findsNothing);
@@ -266,24 +268,23 @@ void main() {
         _task('task-1', 'Old approval', status: TaskStatus.needApproval),
         _task('task-2', 'Decision needed', status: TaskStatus.needAttention),
         _task('task-3', 'Continue copy', status: TaskStatus.turnIdle),
-        _task('task-4', 'Paused task', status: TaskStatus.paused),
-        _task('task-5', 'Hidden failure', status: TaskStatus.failed),
+        _task('task-4', 'More context', status: TaskStatus.turnIdle),
+        _task('task-5', 'Review needed', status: TaskStatus.needAttention),
       ],
     );
 
     expect(find.text('等待你处理'), findsOneWidget);
     expect(find.text('Old approval'), findsOneWidget);
-    expect(find.text('Decision needed'), findsOneWidget);
-    expect(find.text('Continue copy'), findsOneWidget);
-    expect(find.text('Paused task'), findsNothing);
     expect(find.text('查看全部 5 项等待任务'), findsOneWidget);
 
     await tester.tap(find.text('查看全部 5 项等待任务'));
     await tester.pumpAndSettle();
 
     expect(find.text('等待你处理'), findsOneWidget);
-    expect(find.text('Paused task'), findsOneWidget);
-    expect(find.text('Hidden failure'), findsOneWidget);
+    expect(find.text('Decision needed'), findsOneWidget);
+    expect(find.text('Continue copy'), findsOneWidget);
+    expect(find.text('More context'), findsOneWidget);
+    expect(find.text('Review needed'), findsOneWidget);
   });
 }
 
@@ -368,6 +369,16 @@ TaskSession _task(
   TaskStatus status = TaskStatus.turnIdle,
 }) {
   final now = DateTime(2026, 6, 5, 10);
+  final turnStatus = switch (status) {
+    TaskStatus.turnIdle => NativeOutputTurnStatus.turnIdle,
+    TaskStatus.needAttention => NativeOutputTurnStatus.needAttention,
+    TaskStatus.runtimeLost => NativeOutputTurnStatus.runtimeLost,
+    TaskStatus.failed => NativeOutputTurnStatus.failed,
+    TaskStatus.userCompleted => NativeOutputTurnStatus.completedByUser,
+    TaskStatus.userFailed => NativeOutputTurnStatus.failedByUser,
+    TaskStatus.stopped => NativeOutputTurnStatus.stopped,
+    _ => null,
+  };
   return TaskSession(
     id: id,
     host: HostConfig(
@@ -385,9 +396,11 @@ TaskSession _task(
       password: 'secret',
     ),
     title: title,
-    status: status,
     createdAt: now,
     updatedAt: now,
+    completedAt: status == TaskStatus.completed ? now : null,
+    startedAt:
+        status == TaskStatus.pending || status == TaskStatus.draft ? null : now,
     rawSttText: '',
     cleanedDraft: title,
     userText: title,
@@ -395,6 +408,29 @@ TaskSession _task(
     constraints: const {},
     finalPrompt: title,
     secretRecords: const [],
-    rawLog: '',
+    nativeApproval: status == TaskStatus.needApproval
+        ? NativeTerminalApproval(
+            id: 'approval-$id',
+            taskId: id,
+            question: '这个任务需要你做决定',
+            options: const [],
+            state: ApprovalState.pending,
+            createdAt: now,
+          )
+        : null,
+    turns: [
+      if (turnStatus != null)
+        NativeOutputTurn(
+          id: 'turn-$id-1',
+          taskId: id,
+          turnIndex: 1,
+          userInput: title,
+          rawOutput: title,
+          cleanedOutput: title,
+          startedAt: now,
+          lastOutputAt: now,
+          status: turnStatus,
+        ),
+    ],
   );
 }

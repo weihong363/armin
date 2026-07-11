@@ -3,11 +3,25 @@ import 'package:flutter/material.dart';
 import '../../../app_state_scope.dart';
 import '../../tasks/services/output_summary_provider.dart';
 import '../services/device_voice_service.dart';
-import '../services/voice_service.dart';
 import '../services/task_speech_policy.dart';
+import '../services/voice_service.dart';
 
-class VoiceSettingsScreen extends StatelessWidget {
+class VoiceSettingsScreen extends StatefulWidget {
   const VoiceSettingsScreen({super.key});
+
+  @override
+  State<VoiceSettingsScreen> createState() => _VoiceSettingsScreenState();
+}
+
+class _VoiceSettingsScreenState extends State<VoiceSettingsScreen> {
+  Future<LocalSummaryCapability>? _localSummaryCapability;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _localSummaryCapability ??=
+        AppStateScope.of(context).localSummaryCapability();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -59,7 +73,7 @@ class VoiceSettingsScreen extends StatelessWidget {
             ),
           ),
           FutureBuilder<LocalSummaryCapability>(
-            future: state.localSummaryCapability(),
+            future: _localSummaryCapability,
             builder: (context, snapshot) {
               final message = snapshot.data?.message ?? '正在检测端侧摘要能力...';
               return Padding(

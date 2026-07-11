@@ -1,8 +1,6 @@
-import '../../../core/models/task_status.dart';
 import '../../agent/models/agent_approval_config.dart';
 import '../../hosts/models/host_config.dart';
 import '../../runtime/models/approval_state.dart';
-import 'execution_log.dart';
 import 'metric_event.dart';
 import 'native_output_turn.dart';
 import 'prompt_record.dart';
@@ -17,7 +15,6 @@ class TaskSession {
     required this.id,
     required this.host,
     required this.title,
-    required this.status,
     required this.createdAt,
     required this.updatedAt,
     required this.rawSttText,
@@ -27,20 +24,16 @@ class TaskSession {
     required this.constraints,
     required this.finalPrompt,
     required this.secretRecords,
-    required this.rawLog,
     this.approvalMode = AgentApprovalMode.balanced,
     this.startedAt,
     this.scheduledFor,
     this.completedAt,
     this.parentTaskId,
     this.workerLabel,
-    this.shortSummary = '',
-    this.summary,
     this.nativeApproval,
     this.voiceInputs = const [],
     this.draftRecord,
     this.promptRecord,
-    this.executionLogs = const [],
     this.nativeApprovalRequests = const [],
     this.metricEvents = const [],
     this.subtasks = const [],
@@ -50,7 +43,6 @@ class TaskSession {
   final String id;
   final HostConfig host;
   final String title;
-  final TaskStatus status;
   final DateTime createdAt;
   final DateTime updatedAt;
   final DateTime? startedAt;
@@ -65,15 +57,11 @@ class TaskSession {
   final Set<TaskConstraint> constraints;
   final String finalPrompt;
   final List<SecretRedactedRecord> secretRecords;
-  final String rawLog;
   final AgentApprovalMode approvalMode;
-  final String shortSummary;
-  final String? summary;
   final NativeTerminalApproval? nativeApproval;
   final List<VoiceInput> voiceInputs;
   final TaskDraft? draftRecord;
   final PromptRecord? promptRecord;
-  final List<ExecutionLog> executionLogs;
   final List<NativeTerminalApproval> nativeApprovalRequests;
   final List<MetricEvent> metricEvents;
   final List<Subtask> subtasks;
@@ -94,7 +82,6 @@ class TaskSession {
       id: json['id'] as String? ?? '',
       host: HostConfig.fromJson(hostJson),
       title: json['title'] as String? ?? '',
-      status: _statusFromJson(json['status']),
       createdAt: _date(json['createdAt']),
       updatedAt: _date(json['updatedAt']),
       startedAt: _nullableDate(json['startedAt']),
@@ -112,10 +99,7 @@ class TaskSession {
         json['secretRecords'],
         SecretRedactedRecord.fromJson,
       ),
-      rawLog: json['rawLog'] as String? ?? '',
       approvalMode: _approvalModeFromJson(json['approvalMode']),
-      shortSummary: json['shortSummary'] as String? ?? '',
-      summary: json['summary'] as String?,
       nativeApproval: _objectOf(
         json['nativeApproval'],
         NativeTerminalApproval.fromJson,
@@ -123,7 +107,6 @@ class TaskSession {
       voiceInputs: _listOf(json['voiceInputs'], VoiceInput.fromJson),
       draftRecord: _objectOf(json['draftRecord'], TaskDraft.fromJson),
       promptRecord: _objectOf(json['promptRecord'], PromptRecord.fromJson),
-      executionLogs: _listOf(json['executionLogs'], ExecutionLog.fromJson),
       nativeApprovalRequests: _listOf(
         json['nativeApprovalRequests'],
         NativeTerminalApproval.fromJson,
@@ -138,7 +121,6 @@ class TaskSession {
     String? id,
     HostConfig? host,
     String? title,
-    TaskStatus? status,
     DateTime? createdAt,
     DateTime? updatedAt,
     DateTime? startedAt,
@@ -153,15 +135,11 @@ class TaskSession {
     Set<TaskConstraint>? constraints,
     String? finalPrompt,
     List<SecretRedactedRecord>? secretRecords,
-    String? rawLog,
     AgentApprovalMode? approvalMode,
-    String? shortSummary,
-    String? summary,
     NativeTerminalApproval? nativeApproval,
     List<VoiceInput>? voiceInputs,
     TaskDraft? draftRecord,
     PromptRecord? promptRecord,
-    List<ExecutionLog>? executionLogs,
     List<NativeTerminalApproval>? nativeApprovalRequests,
     List<MetricEvent>? metricEvents,
     List<Subtask>? subtasks,
@@ -173,7 +151,6 @@ class TaskSession {
       id: id ?? this.id,
       host: host ?? this.host,
       title: title ?? this.title,
-      status: status ?? this.status,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
       startedAt: startedAt ?? this.startedAt,
@@ -189,16 +166,12 @@ class TaskSession {
       constraints: constraints ?? this.constraints,
       finalPrompt: finalPrompt ?? this.finalPrompt,
       secretRecords: secretRecords ?? this.secretRecords,
-      rawLog: rawLog ?? this.rawLog,
       approvalMode: approvalMode ?? this.approvalMode,
-      shortSummary: shortSummary ?? this.shortSummary,
-      summary: summary ?? this.summary,
       nativeApproval:
           clearNativeApproval ? null : nativeApproval ?? this.nativeApproval,
       voiceInputs: voiceInputs ?? this.voiceInputs,
       draftRecord: draftRecord ?? this.draftRecord,
       promptRecord: promptRecord ?? this.promptRecord,
-      executionLogs: executionLogs ?? this.executionLogs,
       nativeApprovalRequests:
           nativeApprovalRequests ?? this.nativeApprovalRequests,
       metricEvents: metricEvents ?? this.metricEvents,
@@ -214,12 +187,6 @@ class TaskSession {
     Map<String, Object?> safePromptRecord(PromptRecord record) {
       final json = record.toJson();
       json['finalPrompt'] = safeText(record.finalPrompt);
-      return json;
-    }
-
-    Map<String, Object?> safeExecutionLog(ExecutionLog log) {
-      final json = log.toJson();
-      json['rawOutput'] = safeText(log.rawOutput);
       return json;
     }
 
@@ -241,7 +208,6 @@ class TaskSession {
       'id': id,
       'host': safeHost.toJson(),
       'title': title,
-      'status': status.name,
       'createdAt': createdAt.toIso8601String(),
       'updatedAt': updatedAt.toIso8601String(),
       'startedAt': startedAt?.toIso8601String(),
@@ -256,21 +222,84 @@ class TaskSession {
       'constraints': constraints.map((constraint) => constraint.name).toList(),
       'finalPrompt': safeText(finalPrompt),
       'secretRecords': secretRecords.map((record) => record.toJson()).toList(),
-      'rawLog': safeText(rawLog),
       'approvalMode': approvalMode.name,
-      'shortSummary': safeText(shortSummary),
-      'summary': summary == null ? null : safeText(summary!),
       'nativeApproval': nativeApproval?.toJson(),
       'voiceInputs': voiceInputs.map((input) => input.toJson()).toList(),
       'draftRecord': draftRecord?.toJson(),
       'promptRecord':
           promptRecord == null ? null : safePromptRecord(promptRecord!),
-      'executionLogs': executionLogs.map(safeExecutionLog).toList(),
       'nativeApprovalRequests':
           nativeApprovalRequests.map((approval) => approval.toJson()).toList(),
       'metricEvents': metricEvents.map(safeMetricEvent).toList(),
       'subtasks': subtasks.map((subtask) => subtask.toJson()).toList(),
       'turns': turns.map(safeTurn).toList(),
+    };
+  }
+
+  Map<String, Object?> toCompactJson() {
+    final safeHost = host.toSafePersistedCopy();
+    final password = host.password.trim();
+    String safeText(String value) => _redactRuntimePassword(value, password);
+    Map<String, Object?> safePromptRecord(PromptRecord record) {
+      final json = record.toJson();
+      json['finalPrompt'] = safeText(record.finalPrompt);
+      return json;
+    }
+
+    Map<String, Object?> safeMetricEvent(MetricEvent event) {
+      final json = event.toJson();
+      json['payloadJson'] = safeText(event.payloadJson);
+      return json;
+    }
+
+    return {
+      'id': id,
+      'host': safeHost.toJson(),
+      'title': title,
+      'createdAt': createdAt.toIso8601String(),
+      'updatedAt': updatedAt.toIso8601String(),
+      'startedAt': startedAt?.toIso8601String(),
+      'scheduledFor': scheduledFor?.toIso8601String(),
+      'completedAt': completedAt?.toIso8601String(),
+      'parentTaskId': parentTaskId,
+      'workerLabel': workerLabel,
+      'rawSttText': rawSttText,
+      'cleanedDraft': cleanedDraft,
+      'userText': userText,
+      'context': context,
+      'constraints': constraints.map((constraint) => constraint.name).toList(),
+      'finalPrompt': safeText(finalPrompt),
+      'secretRecords': secretRecords.map((record) => record.toJson()).toList(),
+      'approvalMode': approvalMode.name,
+      'nativeApproval': nativeApproval?.toJson(),
+      'voiceInputs': voiceInputs.map((input) => input.toJson()).toList(),
+      'draftRecord': draftRecord?.toJson(),
+      'promptRecord':
+          promptRecord == null ? null : safePromptRecord(promptRecord!),
+      'nativeApprovalRequests':
+          nativeApprovalRequests.map((approval) => approval.toJson()).toList(),
+      'metricEvents': metricEvents.map(safeMetricEvent).toList(),
+      'subtasks': subtasks.map((subtask) => subtask.toJson()).toList(),
+      'turns': turns.map(_compactTurnJson).toList(growable: false),
+    };
+  }
+
+  Map<String, Object?> _compactTurnJson(NativeOutputTurn turn) {
+    final password = host.password.trim();
+    String safeText(String value) => _redactRuntimePassword(value, password);
+    return {
+      'id': turn.id,
+      'taskId': turn.taskId,
+      'turnIndex': turn.turnIndex,
+      'userInput': safeText(turn.userInput),
+      'rawOutput': '',
+      'cleanedOutput': '',
+      'startedAt': turn.startedAt.toIso8601String(),
+      'lastOutputAt': turn.lastOutputAt.toIso8601String(),
+      'idleDetectedAt': turn.idleDetectedAt?.toIso8601String(),
+      'status': turn.status.name,
+      'userDecision': turn.userDecision,
+      'deliverable': turn.deliverable?.toJson(),
     };
   }
 }
@@ -284,14 +313,6 @@ String _redactRuntimePassword(String value, String password) {
 
 DateTime _date(Object? value) {
   return DateTime.tryParse(value as String? ?? '') ?? DateTime.now();
-}
-
-TaskStatus _statusFromJson(Object? value) {
-  final name = value as String? ?? '';
-  return TaskStatus.values.firstWhere(
-    (status) => status.name == name,
-    orElse: () => TaskStatus.pending,
-  );
 }
 
 AgentApprovalMode _approvalModeFromJson(Object? value) {

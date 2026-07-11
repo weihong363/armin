@@ -120,8 +120,9 @@ void main() {
     expect(command, contains('Enter'));
     expect(command, contains('stable_count'));
     expect(command, contains('__ARMIN_SETTLED_CANDIDATE__'));
-    expect(command, contains('monitor_version=phase2.6-settled-v4'));
+    expect(command, contains('monitor_version=phase2.6-settled-v9'));
     expect(command, contains('STABLE_POLLS=4'));
+    expect(command, contains(r'next if $line =~ /[\x{2800}-\x{28ff}]/;'));
     expect(command, contains(r'stable_count" -ge "$STABLE_POLLS"'));
     expect(command, contains('last_stable_emitted_hash'));
     expect(command, contains(r'current_hash" != "$last_stable_emitted_hash"'));
@@ -434,6 +435,7 @@ __ARMIN_SNAPSHOT_END__
 
     expect(command, contains("has-session -t 'armin-2800'"));
     expect(command, contains("capture-pane -p -t 'armin-2800' -S -40"));
+    expect(command, contains('__ARMIN_PROBE_SESSION_EXISTS__'));
     expect(command, contains('__ARMIN_PROBE_SESSION_MISSING__'));
     expect(command, isNot(contains('send-keys')));
     expect(command, isNot(contains('new-session')));
@@ -443,6 +445,7 @@ __ARMIN_SNAPSHOT_END__
     final service = SSHAgentSessionService();
 
     final probe = service.parseRemoteTaskProbeForTest('''
+__ARMIN_PROBE_SESSION_EXISTS__
 Apply this change?
 
   ❯ 1. Allow once
@@ -466,6 +469,7 @@ Armin Codex exited with status 0.
     final service = SSHAgentSessionService();
 
     final probe = service.parseRemoteTaskProbeForTest('''
+__ARMIN_PROBE_SESSION_EXISTS__
 Apply this change?
 
   ❯ 1. Allow once
@@ -478,6 +482,15 @@ Apply this change?
     expect(probe.needsAttention, isTrue);
     expect(probe.hasApprovalPrompt, isTrue);
     expect(probe.hasTerminalPrompt, isTrue);
+  });
+
+  test('probe parser rejects output without a session marker', () {
+    final service = SSHAgentSessionService();
+
+    expect(
+      () => service.parseRemoteTaskProbeForTest('shell startup noise'),
+      throwsFormatException,
+    );
   });
 
   test('missing readable result log keeps captured pane output', () {
@@ -623,6 +636,34 @@ Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdo
     expect(update.needsAttention, isFalse);
     expect(update.nativeApproval, isNull);
     expect(update.observerState, isNot(NativeOutputObserverState.turnIdle));
+  });
+
+  test('stream completion with unfinished qoder work needs attention', () {
+    final service = SSHAgentSessionService();
+    final update = service.streamCompletionUpdateForTextForTest('''
+▪ Let me read the pubspec.yaml file first to understand the project configuration.
+
+▪ Read(/Users/.../pubspec.yaml)
+  └ Read 21 lines
+
+▪ Let me check the lib/ directory structure to understand the key widgets.
+
+▪ Glob('**/*' within lib/)
+  └ Found 2 matching file(s) (Ctrl+O to expand)
+
+▪ Let me check the src/ directory structure to find the actual widget files.
+
+────────────────────────────────────────────────────────────────────────────────
+ YOLO Shift+Tab to Auto Mode                                  Try /model to switch models
+*   Type your message or @path/to/file
+Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdown_widgets
+''');
+
+    expect(update.turnIdle, isFalse);
+    expect(update.done, isTrue);
+    expect(update.needsAttention, isTrue);
+    expect(update.nativeApproval, isNull);
+    expect(update.observerState, NativeOutputObserverState.needAttention);
   });
 
   test('stream completion with qoder prompt echo and thinking does not close',
@@ -1019,6 +1060,24 @@ decision: approved
     expect(command, contains("'#{pane_id}'"));
     expect(command, contains(r'send-keys -t "$pane"'));
     expect(command, contains("-- '1' C-m"));
+  });
+
+  test('cleanup waits until the tmux session is gone', () {
+    final service = SSHAgentSessionService();
+    const request = AgentControlRequest(
+      host: '127.0.0.1',
+      port: 22,
+      username: 'ironion',
+      tmuxSessionName: 'armin-2800',
+      password: 'secret-password',
+    );
+
+    final command = service.buildKillSessionCommandForTest(request);
+
+    expect(command, contains("kill-session -t 'armin-2800'"));
+    expect(command, contains("has-session -t 'armin-2800'"));
+    expect(command, contains(r'if [ "$attempt" -ge 20 ]'));
+    expect(command, contains('exit 1'));
   });
 
   // ── Semantic pane inline filter ─────────────────────────────────

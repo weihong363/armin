@@ -19,24 +19,6 @@ class TurnOutputSlicer {
     );
   }
 
-  String rawOutputForTurn(
-    List<NativeOutputTurn> turns,
-    int index, {
-    List<String> extraFilterTexts = const [],
-    int? maxOutputChars,
-  }) {
-    return _outputForTurn(
-      turns,
-      index,
-      outputOf: (turn) =>
-          turn.rawOutput.trim().isEmpty ? turn.cleanedOutput : turn.rawOutput,
-      previousOutputOf: (turn) =>
-          turn.rawOutput.trim().isEmpty ? turn.cleanedOutput : turn.rawOutput,
-      extraFilterTexts: extraFilterTexts,
-      maxOutputChars: maxOutputChars,
-    );
-  }
-
   String _outputForTurn(
     List<NativeOutputTurn> turns,
     int index, {

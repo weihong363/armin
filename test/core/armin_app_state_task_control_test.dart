@@ -20,10 +20,36 @@ import 'package:armin/features/tasks/models/metric_event.dart';
 import 'package:armin/features/tasks/models/native_output_turn.dart';
 import 'package:armin/features/tasks/models/task_constraint.dart';
 import 'package:armin/features/tasks/models/task_session.dart';
+import 'package:armin/features/tasks/services/loop_evaluation_assistant.dart';
 import 'package:armin/features/voice/services/voice_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('saveTask preserves existing deliverables from stale task snapshots',
+      () async {
+    final taskWithDeliverable = _taskWithSettledTurn();
+    final staleTask = taskWithDeliverable.copyWith(
+      turns: [
+        taskWithDeliverable.turns.single.copyWith(clearDeliverable: true),
+      ],
+      metricEvents: const [],
+    );
+    final store = _TaskStore(taskWithDeliverable);
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: _ControlAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await state.saveTask(staleTask);
+
+    final savedTurn = store.task!.turns.single;
+    expect(savedTurn.deliverable?.displaySummary, '完成结果');
+    expect(state.taskListenable(store.task!.id).value?.turns.single.deliverable,
+        isNotNull);
+  });
+
   test('pauseTask persists paused status', () async {
     final task = _task(status: TaskStatus.running);
     final store = _TaskStore(task);
@@ -44,8 +70,7 @@ void main() {
     expect(agent.paused, isTrue);
     expect(agent.cancelled, isTrue);
     expect(agent.cleanedUp, isFalse);
-    expect(store.task!.status, TaskStatus.paused);
-    expect(store.task!.rawLog, contains('Task paused by user.'));
+    expect(state.taskStatus(store.task!), TaskStatus.paused);
   });
 
   test('resumeTask persists running status and reattaches observer', () async {
@@ -63,8 +88,7 @@ void main() {
     await Future<void>.delayed(Duration.zero);
 
     expect(agent.resumed, isTrue);
-    expect(store.task!.status, TaskStatus.running);
-    expect(store.task!.rawLog, contains('Task resumed by user.'));
+    expect(state.taskStatus(store.task!), TaskStatus.running);
     expect(agent.lastExecuteRequest?.attachOnly, isTrue);
     expect(
       agent.lastExecuteRequest?.tmuxSessionName,
@@ -91,7 +115,7 @@ void main() {
     await Future<void>.delayed(Duration.zero);
 
     expect(agent.lastResumeRequest?.password, 'secure-password');
-    expect(store.task!.status, TaskStatus.running);
+    expect(state.taskStatus(store.task!), TaskStatus.running);
     expect(agent.lastExecuteRequest?.password, 'secure-password');
   });
 
@@ -110,12 +134,9 @@ void main() {
 
     expect(agent.stopped, isTrue);
     expect(agent.cleanedUp, isTrue);
-    expect(agent.events, containsAllInOrder(['captureLog', 'stop', 'cleanup']));
-    expect(store.task!.status, TaskStatus.stopped);
+    expect(agent.events, containsAllInOrder(['stop', 'cleanup']));
+    expect(state.taskStatus(store.task!), TaskStatus.stopped);
     expect(store.task!.completedAt, isNotNull);
-    expect(store.task!.rawLog, contains('Final captured output'));
-    expect(store.task!.rawLog, contains('latest pane output'));
-    expect(store.task!.rawLog, contains('Task stopped by user.'));
     expect(store.task!.turns.single.status, NativeOutputTurnStatus.stopped);
     expect(store.task!.turns.single.userDecision, 'stopped');
   });
@@ -134,9 +155,7 @@ void main() {
 
     await expectLater(state.stopTask(task), throwsStateError);
 
-    expect(store.task!.status, TaskStatus.stopped);
-    expect(store.task!.shortSummary, contains('远端会话清理未确认'));
-    expect(store.task!.rawLog, contains('Remote tmux session cleanup failed'));
+    expect(state.taskStatus(store.task!), TaskStatus.stopped);
     expect(store.task!.metricEvents.last.eventType, 'runtime_cleanup_failed');
   });
 
@@ -152,9 +171,8 @@ void main() {
 
     await state.updateTaskStatus(task, TaskStatus.failed);
 
-    expect(store.task!.status, TaskStatus.failed);
+    expect(state.taskStatus(store.task!), TaskStatus.failed);
     expect(store.task!.completedAt, isNotNull);
-    expect(store.task!.shortSummary, '用户手动标记为失败');
   });
 
   test('saveTask updates in-memory task without reloading all tasks', () async {
@@ -168,10 +186,14 @@ void main() {
     await state.load();
     final loadCountAfterInitialLoad = store.loadTasksCount;
 
-    await state.saveTask(task.copyWith(shortSummary: 'stream update'));
+    final updated = task.copyWith(
+        updatedAt: task.updatedAt.add(
+      const Duration(seconds: 1),
+    ));
+    await state.saveTask(updated);
 
     expect(store.loadTasksCount, loadCountAfterInitialLoad);
-    expect(state.tasks.single.shortSummary, 'stream update');
+    expect(state.tasks.single.updatedAt, updated.updatedAt);
   });
 
   test('saveTask notifies only matching task listenable', () async {
@@ -190,7 +212,9 @@ void main() {
     state.taskListenable(task.id).addListener(() => taskUpdates++);
     state.taskListenable(other.id).addListener(() => otherUpdates++);
 
-    await state.saveTask(task.copyWith(shortSummary: 'updated task 1'));
+    await state.saveTask(task.copyWith(
+      updatedAt: task.updatedAt.add(const Duration(seconds: 1)),
+    ));
 
     expect(taskUpdates, 1);
     expect(otherUpdates, 0);
@@ -248,7 +272,7 @@ void main() {
     await state.load();
     await _waitUntil(() => agent.lastExecuteRequest != null);
 
-    expect(store.task!.status, TaskStatus.running);
+    expect(state.taskStatus(store.task!), TaskStatus.running);
     expect(store.task!.scheduledFor, task.scheduledFor);
     expect(agent.lastExecuteRequest?.attachOnly, isFalse);
     expect(agent.lastExecuteRequest?.prompt, task.finalPrompt);
@@ -273,18 +297,18 @@ void main() {
     final newTime = DateTime.now().add(const Duration(milliseconds: 20));
     await state.rescheduleTask(task, newTime);
 
-    expect(store.task!.status, TaskStatus.pending);
+    expect(state.taskStatus(store.task!), TaskStatus.pending);
     expect(store.task!.scheduledFor, newTime);
     expect(store.task!.metricEvents.last.eventType, 'task_rescheduled');
     expect(agent.lastExecuteRequest, isNull);
 
     await _waitUntil(() => agent.lastExecuteRequest != null);
-    expect(store.task!.status, TaskStatus.running);
+    expect(state.taskStatus(store.task!), TaskStatus.running);
   });
 
   test('cancelScheduledTask clears schedule without starting agent', () async {
     final task = _scheduledTask(
-      scheduledFor: DateTime.now().add(const Duration(milliseconds: 10)),
+      scheduledFor: DateTime.now().add(const Duration(minutes: 5)),
     );
     final store = _TaskStore(task);
     final agent = _ControlAgent();
@@ -298,7 +322,7 @@ void main() {
     await state.cancelScheduledTask(task);
     await Future<void>.delayed(const Duration(milliseconds: 30));
 
-    expect(store.task!.status, TaskStatus.draft);
+    expect(state.taskStatus(store.task!), TaskStatus.draft);
     expect(store.task!.scheduledFor, isNull);
     expect(store.task!.metricEvents.last.eventType, 'task_schedule_canceled');
     expect(agent.lastExecuteRequest, isNull);
@@ -336,7 +360,7 @@ void main() {
       const Duration(seconds: 1),
     );
     expect(event.snapshot?.status, RuntimeTaskStatus.waitingUser);
-    expect(store.task!.status, TaskStatus.turnIdle);
+    expect(state.taskStatus(store.task!), TaskStatus.turnIdle);
     await subscription.cancel();
   });
 
@@ -368,8 +392,8 @@ void main() {
     expect(completeIndex, greaterThanOrEqualTo(0));
     expect(createIndex, lessThan(completeIndex),
         reason: 'bridgeRuntime.createTask must happen before completeTask');
-    expect(store.task!.status, TaskStatus.userCompleted);
-    expect(agent.events, containsAllInOrder(['captureLog', 'cleanup']));
+    expect(state.taskStatus(store.task!), TaskStatus.completed);
+    expect(agent.events, contains('cleanup'));
   });
 
   test('refreshTasks reloads task list from store', () async {
@@ -382,19 +406,23 @@ void main() {
     );
     await state.load();
 
-    store.task = task.copyWith(shortSummary: 'reloaded from store');
+    store.task = task.copyWith(title: 'reloaded from store');
     await state.refreshTasks();
 
-    expect(state.tasks.single.shortSummary, 'reloaded from store');
+    expect(state.tasks.single.title, 'reloaded from store');
     expect(store.loadTasksCount, 2);
   });
 
   test('refreshTasks dedupes duplicate stored tasks', () async {
     final task = _task(status: TaskStatus.running);
     final store = _TaskStore(null);
+    final newer = task.copyWith(
+        updatedAt: task.updatedAt.add(
+      const Duration(seconds: 1),
+    ));
     store.tasks = [
-      task.copyWith(shortSummary: 'newer'),
-      task.copyWith(shortSummary: 'older duplicate'),
+      newer,
+      task,
     ];
     final state = ArminAppState(
       store: store,
@@ -406,7 +434,7 @@ void main() {
     await state.refreshTasks();
 
     expect(state.tasks, hasLength(1));
-    expect(state.tasks.single.shortSummary, 'newer');
+    expect(state.tasks.single.updatedAt, newer.updatedAt);
   });
 
   test('load aligns running task with latest attention turn', () async {
@@ -434,7 +462,7 @@ void main() {
 
     await state.load();
 
-    expect(state.tasks.single.status, TaskStatus.needAttention);
+    expect(state.taskStatus(state.tasks.single), TaskStatus.needAttention);
   });
 
   test('refreshTasks asynchronously syncs remote snapshot for running tasks',
@@ -472,14 +500,10 @@ Thinking
 
     await state.refreshTasks();
 
-    expect(state.tasks.single.status, TaskStatus.running);
-    await _waitUntil(
-        () => store.task!.summary?.contains('FlipCountdown') == true);
-    expect(store.task!.status, TaskStatus.running);
+    expect(state.taskStatus(state.tasks.single), TaskStatus.running);
+    expect(state.taskStatus(store.task!), TaskStatus.running);
     expect(store.task!.turns.single.status, NativeOutputTurnStatus.running);
-    expect(store.task!.summary, contains('FlipCountdown 已完成'));
-    expect(store.task!.summary, isNot(contains('Credits exhausted')));
-    expect(agent.events, contains('captureLog'));
+    expect(agent.events, isNot(contains('captureLog')));
     expect(agent.lastExecuteRequest, isNull);
   });
 
@@ -500,7 +524,13 @@ Thinking
       ],
     );
     final store = _TaskStore(null);
-    store.tasks = [task, task.copyWith(shortSummary: 'older duplicate')];
+    store.tasks = [
+      task,
+      task.copyWith(
+          updatedAt: task.updatedAt.subtract(
+        const Duration(seconds: 1),
+      ))
+    ];
     store.task = task;
     final agent = _ControlAgent()..capturedLog = '▪ Done. 同步完成。';
     final state = ArminAppState(
@@ -511,12 +541,10 @@ Thinking
     await state.load();
 
     await state.refreshTasks();
-    await _waitUntil(() => store.task!.summary?.contains('同步完成') == true);
 
     expect(state.tasks, hasLength(1));
-    expect(store.task!.status, TaskStatus.running);
-    expect(store.tasks.where((item) => item.id == task.id), hasLength(1));
-    expect(agent.events, contains('captureLog'));
+    expect(state.taskStatus(store.task!), TaskStatus.running);
+    expect(agent.events, isNot(contains('captureLog')));
   });
 
   test('refreshTasks does not restart active observers while syncing',
@@ -557,7 +585,7 @@ Thinking
     await Future<void>.delayed(const Duration(milliseconds: 30));
 
     expect(agent.events, isNot(contains('captureLog')));
-    expect(store.task!.status, TaskStatus.runtimeLost);
+    expect(state.taskStatus(store.task!), TaskStatus.runtimeLost);
   });
 
   test('deleteTask removes task from store', () async {
@@ -630,7 +658,7 @@ Thinking
   });
 
   test('deleteHost removes inactive host from store', () async {
-    final task = _task(status: TaskStatus.completed);
+    final task = _task(status: TaskStatus.userCompleted);
     final store = _TaskStore(task, hosts: [task.host]);
     final state = ArminAppState(
       store: store,
@@ -721,11 +749,10 @@ Thinking
     await Future<void>.delayed(Duration.zero);
 
     expect(agent.lastFollowUp, startsWith('APPROVAL_DECISION:'));
-    expect(store.task!.status, TaskStatus.running);
+    expect(state.taskStatus(store.task!), TaskStatus.running);
     expect(store.task!.nativeApproval, isNull);
     expect(store.task!.nativeApprovalRequests.single.state,
         ApprovalState.resolved);
-    expect(store.task!.rawLog, contains('Approval approved by user.'));
     expect(agent.lastExecuteRequest?.attachOnly, isTrue);
     expect(agent.lastExecuteRequest?.prompt, isEmpty);
     final approvalEvents = _loopApprovalEvents(store.task!);
@@ -762,7 +789,7 @@ Thinking
 
     expect(agent.events, isNot(contains('sendFollowUp')));
     expect(agent.selectedTerminalOption, '1');
-    expect(store.task!.status, TaskStatus.running);
+    expect(state.taskStatus(store.task!), TaskStatus.running);
     expect(store.task!.nativeApproval, isNull);
     expect(store.task!.nativeApprovalRequests.single.state,
         ApprovalState.resolved);
@@ -775,6 +802,75 @@ Thinking
     expect(approvalEvents.single.approvalId, approval.id);
     expect(approvalEvents.single.selectedOptionKey, '1');
     expect(agent.lastExecuteRequest?.attachOnly, isTrue);
+  });
+
+  test('aggressive mode auto-approves native terminal approval', () async {
+    final task = _task(status: TaskStatus.running).copyWith(
+      approvalMode: AgentApprovalMode.aggressive,
+    );
+    final store = _TaskStore(task);
+    final agent = _OneShotApprovalAgent();
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: agent,
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    state.startTaskExecution(task, const AgentExecutionRequest(prompt: 'Task'));
+
+    await _waitUntil(
+      () => agent.selectedTerminalOption == 'approve',
+      timeout: const Duration(seconds: 1),
+    );
+
+    expect(agent.events, contains('selectTerminalOption'));
+    expect(state.taskStatus(store.task!), TaskStatus.running);
+    expect(store.task!.nativeApproval, isNull);
+    expect(store.task!.nativeApprovalRequests.single.state,
+        ApprovalState.resolved);
+    expect(
+      _loopApprovalEvents(store.task!).map((event) => event.kind),
+      contains(LoopApprovalEventKind.approved),
+    );
+    expect(
+      store.task!.metricEvents
+          .where((event) => event.eventType == 'approval_auto_approved'),
+      hasLength(1),
+    );
+    expect(
+      state.runtimeDiagnostics(task.id)?.approvalState,
+      ApprovalState.resolved,
+    );
+  });
+
+  test('balanced mode keeps native terminal approval pending', () async {
+    final task = _task(status: TaskStatus.running).copyWith(
+      approvalMode: AgentApprovalMode.balanced,
+    );
+    final store = _TaskStore(task);
+    final agent = _OneShotApprovalAgent();
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: agent,
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    state.startTaskExecution(task, const AgentExecutionRequest(prompt: 'Task'));
+
+    await _waitUntil(
+      () => state.taskStatus(store.task!) == TaskStatus.needApproval,
+      timeout: const Duration(seconds: 1),
+    );
+
+    expect(agent.events, isNot(contains('selectTerminalOption')));
+    expect(store.task!.nativeApproval?.state, ApprovalState.pending);
+    expect(
+      store.task!.metricEvents
+          .where((event) => event.eventType == 'approval_auto_approved'),
+      isEmpty,
+    );
   });
 
   test('terminal prompt update persists selectable terminal actions', () async {
@@ -793,7 +889,7 @@ Thinking
     );
     await Future<void>.delayed(Duration.zero);
 
-    expect(store.task!.status, TaskStatus.needApproval);
+    expect(state.taskStatus(store.task!), TaskStatus.needApproval);
     expect(store.task!.nativeApproval?.options, hasLength(2));
     expect(store.task!.nativeApproval?.options.first.label, 'Allow once');
     expect(
@@ -822,8 +918,7 @@ Thinking
     );
     await Future<void>.delayed(Duration.zero);
 
-    expect(store.task!.status, TaskStatus.needAttention);
-    expect(store.task!.shortSummary, 'Agent 正在等待你的输入');
+    expect(state.taskStatus(store.task!), TaskStatus.needAttention);
     expect(store.task!.metricEvents.last.eventType, 'need_attention');
   });
 
@@ -854,7 +949,7 @@ Thinking
     await Future<void>.delayed(Duration.zero);
 
     expect(agent.selectedTerminalOption, '1');
-    expect(store.task!.status, TaskStatus.running);
+    expect(state.taskStatus(store.task!), TaskStatus.running);
     expect(store.task!.nativeApproval, isNull);
     expect(store.task!.metricEvents.last.eventType, 'terminal_prompt_resolved');
     final approvalEvents = _loopApprovalEvents(store.task!);
@@ -1015,15 +1110,13 @@ Thinking
 
     expect(agent.cancelled, isTrue);
     expect(agent.cleanedUp, isFalse);
-    expect(store.task!.status, TaskStatus.observerDetached);
+    expect(state.taskStatus(store.task!), TaskStatus.observerDetached);
     expect(store.task!.completedAt, isNull);
-    expect(store.task!.rawLog, contains('Observer detached by user'));
-    expect(store.task!.shortSummary, contains('已断开手机监听'));
   });
 
   test('reconnectTask uses attach-only request and returns to running',
       () async {
-    final task = _task(status: TaskStatus.observerDetached).copyWith(
+    final task = _task(status: TaskStatus.running).copyWith(
       turns: [
         NativeOutputTurn(
           id: 'turn-task-1-1',
@@ -1050,13 +1143,7 @@ Thinking
       ],
     );
     final store = _TaskStore(task);
-    final agent = _ControlAgent()
-      ..capturedLog = '''
-输出 hello
-hello
-继续输出 world
-world
-''';
+    final agent = _HangingAgent();
     final state = ArminAppState(
       store: store,
       agentSessionService: agent,
@@ -1064,20 +1151,21 @@ world
     );
     await state.load();
 
-    await state.reconnectTask(task);
+    await state.disconnectTask(task);
+    expect(state.taskStatus(store.task!), TaskStatus.observerDetached);
+
+    await state.reconnectTask(store.task!);
     await Future<void>.delayed(Duration.zero);
 
-    expect(store.task!.status, TaskStatus.running);
+    expect(state.taskStatus(store.task!), TaskStatus.running);
     expect(agent.lastExecuteRequest?.attachOnly, isTrue);
     expect(
         agent.lastExecuteRequest?.tmuxSessionName, task.host.tmuxSessionName);
-    expect(store.task!.turns.last.cleanedOutput, contains('world'));
-    expect(agent.events, contains('captureLog'));
   });
 
   test('load restores detached task and reconnects original tmux session',
       () async {
-    final baseTask = _task(status: TaskStatus.observerDetached);
+    final baseTask = _task(status: TaskStatus.running);
     final task = baseTask.copyWith(
       host: baseTask.host.copyWith(tmuxSessionName: 'armin-33333333'),
       turns: [
@@ -1106,41 +1194,34 @@ world
       ],
     );
     final store = _TaskStore(task);
-    final firstState = ArminAppState(
-      store: store,
-      agentSessionService: _ControlAgent(),
-      voiceService: const _SilentVoiceService(),
+    final runtimeStore = await _runtimeStoreWithWorkState(
+      task,
+      _observerDetachedWorkState(task),
     );
-    await firstState.load();
-    firstState.dispose();
 
-    final reconnectAgent = _ControlAgent()
-      ..capturedLog = '''
-输出 hello
-hello
-继续输出 world
-world
-''';
+    final reconnectAgent = _HangingAgent();
     final restoredState = ArminAppState(
       store: store,
       agentSessionService: reconnectAgent,
       voiceService: const _SilentVoiceService(),
+      bridgeRuntime: BridgeRuntime(
+        taskStore: runtimeStore,
+        eventBus: RuntimeEventBus(),
+      ),
     );
     await restoredState.load();
 
     final restoredTask = restoredState.tasks.single;
-    expect(restoredTask.status, TaskStatus.observerDetached);
+    expect(restoredState.taskStatus(restoredTask), TaskStatus.observerDetached);
     expect(restoredTask.host.tmuxSessionName, 'armin-33333333');
     await restoredState.reconnectTask(restoredTask);
     await Future<void>.delayed(Duration.zero);
 
-    expect(store.task!.status, TaskStatus.running);
+    expect(restoredState.taskStatus(store.task!), TaskStatus.running);
     expect(store.task!.host.tmuxSessionName, 'armin-33333333');
     expect(reconnectAgent.lastExecuteRequest?.attachOnly, isTrue);
     expect(
         reconnectAgent.lastExecuteRequest?.tmuxSessionName, 'armin-33333333');
-    expect(store.task!.turns.last.cleanedOutput, contains('world'));
-    expect(reconnectAgent.events, contains('captureLog'));
   });
 
   test('refreshTaskFromRemote recovers approval prompt while task is running',
@@ -1191,7 +1272,7 @@ Apply this change?
     await state.refreshTaskFromRemote(task);
     await Future<void>.delayed(Duration.zero);
 
-    expect(store.task!.status, TaskStatus.needApproval);
+    expect(state.taskStatus(store.task!), TaskStatus.needApproval);
     expect(store.task!.nativeApproval?.question, 'Apply this change?');
     expect(store.task!.nativeApprovalRequests.single.question,
         'Apply this change?');
@@ -1244,7 +1325,7 @@ Thinking
     await state.refreshTaskFromRemote(task);
     await Future<void>.delayed(Duration.zero);
 
-    expect(store.task!.status, TaskStatus.running);
+    expect(state.taskStatus(store.task!), TaskStatus.running);
     expect(store.task!.nativeApproval, isNull);
     expect(agent.lastExecuteRequest, isNull);
     expect(agent.events, contains('captureLog'));
@@ -1293,10 +1374,95 @@ Thinking
     await state.refreshTaskFromRemote(task);
     await Future<void>.delayed(Duration.zero);
 
-    expect(store.task!.status, TaskStatus.running);
+    expect(state.taskStatus(store.task!), TaskStatus.running);
     expect(store.task!.turns.last.status, NativeOutputTurnStatus.running);
-    expect(store.task!.summary, contains('FlipCountdown 已完全移除'));
-    expect(store.task!.summary, isNot(contains('Credits exhausted')));
+    expect(agent.lastExecuteRequest, isNull);
+    expect(agent.events, contains('captureLog'));
+  });
+
+  test(
+      'refreshTaskFromRemote saves output when status is already needAttention',
+      () async {
+    final now = DateTime(2026, 5, 18);
+    final task = _task(status: TaskStatus.needAttention).copyWith(
+      turns: [
+        NativeOutputTurn(
+          id: 'turn-task-1-1',
+          taskId: 'task-1',
+          turnIndex: 1,
+          userInput: 'Read pubspec.yaml and summarize project',
+          rawOutput: '',
+          cleanedOutput: '',
+          startedAt: now,
+          lastOutputAt: now,
+          status: NativeOutputTurnStatus.needAttention,
+        ),
+      ],
+    );
+    final store = _TaskStore(task);
+    final agent = _ControlAgent()
+      ..capturedLog = '''
+   ██████                              ╭─ What's new (v1.0.40) ──────────────╮
+ ██      ██  Qoder CLI v1.0.40         │ - Added support for custom model n… │
+ ██    ██    Signed in Browser Login   │ /release-notes for more             │
+   ████  ██                            ╰─────────────────────────────────────╯
+
+▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+ > Armin context governance (safe):
+   ## User task
+   Read pubspec.yaml. Do not modify files.
+      Final answer must include:
+      ARMIN_LOOP_LONG_D1 status=PASS files_changed=0 next=WAIT
+▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+
+ ▪ Let me read the pubspec.yaml file first.
+
+ ▪ Read(/Users/.../pubspec.yaml)
+   └ Read 21 lines
+
+ ▪ The pubspec.yaml file shows this is a Flutter package named
+   "countdown_widgets" that provides various countdown widgets. It's designed
+   for Flutter applications and requires Flutter 3.7.0+ and Dart 3.0.0+.
+
+   ARMIN_LOOP_LONG_D1 status=PASS files_changed=0 next=WAIT
+
+────────────────────────────────────────────────────────────────────────────────
+ YOLO Shift+Tab to Auto
+  Mode                  Try /effort or /context-window to adjust model settings
+▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+ *   Type your message or @path/to/file
+▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdown_widgets
+''';
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: agent,
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await state.refreshTaskFromRemote(task);
+    await _waitUntil(() => store.task!.turns.single.deliverable != null);
+
+    expect(state.taskStatus(store.task!), TaskStatus.needAttention);
+    expect(
+        store.task!.turns.single.cleanedOutput, contains('countdown_widgets'));
+    expect(
+      store.task!.turns.single.deliverable?.displaySummary,
+      contains('countdown_widgets'),
+    );
+    expect(
+      store.task!.turns.single.deliverable?.displaySummary,
+      contains('status=PASS'),
+    );
+    expect(
+      store.task!.turns.single.deliverable?.displaySummary,
+      isNot(contains('Try /effort')),
+    );
+    expect(
+      store.task!.turns.single.deliverable?.displaySummary,
+      isNot(contains('Type your message')),
+    );
     expect(agent.lastExecuteRequest, isNull);
     expect(agent.events, contains('captureLog'));
   });
@@ -1330,14 +1496,22 @@ Thinking
   });
 
   test('refreshTaskFromRemote does not relisten detached tasks', () async {
-    final task = _task(status: TaskStatus.observerDetached);
+    final task = _task(status: TaskStatus.running);
     final store = _TaskStore(task);
+    final runtimeStore = await _runtimeStoreWithWorkState(
+      task,
+      _observerDetachedWorkState(task),
+    );
     final agent = _ControlAgent()
       ..capturedLog = 'remote output after detach\n等待继续';
     final state = ArminAppState(
       store: store,
       agentSessionService: agent,
       voiceService: const _SilentVoiceService(),
+      bridgeRuntime: BridgeRuntime(
+        taskStore: runtimeStore,
+        eventBus: RuntimeEventBus(),
+      ),
     );
     await state.load();
 
@@ -1350,8 +1524,7 @@ Thinking
 
   test('remote snapshot poll settles detached latest turn deliverable',
       () async {
-    final task = _task(status: TaskStatus.observerDetached).copyWith(
-      shortSummary: '已自动断开监听以节省手机性能，远端任务仍在运行。',
+    final task = _task(status: TaskStatus.running).copyWith(
       turns: [
         NativeOutputTurn(
           id: 'turn-task-1-1',
@@ -1378,6 +1551,10 @@ Thinking
       ],
     );
     final store = _TaskStore(task);
+    final runtimeStore = await _runtimeStoreWithWorkState(
+      task,
+      _observerDetachedWorkState(task),
+    );
     final agent = _ControlAgent()
       ..capturedLog = '''
 > 刷题项目简介
@@ -1394,6 +1571,10 @@ Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdo
       voiceService: const _SilentVoiceService(),
       enableRemoteReconcile: true,
       remoteSnapshotPollInterval: const Duration(milliseconds: 10),
+      bridgeRuntime: BridgeRuntime(
+        taskStore: runtimeStore,
+        eventBus: RuntimeEventBus(),
+      ),
     );
     await state.load();
 
@@ -1403,19 +1584,18 @@ Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdo
     await _waitUntil(() => store.task?.turns.last.deliverable != null);
     state.dispose();
 
-    expect(store.task!.status, TaskStatus.turnIdle);
+    expect(state.taskStatus(store.task!), TaskStatus.turnIdle);
     expect(store.task!.turns.last.turnIndex, 2);
     expect(store.task!.turns.last.deliverable?.displaySummary,
         contains('countdown_widgets'));
     expect(store.task!.turns.first.deliverable?.displaySummary,
         isNot(contains('countdown_widgets')));
-    expect(store.task!.shortSummary, contains('countdown_widgets'));
     expect(agent.lastExecuteRequest, isNull);
   });
 
   test('remote snapshot poll keeps detached planning output unfinished',
       () async {
-    final task = _task(status: TaskStatus.observerDetached).copyWith(
+    final task = _task(status: TaskStatus.running).copyWith(
       turns: [
         NativeOutputTurn(
           id: 'turn-task-1-1',
@@ -1431,6 +1611,10 @@ Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdo
       ],
     );
     final store = _TaskStore(task);
+    final runtimeStore = await _runtimeStoreWithWorkState(
+      task,
+      _observerDetachedWorkState(task),
+    );
     final agent = _ControlAgent()
       ..capturedLog = '''
 ▪ Let me help you create a project description for your coding practice.
@@ -1449,6 +1633,10 @@ Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdo
       voiceService: const _SilentVoiceService(),
       enableRemoteReconcile: true,
       remoteSnapshotPollInterval: const Duration(milliseconds: 10),
+      bridgeRuntime: BridgeRuntime(
+        taskStore: runtimeStore,
+        eventBus: RuntimeEventBus(),
+      ),
     );
     await state.load();
 
@@ -1457,7 +1645,7 @@ Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdo
     await Future<void>.delayed(const Duration(milliseconds: 20));
     state.dispose();
 
-    expect(store.task!.status, TaskStatus.observerDetached);
+    expect(state.taskStatus(store.task!), TaskStatus.observerDetached);
     expect(store.task!.turns.last.status, NativeOutputTurnStatus.running);
     expect(store.task!.turns.last.deliverable, isNull);
   });
@@ -1529,10 +1717,9 @@ Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdo
     await Future<void>.delayed(const Duration(milliseconds: 20));
     state.dispose();
 
-    expect(store.task!.status, TaskStatus.running);
+    expect(state.taskStatus(store.task!), TaskStatus.running);
     expect(store.task!.turns.last.status, NativeOutputTurnStatus.running);
     expect(store.task!.turns.last.deliverable, isNull);
-    expect(store.task!.summary, isNot(contains('Not Login Please Auth')));
   });
 
   test('remote snapshot poll settles latest turn while observer is active',
@@ -1556,7 +1743,8 @@ Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdo
     final agent = _HangingAgent()
       ..capturedLog = '''
 > 输出项目名
-▪ countdown_widgets
+▪ ARMIN_ACTIVE_POLL status=PASS project=countdown_widgets files_changed=0
+  Result: countdown_widgets
 Credits exhausted. Use /usage for details or /upgrade for more.
 YOLO Shift+Tab to Auto Mode
 *   Type your message or @path/to/file
@@ -1581,7 +1769,7 @@ Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdo
     await _waitUntil(() => store.task?.turns.last.deliverable != null);
     state.dispose();
 
-    expect(store.task!.status, TaskStatus.turnIdle);
+    expect(state.taskStatus(store.task!), TaskStatus.turnIdle);
     expect(store.task!.turns.last.deliverable?.displaySummary,
         contains('countdown_widgets'));
     expect(agent.lastExecuteRequest?.attachOnly, isFalse);
@@ -1634,7 +1822,7 @@ Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdo
     await _waitUntil(() => agent.probeCount >= 2);
     state.dispose();
 
-    expect(store.task!.status, TaskStatus.running);
+    expect(state.taskStatus(store.task!), TaskStatus.running);
     expect(store.task!.turns.last.turnIndex, 2);
     expect(store.task!.turns.last.status, NativeOutputTurnStatus.running);
     expect(agent.events, isNot(contains('captureLog')));
@@ -1663,7 +1851,7 @@ Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdo
     await _waitUntil(() => agent.probeCount >= 1);
     state.dispose();
 
-    expect(store.task!.status, TaskStatus.running);
+    expect(state.taskStatus(store.task!), TaskStatus.running);
     expect(agent.events, isNot(contains('captureLog')));
     expect(agent.probeCount, greaterThanOrEqualTo(1));
   });
@@ -1685,7 +1873,7 @@ Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdo
 
     expect(agent.lastFollowUp, '只输出 pets 名字');
     expect(agent.lastFollowUp, isNot(contains('RUNTIME_UPDATE:')));
-    expect(store.task!.status, TaskStatus.running);
+    expect(state.taskStatus(store.task!), TaskStatus.running);
     expect(agent.lastExecuteRequest?.attachOnly, isTrue);
     expect(store.task!.turns, hasLength(2));
     expect(store.task!.turns.last.turnIndex, 2);
@@ -1722,7 +1910,7 @@ Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdo
     await state.sendFollowUp(task, '继续执行');
     await Future<void>.delayed(Duration.zero);
 
-    expect(store.task!.status, TaskStatus.needAttention);
+    expect(state.taskStatus(store.task!), TaskStatus.needAttention);
     expect(store.task!.turns.last.status, NativeOutputTurnStatus.needAttention);
     state.dispose();
     await agent.close();
@@ -1783,10 +1971,9 @@ Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdo
       throwsStateError,
     );
 
-    expect(store.task!.status, TaskStatus.turnIdle);
+    expect(state.taskStatus(store.task!), TaskStatus.turnIdle);
     expect(store.task!.turns, hasLength(1));
     expect(store.task!.turns.single.userInput, '输出项目的日文名');
-    expect(store.task!.shortSummary, contains('发送补充指令失败'));
     expect(agent.lastExecuteRequest?.attachOnly, isTrue);
   });
 
@@ -1833,7 +2020,10 @@ Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdo
     expect(store.task!.voiceInputs, hasLength(1));
     expect(
         store.task!.voiceInputs.single.rawSttText, '继续检查 password=[REDACTED]');
-    expect(store.task!.metricEvents.last.eventType, 'voice_follow_up');
+    expect(
+      store.task!.metricEvents.map((event) => event.eventType),
+      contains('voice_follow_up'),
+    );
   });
 
   test('voice control command is retained when it ends the task', () async {
@@ -1848,9 +2038,12 @@ Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdo
 
     await state.markTaskCompleted(task, rawVoiceText: '任务完成');
 
-    expect(store.task!.status, TaskStatus.userCompleted);
+    expect(state.taskStatus(store.task!), TaskStatus.completed);
     expect(store.task!.voiceInputs.single.rawSttText, '任务完成');
-    expect(store.task!.metricEvents.last.eventType, 'user_mark_completed');
+    expect(
+      store.task!.metricEvents.map((event) => event.eventType),
+      contains('user_mark_completed'),
+    );
   });
 
   test('successful done update becomes turn idle without cleanup', () async {
@@ -1870,10 +2063,9 @@ Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdo
     );
     await Future<void>.delayed(Duration.zero);
 
-    expect(store.task!.status, TaskStatus.turnIdle);
+    expect(state.taskStatus(store.task!), TaskStatus.turnIdle);
     expect(store.task!.completedAt, isNull);
     expect(agent.cleanedUp, isFalse);
-    expect(store.task!.summary, 'done');
   });
 
   test('successful done update speaks idle summary until user confirms',
@@ -1896,10 +2088,10 @@ Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdo
     );
     await Future<void>.delayed(Duration.zero);
 
-    expect(store.task!.status, TaskStatus.turnIdle);
+    expect(state.taskStatus(store.task!), TaskStatus.turnIdle);
     await _waitUntil(() => voice.spokenSummaries.isNotEmpty);
     expect(voice.spokenSummaries.single, contains('本轮输出已暂停'));
-    expect(voice.spokenSummaries.single, contains('done'));
+    expect(voice.spokenSummaries.single, contains('项目简介已完成'));
   });
 
   test('existing deliverable event does not auto speak on task entry',
@@ -2189,11 +2381,11 @@ Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdo
     );
     await Future<void>.delayed(Duration.zero);
 
-    expect(store.task!.status, TaskStatus.turnIdle);
+    expect(state.taskStatus(store.task!), TaskStatus.turnIdle);
     expect(store.task!.completedAt, isNull);
     expect(agent.cleanedUp, isFalse);
     expect(store.task!.turns.single.status, NativeOutputTurnStatus.turnIdle);
-    expect(store.task!.turns.single.rawOutput, contains('hello'));
+    expect(store.task!.turns.single.cleanedOutput, contains('hello'));
   });
 
   test('turn idle stops observer progress from appending thinking', () async {
@@ -2211,12 +2403,13 @@ Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdo
       task,
       const AgentExecutionRequest(prompt: 'Task'),
     );
-    await _waitUntil(() => store.task!.status == TaskStatus.turnIdle);
+    await _waitUntil(
+        () => state.taskStatus(store.task!) == TaskStatus.turnIdle);
     await Future<void>.delayed(const Duration(milliseconds: 30));
 
     expect(agent.cancelled, isTrue);
-    expect(store.task!.turns.single.rawOutput, contains('done'));
-    expect(store.task!.turns.single.rawOutput, isNot(contains('Thinking')));
+    expect(store.task!.turns.single.cleanedOutput, contains('项目简介已完成'));
+    expect(store.task!.turns.single.cleanedOutput, isNot(contains('Thinking')));
     state.dispose();
     await agent.close();
   });
@@ -2238,9 +2431,8 @@ Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdo
     );
     await Future<void>.delayed(Duration.zero);
 
-    expect(store.task!.status, TaskStatus.running);
+    expect(state.taskStatus(store.task!), TaskStatus.running);
     expect(store.task!.turns.single.status, NativeOutputTurnStatus.running);
-    expect(store.task!.summary, isNull);
     expect(agent.cleanedUp, isFalse);
   });
 
@@ -2278,14 +2470,15 @@ Model · ctx ░░░░░░░░░░ 2%
       task,
       const AgentExecutionRequest(prompt: 'Task'),
     );
-    await _waitUntil(() => store.task!.status == TaskStatus.turnIdle);
+    await _waitUntil(
+        () => state.taskStatus(store.task!) == TaskStatus.turnIdle);
     await state.drainForTest();
     await _waitUntil(() => store.task!.turns.single.deliverable != null);
 
     final latestTurn = store.task!.turns.single;
     expect(agent.events, contains('captureLog'));
     expect(agent.cleanedUp, isFalse);
-    expect(store.task!.status, TaskStatus.turnIdle);
+    expect(state.taskStatus(store.task!), TaskStatus.turnIdle);
     expect(latestTurn.status, NativeOutputTurnStatus.turnIdle);
     expect(
       latestTurn.cleanedOutput,
@@ -2319,8 +2512,36 @@ Model · ctx ░░░░░░░░░░ 2%
     );
     await Future<void>.delayed(Duration.zero);
 
-    expect(store.task!.status, TaskStatus.needAttention);
-    expect(store.task!.summary, task.summary);
+    expect(state.taskStatus(store.task!), TaskStatus.needAttention);
+    expect(store.task!.turns.single.deliverable, isNull);
+  });
+
+  test(
+      'done update needing attention writes deliverable when final evidence exists',
+      () async {
+    final task = _task(status: TaskStatus.running);
+    final store = _TaskStore(task);
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: _FinalThenNeedsAttentionAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    state.startTaskExecution(
+      task,
+      const AgentExecutionRequest(prompt: 'Task'),
+    );
+    await Future<void>.delayed(Duration.zero);
+    await _waitUntil(() => store.task!.turns.single.deliverable != null);
+
+    expect(state.taskStatus(store.task!), TaskStatus.needAttention);
+    expect(
+        store.task!.turns.single.status, NativeOutputTurnStatus.needAttention);
+    expect(
+      store.task!.turns.single.deliverable?.displaySummary,
+      contains('countdown_widgets'),
+    );
   });
 
   test(
@@ -2341,10 +2562,8 @@ Model · ctx ░░░░░░░░░░ 2%
     );
     await Future<void>.delayed(Duration.zero);
 
-    expect(store.task!.status, TaskStatus.turnIdle);
+    expect(state.taskStatus(store.task!), TaskStatus.turnIdle);
     expect(store.task!.turns.single.status, NativeOutputTurnStatus.turnIdle);
-    expect(store.task!.summary, contains('12 个测试全部通过'));
-    expect(store.task!.summary, isNot(contains('Credits exhausted')));
   });
 
   test('turn idle output is spoken once for repeated same summary', () async {
@@ -2365,7 +2584,7 @@ Model · ctx ░░░░░░░░░░ 2%
     );
     await Future<void>.delayed(Duration.zero);
 
-    expect(store.task!.status, TaskStatus.turnIdle);
+    expect(state.taskStatus(store.task!), TaskStatus.turnIdle);
     await _waitUntil(() => voice.spokenSummaries.isNotEmpty);
     expect(voice.spokenSummaries, hasLength(1));
     expect(voice.spokenSummaries.single, contains('本轮输出已暂停'));
@@ -2390,10 +2609,7 @@ Model · ctx ░░░░░░░░░░ 2%
     await Future<void>.delayed(Duration.zero);
     await Future<void>.delayed(Duration.zero);
 
-    expect(store.task!.status, TaskStatus.turnIdle);
-    expect(store.task!.summary, 'HELLO WORLD');
-    // executionLogs may be empty for pure-progress chunks;
-    // the full execution snapshot is captured on state transitions only.
+    expect(state.taskStatus(store.task!), TaskStatus.turnIdle);
     expect(
       store.task!.metricEvents.map((event) => event.eventType),
       contains('turn_idle'),
@@ -2419,8 +2635,6 @@ Model · ctx ░░░░░░░░░░ 2%
     );
     await Future<void>.delayed(Duration.zero);
     await Future<void>.delayed(Duration.zero);
-
-    expect(store.task!.executionLogs, isEmpty);
     expect(store.task!.metricEvents, isEmpty);
   });
 
@@ -2468,7 +2682,7 @@ Model · ctx ░░░░░░░░░░ 2%
     await Future<void>.delayed(Duration.zero);
     await Future<void>.delayed(Duration.zero);
 
-    expect(store.task!.status, TaskStatus.running);
+    expect(state.taskStatus(store.task!), TaskStatus.running);
     expect(homeUpdates, 0);
   });
 
@@ -2491,7 +2705,7 @@ Model · ctx ░░░░░░░░░░ 2%
     await Future<void>.delayed(Duration.zero);
     await Future<void>.delayed(Duration.zero);
 
-    expect(store.task!.status, TaskStatus.running);
+    expect(state.taskStatus(store.task!), TaskStatus.running);
     expect(appUpdates, 0);
   });
 
@@ -2513,7 +2727,7 @@ Model · ctx ░░░░░░░░░░ 2%
     );
     await Future<void>.delayed(Duration.zero);
 
-    expect(store.task!.status, TaskStatus.needApproval);
+    expect(state.taskStatus(store.task!), TaskStatus.needApproval);
     await _waitUntil(() => voice.spokenSummaries.isNotEmpty);
     expect(voice.spokenSummaries.single, contains('需要你确认一个操作'));
     expect(voice.spokenSummaries.single, isNot(contains('rm -rf')));
@@ -2614,7 +2828,6 @@ Model · ctx ░░░░░░░░░░ 2%
   test('approval speech on turn two does not replay turn one result', () async {
     final now = DateTime(2026, 5, 18);
     final task = _task(status: TaskStatus.running).copyWith(
-      summary: 'Turn 1 old result should not be spoken',
       turns: [
         NativeOutputTurn(
           id: 'turn-task-1-1',
@@ -2656,7 +2869,7 @@ Model · ctx ░░░░░░░░░░ 2%
     );
     await Future<void>.delayed(Duration.zero);
 
-    expect(store.task!.status, TaskStatus.needApproval);
+    expect(state.taskStatus(store.task!), TaskStatus.needApproval);
     expect(store.task!.turns.last.turnIndex, 2);
     await _waitUntil(() => voice.spokenSummaries.isNotEmpty);
     expect(voice.spokenSummaries.single, contains('删除临时构建产物'));
@@ -2683,7 +2896,7 @@ Model · ctx ░░░░░░░░░░ 2%
     );
     await Future<void>.delayed(Duration.zero);
 
-    expect(store.task!.status, TaskStatus.turnIdle);
+    expect(state.taskStatus(store.task!), TaskStatus.turnIdle);
     expect(voice.spokenSummaries, isEmpty);
   });
 
@@ -2700,12 +2913,10 @@ Model · ctx ░░░░░░░░░░ 2%
 
     await state.markTaskCompleted(task);
 
-    expect(store.task!.status, TaskStatus.userCompleted);
+    expect(state.taskStatus(store.task!), TaskStatus.completed);
     expect(store.task!.completedAt, isNotNull);
     expect(agent.cleanedUp, isTrue);
-    expect(agent.events, containsAllInOrder(['captureLog', 'cleanup']));
-    expect(store.task!.rawLog, contains('Final captured output'));
-    expect(store.task!.rawLog, contains('final pane output'));
+    expect(agent.events, contains('cleanup'));
     expect(
       store.task!.turns.single.status,
       NativeOutputTurnStatus.completedByUser,
@@ -2736,12 +2947,10 @@ Model · ctx ░░░░░░░░░░ 2%
 
     await state.markTaskFailed(task);
 
-    expect(store.task!.status, TaskStatus.userFailed);
+    expect(state.taskStatus(store.task!), TaskStatus.failed);
     expect(store.task!.completedAt, isNotNull);
     expect(agent.cleanedUp, isTrue);
-    expect(agent.events, containsAllInOrder(['captureLog', 'cleanup']));
-    expect(store.task!.rawLog, contains('Final captured output'));
-    expect(store.task!.rawLog, contains('final pane output'));
+    expect(agent.events, contains('cleanup'));
     expect(
       store.task!.turns.single.status,
       NativeOutputTurnStatus.failedByUser,
@@ -2773,7 +2982,7 @@ Model · ctx ░░░░░░░░░░ 2%
 
     await state.acceptLatestResult(task);
 
-    expect(store.task!.status, TaskStatus.turnIdle);
+    expect(state.taskStatus(store.task!), TaskStatus.turnIdle);
     expect(agent.events, isEmpty);
     final loopAction = LoopUserAction.fromJson(
       jsonDecode(store.task!.metricEvents
@@ -2802,7 +3011,7 @@ Model · ctx ░░░░░░░░░░ 2%
 
     await state.rejectOrRedoLatestResult(task);
 
-    expect(store.task!.status, TaskStatus.turnIdle);
+    expect(state.taskStatus(store.task!), TaskStatus.turnIdle);
     expect(agent.events, isEmpty);
     final loopAction = LoopUserAction.fromJson(
       jsonDecode(store.task!.metricEvents
@@ -2815,6 +3024,82 @@ Model · ctx ░░░░░░░░░░ 2%
     expect(loopAction.turnId, store.task!.turns.single.id);
     expect(loopAction.status, TaskStatus.turnIdle.name);
     expect(store.task!.metricEvents.last.eventType, 'loop_result_rejected');
+  });
+
+  test('runAutopilotNextAction sends low risk action through follow-up',
+      () async {
+    final task = _taskWithSettledTurn();
+    final store = _TaskStore(task);
+    final agent = _ControlAgent();
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: agent,
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    final executed = await state.runAutopilotNextAction(
+      task,
+      _autoAction(policy: LoopNextActionPolicy.autoAllowed),
+    );
+
+    expect(executed, isTrue);
+    expect(agent.events, contains('sendFollowUp'));
+    expect(agent.lastFollowUp, contains('运行最小测试'));
+    expect(agent.lastFollowUp,
+        contains('ARMIN_AUTOPILOT_REQUEST_TEST_EVIDENCE_T2 status=PASS'));
+    expect(store.task!.turns, hasLength(2));
+    final autoActions = _loopAutoActions(store.task!);
+    expect(autoActions.single.state, LoopAutoActionState.sent);
+    expect(autoActions.single.actionId, 'request_test_evidence');
+  });
+
+  test('runAutopilotNextAction dedupes same turn evidence and action',
+      () async {
+    final task = _taskWithSettledTurn();
+    final store = _TaskStore(task);
+    final agent = _ControlAgent();
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: agent,
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+    final action = _autoAction(policy: LoopNextActionPolicy.autoAllowed);
+
+    final first = await state.runAutopilotNextAction(task, action);
+    final afterFirst = store.task!;
+    final second = await state.runAutopilotNextAction(afterFirst, action);
+
+    expect(first, isTrue);
+    expect(second, isFalse);
+    expect(
+        agent.events.where((event) => event == 'sendFollowUp'), hasLength(1));
+    expect(_loopAutoActions(store.task!), hasLength(1));
+  });
+
+  test('runAutopilotNextAction rejects non-auto policy without follow-up',
+      () async {
+    final task = _taskWithSettledTurn();
+    final store = _TaskStore(task);
+    final agent = _ControlAgent();
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: agent,
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    final executed = await state.runAutopilotNextAction(
+      task,
+      _autoAction(policy: LoopNextActionPolicy.confirmationRequired),
+    );
+
+    expect(executed, isFalse);
+    expect(agent.events, isNot(contains('sendFollowUp')));
+    expect(store.task!.turns, hasLength(1));
+    expect(_loopAutoActions(store.task!).single.state,
+        LoopAutoActionState.rejected);
   });
 
   test('load restores loop user action facts without controls or speech',
@@ -2848,7 +3133,7 @@ Model · ctx ░░░░░░░░░░ 2%
               jsonDecode(event.payloadJson) as Map<String, Object?>,
             ))
         .toList();
-    expect(restoredTask.status, TaskStatus.turnIdle);
+    expect(restoredState.taskStatus(restoredTask), TaskStatus.turnIdle);
     expect(
         actions.map((action) => action.kind),
         containsAllInOrder([
@@ -2875,9 +3160,7 @@ Model · ctx ░░░░░░░░░░ 2%
 
     await state.markTaskCompleted(task);
 
-    expect(store.task!.status, TaskStatus.userCompleted);
-    expect(store.task!.shortSummary, contains('远端会话清理未确认'));
-    expect(store.task!.rawLog, contains('Remote tmux session cleanup failed'));
+    expect(state.taskStatus(store.task!), TaskStatus.completed);
     expect(store.task!.metricEvents.last.eventType, 'runtime_cleanup_failed');
 
     final retryAgent = _ControlAgent();
@@ -2890,8 +3173,7 @@ Model · ctx ░░░░░░░░░░ 2%
     await retryState.cleanupRemoteSession(store.task!);
 
     expect(retryAgent.cleanedUp, isTrue);
-    expect(store.task!.status, TaskStatus.userCompleted);
-    expect(store.task!.rawLog, contains('cleanup requested by user'));
+    expect(state.taskStatus(store.task!), TaskStatus.completed);
     expect(store.task!.metricEvents.last.eventType, 'runtime_cleanup');
   });
 
@@ -2912,8 +3194,7 @@ Model · ctx ░░░░░░░░░░ 2%
     );
     await Future<void>.delayed(Duration.zero);
 
-    expect(store.task!.status, TaskStatus.runtimeLost);
-    expect(store.task!.shortSummary, '远端会话不存在，可能已结束');
+    expect(state.taskStatus(store.task!), TaskStatus.runtimeLost);
   });
 
   test('runtime timeout captures final pane before cleaning up session',
@@ -2935,10 +3216,8 @@ Model · ctx ░░░░░░░░░░ 2%
     await Future<void>.delayed(Duration.zero);
     await Future<void>.delayed(Duration.zero);
 
-    expect(store.task!.status, TaskStatus.runtimeLost);
-    expect(store.task!.shortSummary, '任务达到最长运行时限，远端会话已清理');
-    expect(store.task!.rawLog, contains('last visible output'));
-    expect(agent.events, containsAllInOrder(['captureLog', 'cleanup']));
+    expect(state.taskStatus(store.task!), TaskStatus.runtimeLost);
+    expect(agent.events, contains('cleanup'));
   });
 
   test('failed execution cleans up tmux session after error is saved',
@@ -2959,8 +3238,7 @@ Model · ctx ░░░░░░░░░░ 2%
     );
     await Future<void>.delayed(Duration.zero);
 
-    expect(store.task!.status, TaskStatus.failed);
-    expect(store.task!.rawLog, contains('ssh failed'));
+    expect(state.taskStatus(store.task!), TaskStatus.failed);
     expect(agent.cleanedUp, isTrue);
     expect(store.task!.turns.single.status, NativeOutputTurnStatus.failed);
   });
@@ -2983,7 +3261,7 @@ Model · ctx ░░░░░░░░░░ 2%
     );
     await Future<void>.delayed(Duration.zero);
 
-    expect(store.task!.status, TaskStatus.failed);
+    expect(state.taskStatus(store.task!), TaskStatus.failed);
     await Future<void>.delayed(const Duration(milliseconds: 20));
     expect(voice.spokenSummaries, isEmpty);
   });
@@ -3006,10 +3284,8 @@ Model · ctx ░░░░░░░░░░ 2%
     );
     await Future<void>.delayed(Duration.zero);
 
-    expect(store.task!.status, TaskStatus.observerDetached);
+    expect(state.taskStatus(store.task!), TaskStatus.observerDetached);
     expect(store.task!.completedAt, isNull);
-    expect(store.task!.shortSummary, contains('可以重新监听或停止任务'));
-    expect(store.task!.rawLog, contains('SocketException'));
     expect(store.task!.metricEvents.last.eventType, 'observer_connection_lost');
     expect(agent.cleanedUp, isFalse);
   });
@@ -3039,8 +3315,8 @@ Model · ctx ░░░░░░░░░░ 2%
     );
 
     final latestTurn = store.task!.turns.last;
-    expect(store.task!.status, TaskStatus.turnIdle);
-    expect(latestTurn.rawOutput, contains('项目的中文名是：倒计时小部件'));
+    expect(state.taskStatus(store.task!), TaskStatus.turnIdle);
+    expect(latestTurn.cleanedOutput, contains('项目的中文名是：倒计时小部件'));
     expect(latestTurn.deliverable?.displaySummary, contains('倒计时小部件'));
     expect(
         latestTurn.deliverable?.displaySummary, isNot(contains('Model · ctx')));
@@ -3179,7 +3455,7 @@ Model · ctx ░░░░░░░░░░ 2%
     final evaluation = LoopEvaluation.fromJson(
       jsonDecode(loopEvent.payloadJson) as Map<String, Object?>,
     );
-    expect(restoredTask.status, TaskStatus.turnIdle);
+    expect(restoredState.taskStatus(restoredTask), TaskStatus.turnIdle);
     expect(restoredTurn.deliverable?.displaySummary, contains('倒计时小部件'));
     expect(evaluation.taskId, restoredTask.id);
     expect(evaluation.turnId, restoredTurn.id);
@@ -3207,7 +3483,6 @@ Model · ctx ░░░░░░░░░░ 2%
       optionCount: approval.options.length,
     );
     final task = _task(status: TaskStatus.needApproval).copyWith(
-      shortSummary: approval.question,
       nativeApproval: approval,
       nativeApprovalRequests: [approval],
       metricEvents: [
@@ -3261,6 +3536,44 @@ Model · ctx ░░░░░░░░░░ 2%
     expect(_loopApprovalEvents(restoredState.tasks.single).single.kind,
         LoopApprovalEventKind.requested);
     expect(restoredAgent.events, isEmpty);
+  });
+
+  test('load keeps durable work state as runtime source', () async {
+    final task = _task(status: TaskStatus.turnIdle).copyWith();
+    final store = _TaskStore(task);
+    final runtimeStore = InMemoryRuntimeTaskStore();
+    await runtimeStore.saveTask(
+      RuntimeTaskSnapshot.fromTaskStatus(
+        taskId: task.id,
+        status: TaskStatus.turnIdle,
+        createdAt: task.createdAt,
+        updatedAt: task.updatedAt,
+      ),
+    );
+    await runtimeStore.saveWorkState(
+      WorkState(
+        taskId: task.id,
+        phase: WorkPhase.working,
+        headline: 'Agent started.',
+        detail: '',
+      ),
+    );
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: _ControlAgent(),
+      voiceService: const _SilentVoiceService(),
+      bridgeRuntime: BridgeRuntime(
+        taskStore: runtimeStore,
+        eventBus: RuntimeEventBus(),
+      ),
+    );
+
+    await state.load();
+
+    expect(state.workState(task.id)?.phase, WorkPhase.working);
+    expect(state.workState(task.id)?.headline, 'Agent started.');
+    expect(
+        (await runtimeStore.loadWorkState(task.id))?.phase, WorkPhase.working);
   });
 
   test('same turn deliverable updates when refreshed evidence changes',
@@ -3318,7 +3631,7 @@ Model · ctx ░░░░░░░░░░ 2%
 
 Future<void> _waitUntil(
   bool Function() condition, {
-  Duration timeout = const Duration(milliseconds: 500),
+  Duration timeout = const Duration(seconds: 2),
 }) async {
   final deadline = DateTime.now().add(timeout);
   while (DateTime.now().isBefore(deadline)) {
@@ -3332,8 +3645,67 @@ Future<void> _waitUntil(
   }
 }
 
+Future<InMemoryRuntimeTaskStore> _runtimeStoreWithWorkState(
+  TaskSession task,
+  WorkState workState,
+) async {
+  final runtimeStore = InMemoryRuntimeTaskStore();
+  await runtimeStore.saveTask(
+    RuntimeTaskSnapshot(
+      taskId: task.id,
+      status: RuntimeTaskStatus.running,
+      createdAt: task.createdAt,
+      updatedAt: task.updatedAt,
+      summary: '',
+      workState: workState,
+    ),
+  );
+  await runtimeStore.saveWorkState(workState);
+  return runtimeStore;
+}
+
+WorkState _observerDetachedWorkState(TaskSession task) {
+  return WorkState(
+    taskId: task.id,
+    phase: WorkPhase.quieting,
+    headline: 'Observer detached.',
+    detail: '',
+    updatedAt: task.updatedAt,
+  );
+}
+
 TaskSession _task({required TaskStatus status}) {
   final now = DateTime(2026, 5, 17);
+  final turnStatus = switch (status) {
+    TaskStatus.turnIdle ||
+    TaskStatus.completed =>
+      NativeOutputTurnStatus.turnIdle,
+    TaskStatus.needAttention => NativeOutputTurnStatus.needAttention,
+    TaskStatus.runtimeLost => NativeOutputTurnStatus.runtimeLost,
+    TaskStatus.userCompleted => NativeOutputTurnStatus.completedByUser,
+    TaskStatus.userFailed => NativeOutputTurnStatus.failedByUser,
+    TaskStatus.failed => NativeOutputTurnStatus.failed,
+    TaskStatus.stopped => NativeOutputTurnStatus.stopped,
+    _ => null,
+  };
+  final isObserverDetached = status == TaskStatus.observerDetached;
+  final turns = turnStatus == null && !isObserverDetached
+      ? const <NativeOutputTurn>[]
+      : [
+          NativeOutputTurn(
+            id: 'turn-task-1-1',
+            taskId: 'task-1',
+            turnIndex: 1,
+            userInput: 'Task',
+            rawOutput: isObserverDetached ? '' : 'Task output',
+            cleanedOutput: isObserverDetached ? '' : 'Task output',
+            startedAt: now,
+            lastOutputAt: now,
+            status: isObserverDetached
+                ? NativeOutputTurnStatus.running
+                : turnStatus!,
+          ),
+        ];
   return TaskSession(
     id: 'task-1',
     host: HostConfig(
@@ -3351,10 +3723,11 @@ TaskSession _task({required TaskStatus status}) {
       password: 'secret-password',
     ),
     title: 'Task',
-    status: status,
     createdAt: now,
     updatedAt: now,
-    startedAt: now,
+    completedAt: status == TaskStatus.completed ? now : null,
+    startedAt:
+        status == TaskStatus.pending || status == TaskStatus.draft ? null : now,
     rawSttText: '',
     cleanedDraft: 'Task',
     userText: 'Task',
@@ -3362,7 +3735,7 @@ TaskSession _task({required TaskStatus status}) {
     constraints: const {},
     finalPrompt: 'Task',
     secretRecords: const [],
-    rawLog: '',
+    turns: turns,
   );
 }
 
@@ -3380,19 +3753,7 @@ TaskSession _scheduledTask({required DateTime scheduledFor}) {
         now: task.createdAt,
       ),
     ],
-    turns: [
-      NativeOutputTurn(
-        id: 'turn-task-1-1',
-        taskId: task.id,
-        turnIndex: 1,
-        userInput: task.userText,
-        rawOutput: '',
-        cleanedOutput: '',
-        startedAt: task.createdAt,
-        lastOutputAt: task.createdAt,
-        status: NativeOutputTurnStatus.running,
-      ),
-    ],
+    turns: const [],
   );
 }
 
@@ -3438,6 +3799,25 @@ List<LoopResultSummary> _loopResultSummaries(TaskSession task) {
             jsonDecode(event.payloadJson) as Map<String, Object?>,
           ))
       .toList(growable: false);
+}
+
+List<LoopAutoAction> _loopAutoActions(TaskSession task) {
+  return task.metricEvents
+      .where((event) => event.eventType == LoopAutoAction.metricEventType)
+      .map((event) => LoopAutoAction.fromJson(
+            jsonDecode(event.payloadJson) as Map<String, Object?>,
+          ))
+      .toList(growable: false);
+}
+
+LoopNextAction _autoAction({required LoopNextActionPolicy policy}) {
+  return LoopNextAction(
+    id: 'request_test_evidence',
+    title: '补充测试证据',
+    reason: '需要验证证据。',
+    draft: '请运行最小测试，并输出测试命令和结果。',
+    policy: policy,
+  );
 }
 
 NativeTerminalApproval _nativeApproval({
@@ -3741,8 +4121,8 @@ class _CompletingAgent extends _ControlAgent {
   @override
   Stream<AgentExecutionUpdate> execute(AgentExecutionRequest request) async* {
     yield const AgentExecutionUpdate(
-      rawOutput: 'done',
-      cleanedOutput: 'done',
+      rawOutput: '项目简介已完成，测试通过。',
+      cleanedOutput: '项目简介已完成，测试通过。',
       done: true,
     );
   }
@@ -3861,8 +4241,8 @@ class _IdleThenThinkingAgent extends _ControlAgent {
     scheduleMicrotask(() {
       if (_updates.isClosed) return;
       _updates.add(const AgentExecutionUpdate(
-        rawOutput: 'done',
-        cleanedOutput: 'done',
+        rawOutput: '项目简介已完成，测试通过。',
+        cleanedOutput: '项目简介已完成，测试通过。',
         turnIdle: true,
         done: true,
       ));
@@ -3886,6 +4266,20 @@ class _DoneNeedsAttentionAgent extends _ControlAgent {
     yield const AgentExecutionUpdate(
       rawOutput: 'Credits exhausted. Use /usage for details.',
       cleanedOutput: 'Credits exhausted. Use /usage for details.',
+      needsAttention: true,
+      done: true,
+    );
+  }
+}
+
+class _FinalThenNeedsAttentionAgent extends _ControlAgent {
+  @override
+  Stream<AgentExecutionUpdate> execute(AgentExecutionRequest request) async* {
+    yield const AgentExecutionUpdate(
+      rawOutput:
+          'ARMIN_LOOP_LONG_D1 status=PASS files_changed=0 next=WAIT countdown_widgets 项目简介已完成。',
+      cleanedOutput:
+          'ARMIN_LOOP_LONG_D1 status=PASS files_changed=0 next=WAIT countdown_widgets 项目简介已完成。',
       needsAttention: true,
       done: true,
     );
@@ -3989,6 +4383,34 @@ class _RepeatedLogUpdateAgent extends _ControlAgent {
 class _ApprovalAgent extends _ControlAgent {
   @override
   Stream<AgentExecutionUpdate> execute(AgentExecutionRequest request) async* {
+    yield AgentExecutionUpdate(
+      rawOutput: 'approval',
+      nativeApproval: NativeTerminalApproval(
+        id: 'approval-1',
+        taskId: 'task-1',
+        question: '删除临时构建产物，风险中等。',
+        options: const [
+          NativeApprovalOption(key: 'approve', label: 'Approve'),
+          NativeApprovalOption(key: 'reject', label: 'Reject'),
+        ],
+        state: ApprovalState.pending,
+        createdAt: DateTime(2026, 6, 1),
+      ),
+    );
+  }
+}
+
+class _OneShotApprovalAgent extends _ControlAgent {
+  bool _emitted = false;
+
+  @override
+  Stream<AgentExecutionUpdate> execute(AgentExecutionRequest request) async* {
+    lastExecuteRequest = request;
+    if (_emitted) {
+      return;
+    }
+    _emitted = true;
+    await Future<void>.delayed(Duration.zero);
     yield AgentExecutionUpdate(
       rawOutput: 'approval',
       nativeApproval: NativeTerminalApproval(

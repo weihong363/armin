@@ -1,4 +1,5 @@
 import '../../../core/models/task_status.dart';
+import '../../agent/services/agent_output_cleaner.dart';
 import '../models/native_output_turn.dart';
 import 'output_summary_provider.dart';
 import 'turn_output_slicer.dart';
@@ -83,7 +84,7 @@ class TaskDeliverableSource {
     final candidates = <DeliverableCandidate>[];
     for (var index = turns.length - 1; index >= 0; index--) {
       final turn = turns[index];
-      if (!isDeliverableStatus(turn.status)) {
+      if (!_isDeliverableCandidate(turns, index)) {
         continue;
       }
       candidates.add(DeliverableCandidate(index: index, turn: turn));
@@ -97,7 +98,7 @@ class TaskDeliverableSource {
   DeliverableCandidate? latestCandidate(List<NativeOutputTurn> turns) {
     for (var index = turns.length - 1; index >= 0; index--) {
       final turn = turns[index];
-      if (isDeliverableStatus(turn.status)) {
+      if (_isDeliverableCandidate(turns, index)) {
         return DeliverableCandidate(index: index, turn: turn);
       }
     }
@@ -105,7 +106,13 @@ class TaskDeliverableSource {
   }
 
   int candidateCount(List<NativeOutputTurn> turns) {
-    return turns.where((turn) => isDeliverableStatus(turn.status)).length;
+    var count = 0;
+    for (var index = 0; index < turns.length; index += 1) {
+      if (_isDeliverableCandidate(turns, index)) {
+        count += 1;
+      }
+    }
+    return count;
   }
 
   Future<ResolvedDeliverable?> resolve(
@@ -174,19 +181,45 @@ class TaskDeliverableSource {
     int index, {
     int? maxOutputChars,
   }) {
-    final rawOutput = _turnOutputSlicer.rawOutputForTurn(
+    final cleanedOutput = _turnOutputSlicer.outputForTurn(
       turns,
       index,
       maxOutputChars: maxOutputChars,
     );
-    if (rawOutput.trim().isNotEmpty) {
-      return rawOutput;
+    if (_looksLikeUsableEvidence(cleanedOutput)) {
+      return cleanedOutput;
     }
-    return _turnOutputSlicer.outputForTurn(
-      turns,
-      index,
-      maxOutputChars: maxOutputChars,
-    );
+    return '';
+  }
+
+  bool _looksLikeUsableEvidence(String text) {
+    final trimmed = text.trim();
+    if (trimmed.isEmpty) {
+      return false;
+    }
+    final lower = trimmed.toLowerCase();
+    if (RegExp(r'\barmin[a-z0-9_]*\b').hasMatch(lower)) {
+      return true;
+    }
+    if (lower.contains('status=pass') ||
+        lower.contains('completed successfully') ||
+        lower.contains('all tests passed') ||
+        lower.contains('tests passed') ||
+        trimmed.contains('已完成') ||
+        trimmed.contains('全部通过') ||
+        trimmed.contains('测试通过')) {
+      return true;
+    }
+    if (lower.startsWith('let me ') ||
+        lower.startsWith("i'll ") ||
+        lower.startsWith('i will ') ||
+        lower.startsWith('i need to ') ||
+        lower.contains('让我确认') ||
+        lower.contains('我先') ||
+        lower.contains('我会')) {
+      return false;
+    }
+    return trimmed.length >= 2;
   }
 
   bool isDeliverableStatus(NativeOutputTurnStatus status) {
@@ -202,6 +235,126 @@ class TaskDeliverableSource {
       NativeOutputTurnStatus.stopped =>
         true,
     };
+  }
+
+  bool _isDeliverableCandidate(List<NativeOutputTurn> turns, int index) {
+    final turn = turns[index];
+    if (isDeliverableStatus(turn.status)) {
+      return true;
+    }
+    if (turn.status != NativeOutputTurnStatus.needAttention) {
+      return false;
+    }
+    return _looksLikeFinalEvidence(
+      _turnOutputSlicer.outputForTurn(turns, index),
+      turn.userInput,
+    );
+  }
+
+  bool _looksLikeFinalEvidence(String text, String prompt) {
+    final trimmed = const AgentOutputCleaner().clean(text).trim();
+    if (trimmed.isEmpty) {
+      return false;
+    }
+    final semantic = _withoutPromptEchoLines(trimmed, prompt).trim();
+    if (semantic.isEmpty) {
+      return false;
+    }
+    final lower = semantic.toLowerCase();
+    return _hasFinalMarkerLine(trimmed, prompt) ||
+        lower.contains('status=pass') ||
+        lower.contains('completed successfully') ||
+        lower.contains('all tests passed') ||
+        lower.contains('tests passed') ||
+        semantic.contains('已完成') ||
+        semantic.contains('全部通过') ||
+        semantic.contains('测试通过');
+  }
+
+  bool _hasFinalMarkerLine(String text, String prompt) {
+    final compactPrompt = _compactForEcho(prompt);
+    var sawAgentOutputBeforeMarker = false;
+    for (final line in text.split('\n')) {
+      final trimmed = line.trim();
+      if (trimmed.isEmpty) {
+        continue;
+      }
+      if (_looksLikeAgentOutputLine(trimmed)) {
+        sawAgentOutputBeforeMarker = true;
+      }
+      if (!RegExp(r'^(?:[▪■●]\s*)?ARMIN[A-Z0-9_]*\b').hasMatch(trimmed)) {
+        continue;
+      }
+      final compactLine = _compactForEcho(trimmed);
+      final isPromptEcho = compactPrompt.length >= compactLine.length &&
+          compactLine.length >= 8 &&
+          compactPrompt.contains(compactLine);
+      final isAgentBullet =
+          RegExp(r'^[▪■●]\s*ARMIN[A-Z0-9_]*\b').hasMatch(trimmed);
+      if (!isPromptEcho || isAgentBullet || sawAgentOutputBeforeMarker) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  String _compactForEcho(String text) {
+    return text.toLowerCase().replaceAll(RegExp(r'\s+'), '');
+  }
+
+  String _withoutPromptEchoLines(String text, String prompt) {
+    final compactPrompt = _compactForEcho(prompt);
+    if (compactPrompt.length < 8) {
+      return text;
+    }
+    var sawAgentOutputBeforeMarker = false;
+    return text.split('\n').where((line) {
+      final trimmed = line.trim();
+      if (trimmed.isEmpty) {
+        return false;
+      }
+      if (_looksLikeAgentOutputLine(trimmed)) {
+        sawAgentOutputBeforeMarker = true;
+      }
+      if (RegExp(r'^[▪■●]\s*ARMIN[A-Z0-9_]*\b').hasMatch(trimmed)) {
+        return true;
+      }
+      final compactLine = _compactForEcho(trimmed);
+      final isPlainMarker = RegExp(r'^ARMIN[A-Z0-9_]*\b').hasMatch(trimmed);
+      if (isPlainMarker && sawAgentOutputBeforeMarker) {
+        return true;
+      }
+      return compactLine.length < 8 || !compactPrompt.contains(compactLine);
+    }).join('\n');
+  }
+
+  bool _looksLikeAgentOutputLine(String line) {
+    if (!RegExp(r'^[▪■●]\s+').hasMatch(line)) {
+      return false;
+    }
+    final text = line.replaceFirst(RegExp(r'^[▪■●]\s+'), '').trim();
+    if (text.isEmpty) {
+      return false;
+    }
+    if (_looksLikeToolCallLine(text)) {
+      return false;
+    }
+    final lower = text.toLowerCase();
+    return !lower.startsWith('let me ') &&
+        !lower.startsWith('i will ') &&
+        !lower.startsWith("i'll ");
+  }
+
+  bool _looksLikeToolCallLine(String line) {
+    final lower = line.trim().toLowerCase();
+    return lower.startsWith('bash(') ||
+        lower.startsWith('grep(') ||
+        lower.startsWith('glob(') ||
+        lower.startsWith('read(') ||
+        lower.startsWith('write(') ||
+        lower.startsWith('edit(') ||
+        lower.startsWith('multiedit(') ||
+        lower.startsWith('list(');
   }
 
   String _fingerprint(String text) {

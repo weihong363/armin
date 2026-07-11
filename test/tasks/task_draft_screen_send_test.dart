@@ -7,6 +7,7 @@ import 'package:armin/core/storage/task_history_store.dart';
 import 'package:armin/features/agent/services/agent_session_service.dart';
 import 'package:armin/features/hosts/models/host_config.dart';
 import 'package:armin/features/projects/models/project_path_config.dart';
+import 'package:armin/features/tasks/models/native_output_turn.dart';
 import 'package:armin/features/tasks/models/task_session.dart';
 import 'package:armin/features/tasks/screens/task_draft_screen.dart';
 import 'package:flutter/material.dart';
@@ -291,7 +292,7 @@ void main() {
     final agent = _CaptureAgentSessionService(
       waitBeforeResult: waitBeforeResult,
     );
-    await _pumpScreen(tester, store: store, agent: agent);
+    final state = await _pumpScreen(tester, store: store, agent: agent);
 
     await tester.enterText(find.byType(TextField).first, '执行真实任务');
     await tester.tap(find.text('发送任务'));
@@ -299,7 +300,7 @@ void main() {
 
     expect(find.text('任务详情'), findsOneWidget);
     expect(agent.lastRequest, isNotNull);
-    expect(store.savedTasks.last.status, TaskStatus.running);
+    expect(state.taskStatus(store.savedTasks.last), TaskStatus.running);
     expect(agent.lastRequest!.tmuxSessionName, startsWith('armin-'));
     expect(agent.lastRequest!.tmuxSessionName.length, lessThanOrEqualTo(14));
     expect(store.savedTasks.last.host.tmuxSessionName,
@@ -309,39 +310,40 @@ void main() {
     await tester.pumpAndSettle();
   });
 
-  testWidgets('SSH failure marks task failed and keeps raw log',
-      (tester) async {
+  testWidgets('SSH failure marks task failed', (tester) async {
     final store = _TaskStore(hosts: [_host(password: 'secret-password')]);
     final agent = _CaptureAgentSessionService(error: StateError('ssh failed'));
-    await _pumpScreen(tester, store: store, agent: agent);
+    final state = await _pumpScreen(tester, store: store, agent: agent);
 
     await tester.enterText(find.byType(TextField).first, '执行真实任务');
     await tester.tap(find.text('发送任务'));
     await tester.pumpAndSettle();
 
     expect(store.savedTasks, isNotEmpty);
-    expect(store.savedTasks.last.status, TaskStatus.failed);
-    expect(store.savedTasks.last.rawLog, contains('ssh failed'));
-    expect(store.savedTasks.last.shortSummary, contains('SSH 执行失败'));
+    expect(state.taskStatus(store.savedTasks.last), TaskStatus.failed);
+    expect(
+      store.savedTasks.last.turns.lastOrNull?.status,
+      NativeOutputTurnStatus.failed,
+    );
   });
 
   testWidgets('done update without result marks task turn idle',
       (tester) async {
     final store = _TaskStore(hosts: [_host(password: 'secret-password')]);
     final agent = _CaptureAgentSessionService(doneWithoutResult: true);
-    await _pumpScreen(tester, store: store, agent: agent);
+    final state = await _pumpScreen(tester, store: store, agent: agent);
 
     await tester.enterText(find.byType(TextField).first, '执行真实任务');
     await tester.tap(find.text('发送任务'));
     await tester.pumpAndSettle();
 
     expect(store.savedTasks, isNotEmpty);
-    expect(store.savedTasks.last.status, TaskStatus.turnIdle);
+    expect(state.taskStatus(store.savedTasks.last), TaskStatus.turnIdle);
     expect(store.savedTasks.last.completedAt, isNull);
   });
 }
 
-Future<void> _pumpScreen(
+Future<ArminAppState> _pumpScreen(
   WidgetTester tester, {
   required _TaskStore store,
   required _CaptureAgentSessionService agent,
@@ -360,6 +362,7 @@ Future<void> _pumpScreen(
     ),
   );
   await tester.pump();
+  return state;
 }
 
 TextEditingController _textFieldController(WidgetTester tester, Finder finder) {

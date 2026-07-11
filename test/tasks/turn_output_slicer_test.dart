@@ -136,48 +136,4 @@ Summer：海滩风格 Codex 宠物。
       'Summer：海滩风格 Codex 宠物。',
     );
   });
-
-  test('slices cumulative raw output per turn', () {
-    final now = DateTime(2026, 5, 31);
-    final turns = [
-      NativeOutputTurn(
-        id: 'turn-1',
-        taskId: 'task-1',
-        turnIndex: 1,
-        userInput: '输出 Taro',
-        rawOutput: '''
-输出 Taro
-Thinking
-Taro 是一只小型疲惫兔子开发者桌面宠物。
-''',
-        cleanedOutput: 'Taro 是一只小型疲惫兔子开发者桌面宠物。',
-        startedAt: now,
-        lastOutputAt: now,
-        status: NativeOutputTurnStatus.turnIdle,
-      ),
-      NativeOutputTurn(
-        id: 'turn-2',
-        taskId: 'task-1',
-        turnIndex: 2,
-        userInput: '继续输出 Summer',
-        rawOutput: '''
-输出 Taro
-Thinking
-Taro 是一只小型疲惫兔子开发者桌面宠物。
-继续输出 Summer
-Thinking
-Summer 是一个海滩风格 Codex 宠物。
-''',
-        cleanedOutput: 'Summer 是一个海滩风格 Codex 宠物。',
-        startedAt: now,
-        lastOutputAt: now,
-        status: NativeOutputTurnStatus.turnIdle,
-      ),
-    ];
-
-    expect(
-      const TurnOutputSlicer().rawOutputForTurn(turns, 1),
-      'Thinking\nSummer 是一个海滩风格 Codex 宠物。',
-    );
-  });
 }

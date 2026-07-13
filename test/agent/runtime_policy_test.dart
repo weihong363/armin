@@ -1,5 +1,5 @@
-import 'package:armin/features/agent/services/agent_runtime_config.dart';
 import 'package:armin/features/agent/models/agent_approval_config.dart';
+import 'package:armin/features/agent/services/agent_runtime_config.dart';
 import 'package:armin/features/agent/services/runtime_policy.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -31,10 +31,6 @@ void main() {
   test('runtime policy maps approval modes to idle thresholds', () {
     const policy = RuntimePolicy();
 
-    expect(
-      policy.forApprovalMode(AgentApprovalMode.safe).idleThreshold,
-      AgentRuntimeConfig.turnIdleThreshold,
-    );
     expect(
       policy.forApprovalMode(AgentApprovalMode.balanced).idleThreshold,
       AgentRuntimeConfig.balancedTurnIdleThreshold,

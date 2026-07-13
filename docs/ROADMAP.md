@@ -173,9 +173,25 @@ Phase 3 的优先级不变，核心是 “Loops > Prompts”：Loop Engine、日
 
 Phase 3 起步必须遵守 [Phase 3 Loop Runtime 前置设计](runtime/phase-3-loop-runtime-prep.md)：先做单任务 Loop Runtime 的事实记录、事实状态视图和恢复能力，不直接进入多 Agent 调度、通用 workflow engine 或完整 scheduler。过渡阶段可以做规则型验收辅助建议，但必须基于 latest deliverable、用户目标、约束和 loop facts，不能用低价值状态按钮建议替代。
 
-当前状态：Phase 3.0-3.8 已完成首轮代码级收口，临时执行跟踪见 [Phase 3 临时执行计划](runtime/phase-3-execution-plan-temp.md)。当前已覆盖 Loop facts、事实状态视图、恢复与续跑门禁、规则型验收辅助建议纯服务、单次任务调度 MVP、审批 facts / 审批恢复增强、只基于正式 deliverable 的 Loop 级摘要与结果追踪、基于 RuntimeEventBus 的本地通知事件层，以及端侧 native SLM 驱动的 `LoopEvaluationAssistant`。AI 辅助可以生成结构化下一步 action，但执行权必须经过 `LoopActionPolicyGate`；YOLO / aggressive 模式下低风险 action 可自动复用 `sendFollowUp` 创建下一轮 Turn，native terminal approval 可自动 approve；高风险 action、标记完成/失败、完整 recurrence scheduler、原生系统通知 adapter 和通知点击跳转仍需独立验证后再进入。
+当前状态：Phase 3.0-3.8 已完成首轮代码级收口，临时执行跟踪见 [Phase 3 临时执行计划](runtime/phase-3-execution-plan-temp.md)。当前已覆盖 Loop facts、事实状态视图、恢复与续跑门禁、规则型验收辅助建议、单次 / daily / weekly 调度、审批恢复、正式 deliverable 的 Loop 摘要与结果追踪、原生通知，以及端侧 native SLM 驱动的 `LoopEvaluationAssistant`。重复调度模板到点后创建独立 occurrence task，不复用旧 turn、deliverable 或 tmux；容量不足时只记录跳过事实、推进下次时间并通知用户。Android 计划任务由 AlarmManager 唤醒 headless Flutter Runtime，仍复用 `_startScheduledTask` 单一执行入口；系统日历是 `calendarSyncEnabled` 的外部投影，创建、改期、取消由 `saveTask` 统一更新。AI 与规则建议只提供辅助判断和可编辑草稿；YOLO / aggressive 模式仅在当前 Turn 的正式 deliverable 明确给出 `CONTINUE + next_action` 时复用 `sendFollowUp`。`DONE` / `BLOCKED` 不自动续跑。SLM 不参与正式结果或 TTS，失败时回退规则判断。
 
 Phase 3.8 回归记录（2026-07-10）：聚焦 Runtime/observer/SSH/AppState 测试 183/183 通过，完整 Runtime Gate 14/14 通过；native SLM、真实 qodercli deliverable/Turn 2、真实 qodercli YOLO 审批与自动 follow-up 均通过。spinner-and-final 可在 TUI chrome 持续刷新时收敛，stop/标记完成/失败会等待 observer 取消并确认 tmux session 清理，自动审批完整发布 resolving/resolved 状态。Phase 3.8 自动化与设备 Runtime 验收完成，动态页视觉与真实音频仅保留为发布前人工抽样。
+
+产品化增强（2026-07-12）：首页已提供按日期排序的计划任务管理入口，计划的编辑与取消继续复用详情页单一调度写路径；Android 通知权限改为设置页显式管理，Runtime 事件只检查权限，不在事件发生时临时申请；高风险 Loop action 支持发送前编辑、取消和确认，确认后记录 `loop_auto_action/confirmed` 并复用 `sendFollowUp` 创建新 Turn。
+
+产品化增强第二批（2026-07-12）：设置页新增端侧模型运行时、模型文件路径、占用空间、失败原因、重新检测和安全删除；模型缺失后仍按既有合同回退规则判断。Loop 事实卡新增基于结构化 facts 的结果率、接受率、返工率、重试与平均等待聚合。历史任务新增审计入口，可按任务、事件类型和结构化 payload 搜索，并导出 JSON；用户动作、审批动作和 Autopilot 动作保持可区分。
+
+产品化增强第三批（2026-07-12）：发布前代码门禁和真实设备门禁已固化为 `make release-gate` / `make release-device-gate`，设备门禁不会重置或改写已有环境。Runtime event archive 支持按 task 和 SQLite archive cursor 增量回放；历史事件只进入显式 replay callback，不重新发布到 live RuntimeEventBus，避免恢复时重复通知、TTS 或状态切换。App 重启继续从 Runtime aggregate、session binding、WorkState 和 watcher checkpoint 恢复，并通过即时 reconcile 接续远端 session。
+
+计划与 Loop 协议增强（2026-07-13）：计划时间统一使用日期 / 小时 / 分钟三列选择器；计划任务使用独立视觉状态，取消尚未执行的计划会清除调度并将任务归为完成。Android 通过 CalendarContract 按 task id 直接创建、更新和删除日程，Armin Runtime 仍是执行事实源。初始 Prompt 统一追加 Loop Outcome 合同；协议元数据与用户可见结果保存在同一 `TurnDeliverable`，协议块不进入结果卡片或 TTS。Autopilot 不再根据结果长度或规则建议猜测是否继续。
+
+产品化增强第四批（2026-07-13）：Android 计划任务新增 AlarmManager、开机恢复和 foreground headless Flutter Runtime，App 不在前台时仍从持久化任务中处理到期计划；Dart Timer 仅用于前台低延迟，不形成第二状态源。端侧模型支持由 `ARMIN_SLM_MODEL_URL` 与 `ARMIN_SLM_MODEL_SHA256` 配置的可信安装，下载到应用私有目录并在 SHA-256 校验后提交；`push-gguf-model.sh` 只保留为本地开发入口。仓库已加入 iOS 工程，并提供通知、EventKit 日历、计划提醒和 SLM 管理同名通道；iOS 精确后台执行和 llama.cpp decode 仍受系统后台策略与 native runtime 完成度约束，不能标记为与 Android 等价。
+
+第三批验收记录：2026-07-13 的 `make release-gate` 通过，聚焦发布回归 `222/222`、静态分析和 Android debug 构建全部通过；`make release-device-gate` 在 `emulator-5554` 上依次通过产品化设备门禁、完整 Runtime Gate 与真实 qodercli 两轮 deliverable 回归。设备门禁从 macOS Keychain 只读测试密码，并只构造内存 Host 副本，不写已有 Host/项目配置。启动日志仍观察到一次 `Skipped 110 frames`，运行中 P06 Tab 响应通过；真实音频听感继续保留人工门禁。
+
+1-8 产品化真机门禁同日在 `emulator-5554` 通过：计划管理、通知 native channel、Autopilot 确认、SLM capability、Loop quality、审计搜索、发布门禁和 Runtime archive/restart recovery 均有设备侧自动化证据；logcat 无 FATAL/ANR。
+
+执行模式已收敛为两档：平衡模式面向短期任务或需要人工把关的工作，允许修改但关键操作会暂停确认；激进 / YOLO 模式面向目标明确的长期任务，允许自主修改、自动处理审批并连续推进，通常不需要用户持续守候。原安全模式及其 CLI 参数映射已删除。
 
 - Runtime 持久化边界收敛到 SQLite：任务、turn、runtime event、work state、approval state、session binding、watcher offset 和 deliverable 可恢复
 - Flutter 内 Bridge Runtime 作为过渡实现，支持 App 重启后的状态重建
@@ -185,8 +201,8 @@ Phase 3.8 回归记录（2026-07-10）：聚焦 Runtime/observer/SSH/AppState �
 - 任务级上下文延续
 - Loop 事实记录：输入长度、输出摘要长度、等待时间、审批次数、重试次数、用户后续动作
 - 规则型验收辅助建议：基于 latest turn deliverable、用户目标、约束和可验证信号生成可编辑 follow-up 草稿；不接 AI、不自动执行
-- AI 辅助 Loop Evaluation：基于 latest turn deliverable、loop facts、审批 facts 和用户动作 facts 生成验收辅助判断与结构化下一步 action；Android llama.cpp native runtime 可加载本地 GGUF，失败时回落规则判断，不进入同步 UI 关键路径，自动执行必须经过 Runtime Policy Gate
-- 通知入口：基于 RuntimeEventBus 的审批、等待用户、fresh deliverable、运行丢失、完成和失败事件生成去重后的本地通知请求；当前不接 push 或系统通知权限
+- AI 辅助 Loop Evaluation：基于 latest turn deliverable、loop facts、审批 facts 和用户动作 facts 生成验收辅助判断与结构化下一步 action；Android llama.cpp native runtime 只在此低频只读路径串行加载本地 GGUF，失败时回落规则判断，不进入同步 UI 关键路径；结果摘要与 TTS 继续使用规则路径，AI action 不直接驱动 Autopilot
+- 通知入口：基于 RuntimeEventBus 的审批、等待用户、fresh deliverable、运行丢失、完成和失败事件生成去重后的 Android 系统通知；通知点击回到对应任务，不接 push
 - 手动子任务组织
 - 委托质量和注意力成本指标
 - token 消耗、结果符合预期程度和用户返工次数的综合评估

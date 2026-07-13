@@ -223,9 +223,16 @@ class AgentOutputCleaner {
         )
         .replaceAll(RegExp(r'\bAuto Model\b.*', caseSensitive: false), '')
         .replaceAll(
+            RegExp(r'.*\bModel\s*·\s*ctx\b.*', caseSensitive: false), '')
+        .replaceAll(
           RegExp(r'(?:YOLO\s+)?\bShift\+Tab to Auto\b.*', caseSensitive: false),
           '',
         )
+        .replaceAll(
+          RegExp(r'.*\bShift\+Tab to Accept Edits\b.*', caseSensitive: false),
+          '',
+        )
+        .replaceAll(RegExp(r'.*\bTry /effort\b.*', caseSensitive: false), '')
         .replaceAll(
           RegExp(r'.*\besc to cancel\b.*', caseSensitive: false),
           '',
@@ -291,7 +298,15 @@ class AgentOutputCleaner {
         lower == 'thinking…' ||
         lower.contains('signed in browser login') ||
         lower.contains('type your message or @path/to/file') ||
+        lower.contains('for shortcuts') ||
         lower.contains('auto model') ||
+        lower.contains('model · ctx') ||
+        lower.contains('shift+tab to accept edits') ||
+        lower.contains('try /effort') ||
+        lower.contains('try /model to switch models') ||
+        lower.contains('enjoy off-peak discount') ||
+        RegExp(r'\b\d+\s+mcp servers?\s*[·|]\s*\d+\s+skills\b')
+            .hasMatch(lower) ||
         lower.contains('shift+tab to auto-accept edits') ||
         lower.contains('agents.md file') ||
         lower.contains(' to view transcript') ||

@@ -12,8 +12,10 @@ import '../../history/screens/task_history_screen.dart';
 import '../../runtime/models/resolved_runtime_state.dart';
 import '../../runtime/models/work_state.dart';
 import '../../settings/screens/settings_screen.dart';
+import '../models/task_recurrence.dart';
 import '../models/task_session.dart';
 import '../widgets/add_context_sheet.dart';
+import 'scheduled_tasks_screen.dart';
 import 'task_draft_screen.dart';
 
 class TaskHomeScreen extends StatefulWidget {
@@ -155,6 +157,18 @@ class _TaskHomeScreenState extends State<TaskHomeScreen> {
                                 onPressed: () => _openActivityFeed(
                                   context,
                                   activityItems,
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              IconButton.filledTonal(
+                                key: const ValueKey('home-schedule-button'),
+                                tooltip: '计划任务',
+                                icon: const Icon(Icons.calendar_month_outlined),
+                                onPressed: () => Navigator.of(context).push(
+                                  MaterialPageRoute<void>(
+                                    builder: (_) =>
+                                        const ScheduledTasksScreen(),
+                                  ),
                                 ),
                               ),
                               const SizedBox(width: 8),
@@ -394,6 +408,7 @@ class _TaskHomeScreenState extends State<TaskHomeScreen> {
     TaskStatus Function(TaskSession task) statusFor,
   ) {
     return tasks
+        .where((task) => !task.recurrence.isRecurring || task.startedAt != null)
         .where((task) => switch (statusFor(task)) {
               TaskStatus.completed ||
               TaskStatus.userCompleted ||

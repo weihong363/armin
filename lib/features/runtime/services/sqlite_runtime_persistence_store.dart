@@ -66,17 +66,33 @@ class SQLiteRuntimePersistenceStore implements RuntimePersistenceStore {
   }
 
   @override
-  Future<List<RuntimeEvent>> loadEvents({String? taskId, int? limit}) async {
+  Future<List<RuntimeEvent>> loadEvents({
+    String? taskId,
+    int? afterArchiveId,
+    int? limit,
+  }) async {
+    final conditions = <String>[];
+    final arguments = <Object?>[];
+    if (taskId != null) {
+      conditions.add('task_id = ?');
+      arguments.add(taskId);
+    }
+    if (afterArchiveId != null) {
+      conditions.add('id > ?');
+      arguments.add(afterArchiveId);
+    }
     final rows = await _dbQuery(
       'runtime_events',
-      where: taskId == null ? null : 'task_id = ?',
-      whereArgs: taskId == null ? null : [taskId],
-      orderBy: 'id DESC',
+      where: conditions.isEmpty ? null : conditions.join(' AND '),
+      whereArgs: arguments.isEmpty ? null : arguments,
+      orderBy: afterArchiveId == null ? 'id DESC' : 'id ASC',
       limit: limit,
     );
-    return rows.reversed
-        .map(_decodePayload)
-        .map(RuntimeEvent.fromJson)
+    final orderedRows = afterArchiveId == null ? rows.reversed : rows;
+    return orderedRows
+        .map((row) => RuntimeEvent.fromJson(_decodePayload(row)).copyWith(
+              archiveId: row['id'] as int,
+            ))
         .toList(growable: false);
   }
 

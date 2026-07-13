@@ -5,11 +5,15 @@ import 'package:armin/core/models/task_status.dart';
 import 'package:armin/core/services/armin_app_state.dart';
 import 'package:armin/core/storage/task_history_store.dart';
 import 'package:armin/features/agent/services/agent_session_service.dart';
+import 'package:armin/features/ai/services/slm_client.dart';
 import 'package:armin/features/hosts/models/host_config.dart';
 import 'package:armin/features/projects/models/project_path_config.dart';
 import 'package:armin/features/tasks/models/native_output_turn.dart';
+import 'package:armin/features/tasks/models/task_recurrence.dart';
 import 'package:armin/features/tasks/models/task_session.dart';
 import 'package:armin/features/tasks/screens/task_draft_screen.dart';
+import 'package:armin/features/tasks/services/loop_evaluation_assistant.dart';
+import 'package:armin/features/tasks/services/system_calendar_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -24,6 +28,35 @@ void main() {
 
     expect(find.text('Mock 执行结果'), findsNothing);
     expect(find.text('Completed'), findsNothing);
+  });
+
+  testWidgets('execution mode offers balanced and aggressive scenarios only',
+      (tester) async {
+    final store = _TaskStore(hosts: [_host(password: 'secret-password')]);
+    final agent = _CaptureAgentSessionService();
+    final state = await _pumpScreen(tester, store: store, agent: agent);
+
+    await tester.scrollUntilVisible(
+      find.text('平衡'),
+      240,
+      scrollable: find.byType(Scrollable).first,
+    );
+    expect(find.text('安全'), findsNothing);
+    expect(find.text('平衡'), findsOneWidget);
+    expect(find.text('激进'), findsOneWidget);
+    expect(
+      find.text('适合短期任务或需要人工把关的工作；允许修改，但关键操作会暂停并请求确认。'),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.text('激进'));
+    await tester.pumpAndSettle();
+    expect(
+      find.text('适合目标明确的长期任务；允许自主修改、处理审批并连续推进，通常无需人工守候。'),
+      findsOneWidget,
+    );
+    await tester.pumpWidget(const SizedBox.shrink());
+    state.dispose();
   });
 
   testWidgets('send requires SSH password before creating task',
@@ -211,6 +244,74 @@ void main() {
     expect(store.savedTasks.first.turns.single.userInput, '输出 hello');
   });
 
+  testWidgets('scheduled recurring task is persisted without starting an agent',
+      (tester) async {
+    final store = _TaskStore(hosts: [_host(password: 'secret-password')]);
+    final agent = _CaptureAgentSessionService();
+    final calendar = _CaptureCalendarService();
+    final state = await _pumpScreen(
+      tester,
+      store: store,
+      agent: agent,
+      screen: TaskDraftScreen(calendarService: calendar),
+    );
+
+    await tester.enterText(find.byType(TextField).first, '每天检查项目状态');
+    await tester.scrollUntilVisible(
+      find.byKey(const ValueKey('schedule-mode-selector')),
+      260,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(find.text('计划执行'));
+    await tester.pumpAndSettle();
+    expect(find.text('开始时间'), findsOneWidget);
+    expect(find.byKey(const ValueKey('schedule-date-wheel')), findsOneWidget);
+    expect(find.byKey(const ValueKey('schedule-hour-wheel')), findsOneWidget);
+    expect(find.byKey(const ValueKey('schedule-minute-wheel')), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('schedule-picker-confirm')));
+    await tester.pumpAndSettle();
+
+    await tester.scrollUntilVisible(
+      find.byKey(const ValueKey('schedule-time-picker')),
+      160,
+      scrollable: find.byType(Scrollable).first,
+    );
+    expect(find.byKey(const ValueKey('schedule-time-picker')), findsOneWidget);
+
+    await tester.scrollUntilVisible(
+      find.byKey(const ValueKey('schedule-recurrence-selector')),
+      120,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.drag(find.byType(ListView), const Offset(0, -240));
+    await tester.pumpAndSettle();
+    await tester
+        .tap(find.byKey(const ValueKey('schedule-recurrence-selector')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('每天').last);
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.byKey(const ValueKey('schedule-add-to-calendar')),
+      120,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(find.byKey(const ValueKey('schedule-add-to-calendar')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('创建计划'));
+    await tester.pumpAndSettle();
+
+    final task = store.savedTasks.single;
+    expect(agent.lastRequest, isNull);
+    expect(task.startedAt, isNull);
+    expect(task.scheduledFor, isNotNull);
+    expect(task.recurrence, TaskRecurrence.daily);
+    expect(task.turns, isEmpty);
+    expect(state.taskStatus(task), TaskStatus.pending);
+    expect(calendar.permissionRequested, isTrue);
+    expect(task.calendarSyncEnabled, isTrue);
+    state.dispose();
+  });
+
   testWidgets('AGENTS.md discovery failure does not block sending',
       (tester) async {
     final store = _TaskStore(hosts: [_host(password: 'secret-password')]);
@@ -292,7 +393,16 @@ void main() {
     final agent = _CaptureAgentSessionService(
       waitBeforeResult: waitBeforeResult,
     );
-    final state = await _pumpScreen(tester, store: store, agent: agent);
+    final state = await _pumpScreen(
+      tester,
+      store: store,
+      agent: agent,
+      screen: const TaskDraftScreen(
+        loopEvaluationAssistant: LoopEvaluationAssistant(
+          client: _UnavailableSlmClient(),
+        ),
+      ),
+    );
 
     await tester.enterText(find.byType(TextField).first, '执行真实任务');
     await tester.tap(find.text('发送任务'));
@@ -341,6 +451,26 @@ void main() {
     expect(state.taskStatus(store.savedTasks.last), TaskStatus.turnIdle);
     expect(store.savedTasks.last.completedAt, isNull);
   });
+}
+
+class _CaptureCalendarService implements SystemCalendarService {
+  bool permissionRequested = false;
+
+  @override
+  Future<SystemCalendarPermission> permissionStatus() async =>
+      SystemCalendarPermission.granted;
+
+  @override
+  Future<SystemCalendarPermission> requestPermission() async {
+    permissionRequested = true;
+    return SystemCalendarPermission.granted;
+  }
+
+  @override
+  Future<bool> upsertScheduledTask(TaskSession task) async => true;
+
+  @override
+  Future<void> removeScheduledTask(String taskId) async {}
 }
 
 Future<ArminAppState> _pumpScreen(
@@ -566,4 +696,21 @@ class _CaptureAgentSessionService implements AgentSessionService {
 
   @override
   Future<String> captureLog(AgentControlRequest request) async => '';
+}
+
+class _UnavailableSlmClient implements SlmClient {
+  const _UnavailableSlmClient();
+
+  @override
+  Future<SlmCapability> capability({String? modelPath}) async {
+    return const SlmCapability(
+      available: false,
+      message: 'Unavailable in this widget test.',
+    );
+  }
+
+  @override
+  Future<SlmGenerationResponse> generate(SlmGenerationRequest request) {
+    throw UnsupportedError('Generation is not expected in this widget test.');
+  }
 }

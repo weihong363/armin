@@ -171,7 +171,7 @@ void main() {
           'Planning\nprogress: 20%\nRefactoring Task Detail UI 60%\n',
       now: now.add(const Duration(seconds: 1)),
     );
-    await Future<void>.delayed(Duration.zero);
+    await runtime.drainDurableWrites();
 
     expect(updated?.progress, 60);
     expect(updated?.action, 'Refactoring Task Detail UI 60%');
@@ -185,6 +185,61 @@ void main() {
       events.map((event) => event.type),
       isNot(contains(RuntimeEventType.taskProgress)),
     );
+
+    await subscription.cancel();
+    await eventBus.dispose();
+  });
+
+  test('watcher restores a checkpoint without trusting tmux offsets as cursors',
+      () async {
+    final store = InMemoryRuntimeTaskStore();
+    final now = DateTime(2026, 7, 11, 10);
+    final firstRuntime = BridgeRuntime(
+      taskStore: store,
+      eventBus: RuntimeEventBus(),
+    );
+    await firstRuntime.createTask(
+      RuntimeTaskSnapshot(
+        taskId: 'task-1',
+        status: RuntimeTaskStatus.running,
+        createdAt: now,
+        updatedAt: now,
+      ),
+    );
+    const firstSnapshot = 'Planning task\ncheckpoint: inspect package\n';
+    await firstRuntime.observeOutput(
+      taskId: 'task-1',
+      capturedOutput: firstSnapshot,
+      now: now,
+    );
+    final checkpoint = await store.loadTask('task-1');
+    expect(checkpoint?.lastOutputFingerprint, isNotEmpty);
+
+    final eventBus = RuntimeEventBus();
+    final restoredRuntime = BridgeRuntime(
+      taskStore: store,
+      eventBus: eventBus,
+    );
+    await restoredRuntime.restoreDurableState();
+    final events = <RuntimeEvent>[];
+    final subscription = eventBus.events.listen(events.add);
+
+    final duplicate = await restoredRuntime.observeOutput(
+      taskId: 'task-1',
+      capturedOutput: firstSnapshot,
+      now: now.add(const Duration(seconds: 1)),
+    );
+    final changed = await restoredRuntime.observeOutput(
+      taskId: 'task-1',
+      capturedOutput: 'New tmux pane\nRunning tests\ncheckpoint: verify UI\n',
+      now: now.add(const Duration(seconds: 2)),
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    expect(duplicate, isNull);
+    expect(changed?.checkpoint, 'verify UI');
+    expect(changed?.action, 'checkpoint: verify UI');
+    expect(events.map((event) => event.type), [RuntimeEventType.outputUpdated]);
 
     await subscription.cancel();
     await eventBus.dispose();
@@ -265,6 +320,55 @@ void main() {
 
     await subscription.cancel();
     await eventBus.dispose();
+  });
+
+  test('archive replay uses a cursor without publishing historical events',
+      () async {
+    final bus = RuntimeEventBus();
+    final store = InMemoryRuntimeTaskStore();
+    final runtime = BridgeRuntime(taskStore: store, eventBus: bus);
+    final liveEvents = <RuntimeEvent>[];
+    final subscription = bus.events.listen(liveEvents.add);
+    final now = DateTime(2026, 7, 12);
+    for (var index = 0; index < 4; index++) {
+      await store.saveEvent(
+        RuntimeEvent(
+          type: RuntimeEventType.taskProgress,
+          taskId: 'task-archive',
+          createdAt: now.add(Duration(seconds: index)),
+          message: 'event-$index',
+        ),
+      );
+    }
+    final liveCount = liveEvents.length;
+    final replayed = <RuntimeEvent>[];
+
+    final firstCursor = await runtime.replayArchivedEvents(
+      taskId: 'task-archive',
+      limit: 2,
+      onEvent: replayed.add,
+    );
+    final remaining = <RuntimeEvent>[];
+    final finalCursor = await runtime.replayArchivedEvents(
+      taskId: 'task-archive',
+      afterArchiveId: firstCursor,
+      onEvent: remaining.add,
+    );
+
+    expect(replayed, hasLength(2));
+    expect(remaining, isNotEmpty);
+    expect(finalCursor, greaterThan(firstCursor!));
+    expect(liveEvents, hasLength(liveCount));
+    expect(
+      [...replayed, ...remaining].map((event) => event.archiveId),
+      orderedEquals(
+        [...replayed, ...remaining].map((event) => event.archiveId).toList()
+          ..sort(),
+      ),
+    );
+
+    await subscription.cancel();
+    await bus.dispose();
   });
 
   test('watcher cleans tui graphics before storing current action', () async {

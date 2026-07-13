@@ -4,12 +4,14 @@ class SlmCapability {
     required this.message,
     this.backend = 'unknown',
     this.modelPath,
+    this.modelSizeBytes = 0,
   });
 
   final bool available;
   final String message;
   final String backend;
   final String? modelPath;
+  final int modelSizeBytes;
 }
 
 class SlmGenerationRequest {

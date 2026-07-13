@@ -11,7 +11,10 @@ import 'package:armin/features/tasks/models/metric_event.dart';
 import 'package:armin/features/tasks/models/native_output_turn.dart';
 import 'package:armin/features/tasks/models/task_constraint.dart';
 import 'package:armin/features/tasks/models/task_session.dart';
+import 'package:armin/features/tasks/services/loop_runtime_protocol.dart';
+import 'package:armin/features/tasks/services/prompt_template_builder.dart';
 import 'package:armin/features/voice/services/voice_service.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 
@@ -21,6 +24,8 @@ const _testProjectPath =
 const _realAgentCommand = r'$HOME/.local/bin/qodercli';
 const _pollInterval = Duration(milliseconds: 250);
 const _testSshPassword = String.fromEnvironment('ARMINTEST_SSH_PASSWORD');
+const _evidenceHoldSeconds =
+    int.fromEnvironment('ARMINTEST_EVIDENCE_HOLD_SECONDS');
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
@@ -51,18 +56,19 @@ void main() {
     state.dispose();
   });
 
-  testWidgets('real qodercli YOLO approves once and auto follow-ups',
+  testWidgets('real qodercli YOLO follows structured CONTINUE outcome',
       (tester) async {
-    const firstMarker = 'ARMIN_YOLO_REAL_D1';
+    const firstMarker = 'ARMIN_YOLO_PROTOCOL_D1';
     final taskId = await _startTask(
       state,
       marker: firstMarker,
       prompt: '''
-Create a temporary file named .armin_yolo_autopilot_tmp in the project root,
-then delete it before the final answer. Do not commit anything.
-Do not run tests in this first turn.
-Final answer must include:
-$firstMarker status=PASS temp_cleaned=true files_changed=0 next=WAIT
+This task has exactly two stages. In this first turn, read pubspec.yaml and
+report the package name. Do not perform stage 2 yet. Stage 2 is mandatory:
+read lib/countdown_widgets.dart and report its exported widgets.
+The first answer must include $firstMarker status=PASS files_changed=0 and
+must use the Armin Loop Runtime Protocol with state=CONTINUE and
+next_action=Read lib/countdown_widgets.dart and report its exported widgets.
 ''',
     );
     taskIds.add(taskId);
@@ -77,13 +83,6 @@ $firstMarker status=PASS temp_cleaned=true files_changed=0 next=WAIT
     );
     expect(running.host.tmuxSessionName, startsWith('armin-'));
 
-    await _waitForAutoApproval(
-      tester,
-      state,
-      taskId,
-      timeout: const Duration(seconds: 90),
-    );
-
     final first = await _waitForTurnDeliverable(
       tester,
       state,
@@ -92,10 +91,24 @@ $firstMarker status=PASS temp_cleaned=true files_changed=0 next=WAIT
       timeout: const Duration(seconds: 240),
     );
     final firstTurn = first.turns[0];
-    expect(firstTurn.deliverable?.displaySummary, isNotEmpty);
     final firstRemote = await state.agentSessionService.captureLog(
       _controlRequest(state, first),
     );
+    debugPrint(
+      'ARMIN_EVIDENCE_SESSION case=CONTINUE_T1 '
+      'session=${first.host.tmuxSessionName}',
+    );
+    expect(firstTurn.deliverable?.displaySummary, isNotEmpty);
+    if (firstTurn.deliverable?.loopState !=
+        LoopRuntimeOutcomeState.continueWork.name) {
+      throw TestFailure(
+        'Turn 1 deliverable lost its Loop Outcome metadata. '
+        'session=${first.host.tmuxSessionName}\n'
+        'cleanedTail=${_tail(firstTurn.cleanedOutput)}\n'
+        'rawTail=${_tail(firstTurn.rawOutput)}\n'
+        'remoteTail=${_tail(firstRemote)}',
+      );
+    }
     expect(firstRemote, contains(firstMarker));
 
     final afterAuto = await _waitForTask(
@@ -111,10 +124,8 @@ $firstMarker status=PASS temp_cleaned=true files_changed=0 next=WAIT
           ),
     );
     expect(afterAuto.turns[1].userInput.trim(), isNotEmpty);
-    expect(afterAuto.turns[1].userInput, contains('测试'));
-    expect(afterAuto.turns[1].userInput, contains('未运行原因'));
     expect(afterAuto.turns[1].userInput,
-        contains('ARMIN_AUTOPILOT_REQUEST_TEST_EVIDENCE_T2'));
+        contains('Read lib/countdown_widgets.dart'));
     expect(afterAuto.host.tmuxSessionName, first.host.tmuxSessionName);
 
     final second = await _waitForTask(
@@ -131,13 +142,23 @@ $firstMarker status=PASS temp_cleaned=true files_changed=0 next=WAIT
     expect(second.turns[1].deliverable?.displaySummary,
         isNot(contains(firstMarker)));
     expect(second.turns[1].deliverable?.displaySummary, isNotEmpty);
+    expect(second.turns[1].deliverable?.loopState,
+        LoopRuntimeOutcomeState.done.name);
+    debugPrint(
+      'ARMIN_EVIDENCE_SESSION case=CONTINUE '
+      'session=${second.host.tmuxSessionName}',
+    );
     final secondRemote = await state.agentSessionService.captureLog(
       _controlRequest(state, second),
     );
-    expect(secondRemote, contains('ARMIN_AUTOPILOT_REQUEST_TEST_EVIDENCE_T2'));
+    expect(secondRemote, contains('countdown_widgets.dart'));
 
     final probe = await _probeTask(state, second);
     expect(probe.sessionExists, isTrue);
+    if (_evidenceHoldSeconds > 0) {
+      debugPrint('ARMIN_EVIDENCE_HOLD seconds=$_evidenceHoldSeconds');
+      await tester.pump(const Duration(seconds: _evidenceHoldSeconds));
+    }
   });
 }
 
@@ -154,6 +175,12 @@ Future<String> _startTask(
     tmuxSessionName: 'armin-$taskId',
     agentCommand: _realAgentCommand,
   );
+  final finalPrompt = PromptTemplateBuilder().build(
+    taskDescription: prompt,
+    context: '',
+    constraints: const {TaskConstraint.runTestsAfterChanges},
+    secrets: const [],
+  );
   final task = TaskSession(
     id: taskId,
     host: taskHost,
@@ -166,7 +193,7 @@ Future<String> _startTask(
     userText: prompt,
     context: '',
     constraints: const {TaskConstraint.runTestsAfterChanges},
-    finalPrompt: prompt,
+    finalPrompt: finalPrompt,
     secretRecords: const [],
     approvalMode: AgentApprovalMode.aggressive,
     turns: [
@@ -201,7 +228,7 @@ Future<String> _startTask(
   state.startTaskExecution(
     task,
     AgentExecutionRequest(
-      prompt: task.userText,
+      prompt: task.finalPrompt,
       hostId: task.host.id,
       host: task.host.host,
       port: task.host.port,
@@ -222,34 +249,6 @@ Future<String> _startTask(
   return taskId;
 }
 
-Future<void> _waitForAutoApproval(
-  WidgetTester tester,
-  ArminAppState state,
-  String taskId, {
-  required Duration timeout,
-}) async {
-  final deadline = DateTime.now().add(timeout);
-  while (DateTime.now().isBefore(deadline)) {
-    final task = state.tasks.where((task) => task.id == taskId).firstOrNull;
-    if (task != null &&
-        task.metricEvents
-            .any((event) => event.eventType == 'approval_auto_approved')) {
-      return;
-    }
-    await tester.pump(_pollInterval);
-  }
-  final task = state.tasks.where((task) => task.id == taskId).firstOrNull;
-  final remote = task == null
-      ? 'missing task'
-      : await state.agentSessionService
-          .captureLog(_controlRequest(state, task));
-  throw TestFailure(
-    'Timed out waiting for Armin auto approval. This usually means qodercli '
-    'bypassed approval before Armin could observe it, or no terminal approval '
-    'was triggered.\nremoteTail=${_tail(remote)}',
-  );
-}
-
 Future<TaskSession> _waitForTurnDeliverable(
   WidgetTester tester,
   ArminAppState state,
@@ -265,6 +264,19 @@ Future<TaskSession> _waitForTurnDeliverable(
     if (turn?.deliverable != null) {
       return latest!;
     }
+    if (latest != null &&
+        state.taskStatus(latest) == TaskStatus.needAttention) {
+      final remote = await state.agentSessionService.captureLog(
+        _controlRequest(state, latest),
+      );
+      if (_hasHardQuotaFailure(remote)) {
+        throw TestFailure(
+          'Real qodercli rejected the turn before producing a result. '
+          'session=${latest.host.tmuxSessionName}\n'
+          'remoteTail=${_tail(remote)}',
+        );
+      }
+    }
     await tester.pump(_pollInterval);
   }
   final task =
@@ -277,6 +289,13 @@ Future<TaskSession> _waitForTurnDeliverable(
     'Timed out waiting for turn ${turnIndex + 1} deliverable. '
     'remoteTail=${_tail(remote)}',
   );
+}
+
+bool _hasHardQuotaFailure(String output) {
+  final lower = output.toLowerCase();
+  return lower.contains("you've reached your credit usage limit") ||
+      lower.contains('you have reached your credit usage limit') ||
+      lower.contains('please upgrade your subscription plan');
 }
 
 Future<TaskSession> _waitForTask(

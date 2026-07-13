@@ -2,6 +2,25 @@ import 'package:armin/features/tasks/services/output_summary_provider.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('keeps loop runtime outcome block in formal deliverable', () async {
+    const provider = RuleBasedOutputSummaryProvider();
+
+    final summary = await provider.summarize(const OutputSummaryRequest(
+      cleanedOutput: '''
+项目名为：countdown_widgets
+ARMIN_LOOP_OUTCOME_BEGIN
+state=DONE
+next_action=NONE
+acceptance=PASS
+ARMIN_LOOP_OUTCOME_END
+''',
+    ));
+
+    expect(summary.displaySummary, contains('ARMIN_LOOP_OUTCOME_BEGIN'));
+    expect(summary.displaySummary, contains('state=DONE'));
+    expect(summary.displaySummary, contains('ARMIN_LOOP_OUTCOME_END'));
+  });
+
   const request = OutputSummaryRequest(
     cleanedOutput: '''
 Armin context governance:
@@ -1400,6 +1419,33 @@ Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdo
     expect(summary.displaySummary, isNot(contains('Glob(')));
     expect(summary.displaySummary, isNot(contains('Write(')));
     expect(summary.displaySummary, isNot(contains("I'll create")));
+  });
+
+  test('rule provider keeps complete natural qoder project introduction',
+      () async {
+    const request = OutputSummaryRequest(
+      cleanedOutput: '''
+The project is named countdown_widgets. It's a Flutter package that provides various
+countdown widgets for Flutter applications, with dependencies configured for the
+Flutter SDK and testing tools.
+''',
+      taskTitle:
+          'Read pubspec.yaml Do not modify files Reply naturally with the project name',
+      promptInputs: [
+        'Read pubspec.yaml Do not modify files Reply naturally with the project name and a two-sentence project introduction',
+      ],
+      agentCommand: 'qodercli',
+    );
+
+    final summary = await const RuleBasedOutputSummaryProvider().summarize(
+      request,
+    );
+
+    expect(summary.displaySummary,
+        contains('The project is named countdown_widgets'));
+    expect(summary.displaySummary,
+        contains('countdown widgets for Flutter applications'));
+    expect(summary.displaySummary, contains('Flutter SDK and testing tools'));
   });
 
   test('rule provider does not turn qoder prompt echo into deliverable',

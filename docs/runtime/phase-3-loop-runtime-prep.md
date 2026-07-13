@@ -84,31 +84,34 @@ Loop Runtime 的新增数据必须满足：
 ## 当前落地状态
 
 - Phase 3.0 基线冻结与 Loop 合同已完成文档级收口，临时执行跟踪见 [Phase 3 临时执行计划](phase-3-execution-plan-temp.md)。
-- 已定义 `LoopTurnMetrics`、`LoopEvaluation`，表达单 turn 的事实和评估结果；当前代码不包含下一步建议字段。
+- 已定义 `LoopTurnMetrics`、`LoopEvaluation` 与 `LoopNextAction`，分别表达单 Turn 事实、辅助评估和建议草稿；建议不属于 Runtime 状态。
 - 已在 latest turn deliverable 保存点写入 `loop_evaluated` metric event；事实与结果卡片同源，避免 prompt echo、thinking、旧 turn 或 reconnect snapshot 参与评估。
 - 已记录关键用户动作 `loop_user_action`：继续下一轮、接受结果、拒绝/重做、标记完成、标记失败，并绑定 task、turn、next turn、输入长度和来源。
 - 当前写入复用 `TaskSession.metricEvents`，随现有 task 持久化路径保存和恢复；不新增数据库表、不新增并行状态管线。
 - 已补充单元测试，覆盖 turn settle 后生成 deliverable 时同步写入 loop facts、用户动作 facts、AppState 重建恢复 deliverable/facts/approval WorkState、接受/重做 facts 恢复不触发远端控制或自动 TTS，并确认当前 payload 不包含下一步建议。
-- 已新增规则型验收辅助建议纯服务，覆盖补测试证据、收敛阻塞、补修改清单、确认完成度、校验约束等高价值 follow-up 草稿；当前不接 UI、不自动发送。
+- 已新增规则型验收辅助建议服务并接入详情页，覆盖补测试证据、收敛阻塞、补修改清单、确认完成度、校验约束等高价值 follow-up 草稿；只辅助展示或预填，不自动发送。
 - Phase 3.3 恢复与续跑代码级门禁已补齐：App 重启后恢复 detached task，并可重新 attach 原 `armin-*` tmux session；已有 remote snapshot / reconcile 测试覆盖远端仍运行时保持 running、远端完成后自动 `turnIdle`。
-- Phase 3.4 单次调度 MVP 已完成代码级接入：`TaskSession.scheduledFor` 随现有 task 持久化，AppState 支持 schedule / reschedule / cancel，过期 pending task 在 load 或 timer 到点后复用现有 `startTaskExecution` 主链路启动。
+- Phase 3.4 调度已支持单次、daily 和 weekly：新建任务页可选择首次执行时间与重复频率，`TaskSession.scheduledFor` 与 recurrence 随现有 task 持久化，AppState 支持 schedule / reschedule / cancel。重复模板到点后推进下一次时间，并生成独立的 `armin-*` occurrence task；不会复用旧 turn、deliverable 或 tmux session。过期 pending task 在 load 或 timer 到点后复用现有 `startTaskExecution` 主链路启动。
 - Phase 3.5 审批工作流增强已完成代码级接入：审批请求、通过、拒绝、终端选项选择和补充指令进入 `loop_approval_event` facts；恢复后 pending approval 的 WorkState 与 facts 保持一致。
 - Phase 3.6 自动摘要与结果追踪已完成代码级接入：`loop_result_summary` 只基于正式 `TurnDeliverable` 聚合 Loop 级摘要和结果索引，结果卡片与 TTS 仍只消费 turn deliverable。
-- Phase 3.7 通知与用户反馈已完成本地事件层：AppState 将 RuntimeEventBus 中的审批、等待用户、fresh deliverable、运行丢失、完成和失败事件映射为去重后的 `TaskNotificationService` 请求；当前默认 no-op，不接系统通知权限或 push。
-- Native SLM 前置能力已接入 Android llama.cpp runtime，并通过 `native_slm_smoke_test.dart` 验证真模型可在 `emulator-5554` 上生成文本；模型缓存见 [Native SLM llama.cpp Smoke](native-slm-llama-smoke.md)。
+- Phase 3.7 通知与用户反馈已接入 Android 原生 adapter：AppState 仍只将 RuntimeEventBus 的审批、等待用户、fresh deliverable、运行丢失、完成和失败事件映射为去重后的 `TaskNotificationService` 请求；Android 负责通知权限、渠道、展示和点击回到对应任务，通知不参与状态归约。
+- Native SLM 已接入 Android llama.cpp runtime，并通过 `native_slm_smoke_test.dart` 验证真模型可在 `emulator-5554` 上生成文本；`LoopEvaluationAssistant` 是唯一允许真实 native decode 的低频只读入口，Android 侧串行执行以避免并发加载模型。结果摘要与 TTS 继续使用规则路径；模型缺失、超时或生成异常时辅助判断回落规则，不影响 Runtime。模型缓存见 [Native SLM llama.cpp Smoke](native-slm-llama-smoke.md)。
 - Phase 3.8 的 AI 辅助用例限定为 `LoopEvaluationAssistant`：只读取 runtime status、latest `TurnDeliverable`、`loop_evaluated`、用户动作 facts 和审批 facts，生成辅助验收判断和结构化 `LoopNextAction`；模型不可用、超时或失败时回落到规则判断。
 - `LoopEvaluationAssistant` 已接入任务详情「动态」Tab 的 `辅助判断` 卡片，位于 `Loop 事实` 之后、规则型后续指令之前；UI 展示 action 与执行策略，但不绕过 Runtime 主链路。
-- 自动下一步执行必须经过 `LoopActionPolicyGate`：低风险 action 可通过 `ArminAppState.runAutopilotNextAction` 复用 `sendFollowUp` 创建下一轮 Turn，并记录 `loop_auto_action` fact；阻塞、约束冲突、删除、Git、安装依赖、配置修改等高风险 action 必须等待用户确认。
-- Autopilot 开关绑定任务执行模式：`aggressive` / YOLO 模式下，fresh deliverable 产生后允许自动执行低风险下一步 action；`safe` 和 `balanced` 只展示辅助判断与草稿，不自动续跑。
+- 自动下一步执行必须经过 `LoopActionPolicyGate`：只有当前 Turn 的正式 `TurnDeliverable` 携带结构化 `CONTINUE + next_action` 时，`ArminAppState.runAutopilotNextAction` 才可复用 `sendFollowUp` 创建下一轮 Turn，并记录 `loop_auto_action` fact。AI/规则建议只展示辅助判断和可编辑草稿，不能触发 Autopilot。
+- Autopilot 绑定 `aggressive` / YOLO 模式；平衡模式不自动续跑。`DONE` 与 `BLOCKED` 必须停止自动续跑，删除、Git、安装依赖、配置修改等高风险草稿仍需用户确认。原安全模式已删除。
 - YOLO 模式下允许自动审批 native terminal approval，但必须先记录 pending approval，再复用现有 approval resolution 路径发送 approve，并记录 `approval_auto_approved` / `loop_approval_event(approved)`；非 YOLO 模式不自动审批。
-- 尚未启用非 YOLO 自动审批、完整 recurrence scheduler 或原生系统通知 adapter；调度 MVP、审批 facts、本地通知事件和 AI evaluation 都不能替代 Loop Runtime 主链路。
+- 尚未启用非 YOLO 自动审批或完整 recurrence scheduler；调度 MVP、审批 facts、原生通知和 AI evaluation 都不能替代 Loop Runtime 主链路。
+- 产品化首批已补齐前后台合同与 watcher replay：后台只暂停手机侧轮询，不终止远端 tmux；恢复时只执行一次即时 reconcile，不重载整页或重复订阅。Watcher 持久化 offset 与内容 fingerprint，相同 capture 不重复发布，capture 滚动或重写时安全重读整份观察内容，且始终不参与生命周期或 deliverable 判定。
+- 产品化调度闭环已补齐：创建页可选择首次时间与 single/daily/weekly；详情页可调整首次时间或取消计划。容量不足时，重复模板记录 `task_recurrence_skipped_capacity`、推进下次时间，并通过 RuntimeEventBus 发出一条“本次计划未启动”通知；正常计划启动不额外制造通知噪声。
+- 端侧 SLM 仅用于 Loop Evaluation：模型缺失、检测超时、空响应或推理失败都会回退到规则判断，并在“辅助判断”卡片显示已降级原因；正式 deliverable、结果卡片和 TTS 不使用 SLM。
 
 ## Phase 3.8 AI 辅助 Loop Evaluation 边界
 
 Phase 3.8 的 AI 可以生成下一步 action，但执行权属于 Runtime Policy Gate：
 
 - 允许：基于结构化 Loop facts 生成验收判断、阻塞风险提示、是否需要继续下一轮的理由，以及结构化 `LoopNextAction`。
-- 自动执行边界：只有低风险 action 可进入 Autopilot 自动创建下一轮 Turn；高风险 action 必须确认；每次自动续跑必须写入 `loop_auto_action`，并按 turn + evidence fingerprint + action 去重。
+- 自动执行边界：只有同一正式 deliverable 中结构化声明的 `CONTINUE + next_action` 可进入 Autopilot；高风险 action 必须确认；每次自动续跑必须写入 `loop_auto_action`，并按 turn + evidence fingerprint + action 去重。
 - 禁止：非 YOLO 模式自动审批、自动标记完成/失败、替代用户验收、读取 raw terminal 大日志、绕过 `sendFollowUp` 主链路。
 - 输入：`TaskStatus` / runtime status、latest turn `TurnDeliverable`、`LoopEvaluation`、`LoopUserAction`、`LoopApprovalEvent`。
 - 排除：prompt echo、thinking、TUI chrome、旧 turn deliverable、reconnect snapshot、未脱敏 raw output。

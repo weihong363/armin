@@ -17,22 +17,53 @@ import '../../agent/services/agent_output_cleaner.dart';
 /// This watcher must not infer lifecycle status. RuntimeEventBus events are the
 /// primary source of runtime state.
 class TaskWatcher {
-  final Map<String, int> _lastOffsets = {};
+  final Map<String, _WatcherCursor> _cursors = {};
+
+  /// Restores an observation checkpoint without treating an offset as a
+  /// durable terminal-log cursor. tmux captures may roll or redraw, so the
+  /// first changed snapshot after a restart is intentionally re-read whole.
+  void restoreCheckpoint({
+    required String taskId,
+    required int lastOffset,
+    required String outputFingerprint,
+  }) {
+    _cursors[taskId] = _WatcherCursor(
+      lastOffset: lastOffset,
+      outputFingerprint: outputFingerprint,
+    );
+  }
 
   TaskWatcherUpdate observe({
     required String taskId,
     required String capturedOutput,
   }) {
-    final previousOffset = _lastOffsets[taskId] ?? 0;
-    final safeOffset =
-        previousOffset <= capturedOutput.length ? previousOffset : 0;
-    final incrementalOutput = capturedOutput.substring(safeOffset);
+    final fingerprint = _fingerprint(capturedOutput);
+    final previous = _cursors[taskId];
+    if (previous?.outputFingerprint == fingerprint) {
+      return TaskWatcherUpdate(
+        taskId: taskId,
+        incrementalOutput: '',
+        lastOffset: previous?.lastOffset ?? capturedOutput.length,
+        outputFingerprint: fingerprint,
+        isDuplicate: true,
+      );
+    }
+    final previousOutput = previous?.capturedOutput;
+    final incrementalOutput = previousOutput != null &&
+            capturedOutput.startsWith(previousOutput)
+        ? capturedOutput.substring(previousOutput.length)
+        : capturedOutput;
     final nextOffset = capturedOutput.length;
-    _lastOffsets[taskId] = nextOffset;
+    _cursors[taskId] = _WatcherCursor(
+      capturedOutput: capturedOutput,
+      lastOffset: nextOffset,
+      outputFingerprint: fingerprint,
+    );
     return TaskWatcherUpdate(
       taskId: taskId,
       incrementalOutput: incrementalOutput,
       lastOffset: nextOffset,
+      outputFingerprint: fingerprint,
       action: _extractAction(incrementalOutput),
       progress: _extractProgress(incrementalOutput),
       checkpoint: _extractCheckpoint(incrementalOutput),
@@ -40,7 +71,16 @@ class TaskWatcher {
   }
 
   void reset(String taskId) {
-    _lastOffsets.remove(taskId);
+    _cursors.remove(taskId);
+  }
+
+  String _fingerprint(String output) {
+    var hash = 0x811C9DC5;
+    for (final codeUnit in output.codeUnits) {
+      hash ^= codeUnit;
+      hash = (hash * 0x01000193) & 0xFFFFFFFF;
+    }
+    return hash.toRadixString(16).padLeft(8, '0');
   }
 
   String _extractAction(String output) {
@@ -125,6 +165,8 @@ class TaskWatcherUpdate {
     required this.taskId,
     required this.incrementalOutput,
     required this.lastOffset,
+    required this.outputFingerprint,
+    this.isDuplicate = false,
     this.action = '',
     this.progress,
     this.checkpoint = '',
@@ -133,14 +175,27 @@ class TaskWatcherUpdate {
   final String taskId;
   final String incrementalOutput;
   final int lastOffset;
+  final String outputFingerprint;
+  final bool isDuplicate;
   final String action;
   final int? progress;
   final String checkpoint;
 
   bool get hasUsefulUpdate {
-    return incrementalOutput.trim().isNotEmpty ||
-        action.trim().isNotEmpty ||
+    return action.trim().isNotEmpty ||
         progress != null ||
         checkpoint.trim().isNotEmpty;
   }
+}
+
+class _WatcherCursor {
+  const _WatcherCursor({
+    this.capturedOutput,
+    required this.lastOffset,
+    required this.outputFingerprint,
+  });
+
+  final String? capturedOutput;
+  final int lastOffset;
+  final String outputFingerprint;
 }

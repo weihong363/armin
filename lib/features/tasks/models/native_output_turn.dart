@@ -14,17 +14,23 @@ class TurnDeliverable {
     required this.displaySummary,
     required this.speechSummary,
     required this.evidenceFingerprint,
+    this.loopState = '',
+    this.loopNextAction = '',
   });
 
   final String displaySummary;
   final String speechSummary;
   final String evidenceFingerprint;
+  final String loopState;
+  final String loopNextAction;
 
   factory TurnDeliverable.fromJson(Map<String, Object?> json) {
     return TurnDeliverable(
       displaySummary: json['displaySummary'] as String? ?? '',
       speechSummary: json['speechSummary'] as String? ?? '',
       evidenceFingerprint: json['evidenceFingerprint'] as String? ?? '',
+      loopState: json['loopState'] as String? ?? '',
+      loopNextAction: json['loopNextAction'] as String? ?? '',
     );
   }
 
@@ -33,6 +39,8 @@ class TurnDeliverable {
       'displaySummary': displaySummary,
       'speechSummary': speechSummary,
       'evidenceFingerprint': evidenceFingerprint,
+      'loopState': loopState,
+      'loopNextAction': loopNextAction,
     };
   }
 }

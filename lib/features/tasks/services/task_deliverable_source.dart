@@ -1,6 +1,8 @@
 import '../../../core/models/task_status.dart';
 import '../../agent/services/agent_output_cleaner.dart';
+import '../../agent/services/agent_runtime_adapter.dart';
 import '../models/native_output_turn.dart';
+import 'loop_runtime_protocol.dart';
 import 'output_summary_provider.dart';
 import 'turn_output_slicer.dart';
 
@@ -35,11 +37,15 @@ class ResolvedDeliverable {
     required this.displaySummary,
     required this.speechSummary,
     required this.provenance,
+    required this.loopState,
+    required this.loopNextAction,
   });
 
   final String displaySummary;
   final String speechSummary;
   final DeliverableProvenance provenance;
+  final String loopState;
+  final String loopNextAction;
 }
 
 class DeliverableProvenance {
@@ -73,9 +79,12 @@ class DeliverableResolveContext {
 class TaskDeliverableSource {
   const TaskDeliverableSource({
     TurnOutputSlicer turnOutputSlicer = const TurnOutputSlicer(),
-  }) : _turnOutputSlicer = turnOutputSlicer;
+    AgentRuntimeAdapter runtimeAdapter = AgentRuntimeAdapter.defaultAdapter,
+  })  : _turnOutputSlicer = turnOutputSlicer,
+        _runtimeAdapter = runtimeAdapter;
 
   final TurnOutputSlicer _turnOutputSlicer;
+  final AgentRuntimeAdapter _runtimeAdapter;
 
   List<DeliverableCandidate> candidates(
     List<NativeOutputTurn> turns, {
@@ -130,9 +139,17 @@ class TaskDeliverableSource {
     if (evidence == null) {
       return null;
     }
+    final turnOutput = candidate.turn.cleanedOutput.trim();
+    final outcome = LoopRuntimeProtocol.parse(turnOutput) ??
+        LoopRuntimeProtocol.parse(evidence.text) ??
+        LoopRuntimeProtocol.parse(candidate.turn.rawOutput);
+    final strippedEvidence = LoopRuntimeProtocol.strip(evidence.text);
+    final userVisibleEvidence = strippedEvidence.isNotEmpty
+        ? strippedEvidence
+        : LoopRuntimeProtocol.strip(turnOutput);
     final summary = await provider.summarize(
       OutputSummaryRequest(
-        cleanedOutput: evidence.text,
+        cleanedOutput: userVisibleEvidence,
         status: context.status,
         taskTitle: context.taskTitle,
         promptInputs: [candidate.turn.userInput],
@@ -146,6 +163,8 @@ class TaskDeliverableSource {
     return ResolvedDeliverable(
       displaySummary: displaySummary,
       speechSummary: summary.speechSummary.trim(),
+      loopState: outcome?.state.name ?? '',
+      loopNextAction: outcome?.nextAction ?? '',
       provenance: DeliverableProvenance(
         turnId: candidate.turn.id,
         turnIndex: candidate.turn.turnIndex,
@@ -181,45 +200,17 @@ class TaskDeliverableSource {
     int index, {
     int? maxOutputChars,
   }) {
+    final turn = turns[index];
     final cleanedOutput = _turnOutputSlicer.outputForTurn(
       turns,
       index,
       maxOutputChars: maxOutputChars,
     );
-    if (_looksLikeUsableEvidence(cleanedOutput)) {
-      return cleanedOutput;
-    }
-    return '';
-  }
-
-  bool _looksLikeUsableEvidence(String text) {
-    final trimmed = text.trim();
-    if (trimmed.isEmpty) {
-      return false;
-    }
-    final lower = trimmed.toLowerCase();
-    if (RegExp(r'\barmin[a-z0-9_]*\b').hasMatch(lower)) {
-      return true;
-    }
-    if (lower.contains('status=pass') ||
-        lower.contains('completed successfully') ||
-        lower.contains('all tests passed') ||
-        lower.contains('tests passed') ||
-        trimmed.contains('已完成') ||
-        trimmed.contains('全部通过') ||
-        trimmed.contains('测试通过')) {
-      return true;
-    }
-    if (lower.startsWith('let me ') ||
-        lower.startsWith("i'll ") ||
-        lower.startsWith('i will ') ||
-        lower.startsWith('i need to ') ||
-        lower.contains('让我确认') ||
-        lower.contains('我先') ||
-        lower.contains('我会')) {
-      return false;
-    }
-    return trimmed.length >= 2;
+    return _runtimeAdapter.finalEvidenceFor(
+      const AgentOutputCleaner().clean(cleanedOutput),
+      prompt: turn.userInput,
+      allowPlainText: isDeliverableStatus(turn.status),
+    );
   }
 
   bool isDeliverableStatus(NativeOutputTurnStatus status) {
@@ -245,116 +236,13 @@ class TaskDeliverableSource {
     if (turn.status != NativeOutputTurnStatus.needAttention) {
       return false;
     }
-    return _looksLikeFinalEvidence(
-      _turnOutputSlicer.outputForTurn(turns, index),
-      turn.userInput,
+    final evidence = _runtimeAdapter.finalEvidenceFor(
+      const AgentOutputCleaner().clean(
+        _turnOutputSlicer.outputForTurn(turns, index),
+      ),
+      prompt: turn.userInput,
     );
-  }
-
-  bool _looksLikeFinalEvidence(String text, String prompt) {
-    final trimmed = const AgentOutputCleaner().clean(text).trim();
-    if (trimmed.isEmpty) {
-      return false;
-    }
-    final semantic = _withoutPromptEchoLines(trimmed, prompt).trim();
-    if (semantic.isEmpty) {
-      return false;
-    }
-    final lower = semantic.toLowerCase();
-    return _hasFinalMarkerLine(trimmed, prompt) ||
-        lower.contains('status=pass') ||
-        lower.contains('completed successfully') ||
-        lower.contains('all tests passed') ||
-        lower.contains('tests passed') ||
-        semantic.contains('已完成') ||
-        semantic.contains('全部通过') ||
-        semantic.contains('测试通过');
-  }
-
-  bool _hasFinalMarkerLine(String text, String prompt) {
-    final compactPrompt = _compactForEcho(prompt);
-    var sawAgentOutputBeforeMarker = false;
-    for (final line in text.split('\n')) {
-      final trimmed = line.trim();
-      if (trimmed.isEmpty) {
-        continue;
-      }
-      if (_looksLikeAgentOutputLine(trimmed)) {
-        sawAgentOutputBeforeMarker = true;
-      }
-      if (!RegExp(r'^(?:[▪■●]\s*)?ARMIN[A-Z0-9_]*\b').hasMatch(trimmed)) {
-        continue;
-      }
-      final compactLine = _compactForEcho(trimmed);
-      final isPromptEcho = compactPrompt.length >= compactLine.length &&
-          compactLine.length >= 8 &&
-          compactPrompt.contains(compactLine);
-      final isAgentBullet =
-          RegExp(r'^[▪■●]\s*ARMIN[A-Z0-9_]*\b').hasMatch(trimmed);
-      if (!isPromptEcho || isAgentBullet || sawAgentOutputBeforeMarker) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  String _compactForEcho(String text) {
-    return text.toLowerCase().replaceAll(RegExp(r'\s+'), '');
-  }
-
-  String _withoutPromptEchoLines(String text, String prompt) {
-    final compactPrompt = _compactForEcho(prompt);
-    if (compactPrompt.length < 8) {
-      return text;
-    }
-    var sawAgentOutputBeforeMarker = false;
-    return text.split('\n').where((line) {
-      final trimmed = line.trim();
-      if (trimmed.isEmpty) {
-        return false;
-      }
-      if (_looksLikeAgentOutputLine(trimmed)) {
-        sawAgentOutputBeforeMarker = true;
-      }
-      if (RegExp(r'^[▪■●]\s*ARMIN[A-Z0-9_]*\b').hasMatch(trimmed)) {
-        return true;
-      }
-      final compactLine = _compactForEcho(trimmed);
-      final isPlainMarker = RegExp(r'^ARMIN[A-Z0-9_]*\b').hasMatch(trimmed);
-      if (isPlainMarker && sawAgentOutputBeforeMarker) {
-        return true;
-      }
-      return compactLine.length < 8 || !compactPrompt.contains(compactLine);
-    }).join('\n');
-  }
-
-  bool _looksLikeAgentOutputLine(String line) {
-    if (!RegExp(r'^[▪■●]\s+').hasMatch(line)) {
-      return false;
-    }
-    final text = line.replaceFirst(RegExp(r'^[▪■●]\s+'), '').trim();
-    if (text.isEmpty) {
-      return false;
-    }
-    if (_looksLikeToolCallLine(text)) {
-      return false;
-    }
-    final lower = text.toLowerCase();
-    return !lower.startsWith('let me ') &&
-        !lower.startsWith('i will ') &&
-        !lower.startsWith("i'll ");
-  }
-
-  bool _looksLikeToolCallLine(String line) {
-    final lower = line.trim().toLowerCase();
-    return lower.startsWith('bash(') ||
-        lower.startsWith('grep(') ||
-        lower.startsWith('glob(') ||
-        lower.startsWith('read(') ||
-        lower.startsWith('write(') ||
-        lower.startsWith('edit(') ||
-        lower.startsWith('multiedit(') ||
-        lower.startsWith('list(');
+    return evidence.isNotEmpty;
   }
 
   String _fingerprint(String text) {

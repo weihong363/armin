@@ -19,7 +19,7 @@
 |------|--------------|----------|
 | B01 | 状态自动收敛 | 任务执行后可自动从 `running` / `Agent started` 进入 `turnIdle`、`needAttention`、`needApproval`、`runtimeLost` 或终态；不能依赖手动刷新。活动 observer 应在一个检测窗口内更新，fallback reconcile 应在一个 reconcile 周期内校准。 |
 | B02 | Follow-up 连续性 | 追加指令继续使用同一 tmux session；已有 observer 不被无意义替换；快速到达的审批、等待或结果事件不能被后写入的 `running` 覆盖。 |
-| B03 | 审批可操作 | safe / balanced / aggressive 模式下审批 prompt 可识别、选项可发送，`pending → resolving → resolved/failed` 与 UI、历史状态一致。 |
+| B03 | 审批可操作 | balanced / aggressive 模式下审批 prompt 可识别、选项可发送，`pending → resolving → resolved/failed` 与 UI、历史状态一致。 |
 | B04 | 任务控制完整 | 暂停、恢复、断开监听、重新监听、停止、标记完成、标记失败和 cleanup 保持可用；断开监听不杀死远端任务，停止/终态 cleanup 失败必须可见并可重试。 |
 | B05 | Reconcile 不复活旧证据 | reconnect、refresh 和 reconcile 只消费当前基线后的新增证据；旧 prompt、旧 exit marker、旧审批和旧结果不得重新触发状态或 deliverable。 |
 | B06 | 每 turn 结果正确 | 结果卡片显示对应 turn 的有效产出，不得使用初始 prompt、prompt echo、thinking、旧 turn、running/reconnect snapshot 冒充结果。没有 evidence 时显示暂无结果或状态提示。 |
@@ -86,7 +86,7 @@ Phase 2.7 的体验修整必须继续满足上面的 B01-B10 和 P01-P07，并�
 
 - Agent 已认证并能完成一个返回唯一最终 marker 的短任务。
 - 任务确实进入过 `running`，测试期间 App 保持前台且 observer 未被人工断开。
-- 记录当前 approval mode。默认检测阈值为 safe 2 秒、balanced 10 秒、aggressive 60 秒；允许额外 5 秒用于事件提交和 UI 更新。fallback reconcile 按配置周期加 probe timeout，再允许 5 秒。
+- 记录当前 approval mode。默认检测阈值为 balanced 10 秒、aggressive 60 秒；允许额外 5 秒用于事件提交和 UI 更新。fallback reconcile 按配置周期加 probe timeout，再允许 5 秒。
 
 **步骤**
 
@@ -133,7 +133,7 @@ Phase 2.7 的体验修整必须继续满足上面的 B01-B10 和 P01-P07，并�
 **前置条件**
 
 - 使用可稳定触发原生终端审批的问题；问题和选项必须带当前任务唯一 marker。
-- safe、balanced、aggressive 三种 mode 分别执行，不能用一个 mode 代替全部模式。
+- balanced、aggressive 两种 mode 分别执行，不能用一个 mode 代替全部模式。
 
 **步骤**
 
@@ -235,7 +235,7 @@ Phase 2.7 的体验修整必须继续满足上面的 B01-B10 和 P01-P07，并�
   "task_id": "...",
   "turn_ids": ["..."],
   "tmux_session": "...",
-  "approval_mode": "safe|balanced|aggressive|not_applicable",
+  "approval_mode": "balanced|aggressive|not_applicable",
   "manual_refresh_used": false,
   "remote_evidence": "包含 marker 和时间戳的远端证据",
   "armin_evidence": "包含状态/结果和时间戳的 UI 或数据库证据",

@@ -202,7 +202,7 @@ none → pending → resolving → resolved
 - 用户标记完成/失败或停止时，Armin 保存 final capture 后清理 tmux session。
 - 如果 cleanup 未能确认成功，任务会保留提示和日志，终态详情页可再次请求清理远端 session。
 - `runtimeLost`（远端会话已不可用）属于终端状态；该任务不再被 reconcile 探测、不被 bridge 跟踪、不计入活跃任务上限，且可被删除。仅 `running` 和 `observerDetached` 会被周期性 reconcile 探测远端状态。
-- `RuntimePolicy` 会按执行模式调整安静输出阈值：安全模式较短，平衡模式更长，激进 / YOLO 模式最长，以降低长时间 thinking、跑测试或自动执行时被误判为 `turnIdle` 的风险；单次运行仍有最长观察时限，监控窗口较短，final capture 窗口较完整。
+- `RuntimePolicy` 会按执行模式调整安静输出阈值：平衡模式适配短任务和人工审核，激进 / YOLO 模式使用更长阈值，以降低长时间 thinking、跑测试或自动执行时被误判为 `turnIdle` 的风险；单次运行仍有最长观察时限，监控窗口较短，final capture 窗口较完整。
 - 已结束、失败、停止或运行丢失的任务可重新执行，并预选原任务的 Host 和 project path；仍在交互中的任务不能通过重跑另起 session。
 
 Armin 不解释或重写 Agent 的执行逻辑。`SelectableOutputSummaryProvider` 支持用户打开实验性的端侧摘要增强，并在端侧模型不存在、设备不支持、超时或失败时回落至脱敏后的规则摘要。Android 侧已接入 llama.cpp native runtime，可加载本地 GGUF 做摘要和 Loop Evaluation 辅助判断；它只用于 TTS/展示摘要/验收辅助，不参与 Agent 执行、审批或 follow-up 发送。
@@ -218,7 +218,11 @@ Armin 不解释或重写 Agent 的执行逻辑。`SelectableOutputSummaryProvide
 
 Loop Engineering 在 Armin 中的边界是单任务闭环优化：更清楚地计划任务、更可靠地观察执行、更早发现偏离、更低成本地追加上下文和验收结果。它不应变成复杂工作流系统、自动 fork/join runtime 或多 Agent 调度器。
 
-Phase 3 的起步实现见 [Phase 3 Loop Runtime 前置设计](runtime/phase-3-loop-runtime-prep.md)。架构上先新增 task/turn 级 loop facts 和恢复验证；执行、状态、审批、结果和 TTS 继续走 Phase 2.6/2.7 已验证的 RuntimeEventBus、WorkState、ApprovalState 与 `TurnDeliverable` 主路径。过渡阶段的规则型验收辅助建议和 AI Loop Evaluation 只能消费 latest deliverable、用户目标、约束和 loop facts；AI 评估只展示辅助判断，不自动发送草稿或改变状态。
+Phase 3 的起步实现见 [Phase 3 Loop Runtime 前置设计](runtime/phase-3-loop-runtime-prep.md)。架构上先新增 task/turn 级 loop facts 和恢复验证；执行、状态、审批、结果和 TTS 继续走 Phase 2.6/2.7 已验证的 RuntimeEventBus、WorkState、ApprovalState 与 `TurnDeliverable` 主路径。规则型验收辅助建议和 AI Loop Evaluation 只能消费 latest deliverable、用户目标、约束和 loop facts，并只展示辅助判断。YOLO Autopilot 只消费同一 `TurnDeliverable` 内由初始 Prompt 合同产生的结构化 `CONTINUE + next_action`；不得使用建议文本、结果长度、prompt echo、thinking 或旧 Turn 猜测是否续跑。
+
+计划任务同样不建立第二套 Runtime：`TaskSession.scheduledFor` 与 `calendarSyncEnabled` 是持久化事实，前台 Timer、Android AlarmManager 和系统日历都只是投影。到期执行最终只能进入 `ArminAppState._startScheduledTask`；task-id in-flight guard 防止前台 Timer、后台唤醒和启动恢复同时创建重复 session。Android 后台执行使用短生命周期 foreground headless Flutter Runtime；系统日历事件以稳定 task id 标记更新和删除，不反向决定任务状态。
+
+端侧模型文件属于可替换资源，不属于 Runtime 状态。产品安装仅接受构建配置的 HTTPS 地址与 SHA-256，写入应用私有目录并在校验后提交；模型缺失、校验失败、native runtime 不可用或生成失败都只让 Loop Evaluation 回退规则路径，不得影响任务执行、deliverable 或 TTS。Android 已接 llama.cpp decode；iOS 当前提供平台工程、通知、EventKit、计划提醒和模型管理通道，但精确后台执行及 llama.cpp decode 必须分别通过 iOS 系统策略和 native gate 后才可宣称等价。
 
 ## Phase 2.6 结果迁移架构
 

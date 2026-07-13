@@ -1,8 +1,5 @@
 /// 统一审批模式 —— UI 层使用的抽象概念，与具体 CLI 无关。
 enum AgentApprovalMode {
-  /// 安全：只读分析，所有写操作需确认
-  safe,
-
   /// 平衡：自动放行低风险编辑，高风险仍需确认
   balanced,
 
@@ -13,7 +10,6 @@ enum AgentApprovalMode {
 extension AgentApprovalModeLabel on AgentApprovalMode {
   String get label {
     return switch (this) {
-      AgentApprovalMode.safe => '安全',
       AgentApprovalMode.balanced => '平衡',
       AgentApprovalMode.aggressive => '激进',
     };
@@ -21,9 +17,8 @@ extension AgentApprovalModeLabel on AgentApprovalMode {
 
   String get description {
     return switch (this) {
-      AgentApprovalMode.safe => '只读 · 不做修改',
-      AgentApprovalMode.balanced => '可修改代码 · 先请示',
-      AgentApprovalMode.aggressive => '完全授权 · 不中断',
+      AgentApprovalMode.balanced => '短期任务 · 关键操作需确认',
+      AgentApprovalMode.aggressive => '长期任务 · 自主连续推进',
     };
   }
 }
@@ -75,12 +70,6 @@ class AgentApprovalConfig {
 
   List<String> get _codexFlags {
     return switch (mode) {
-      AgentApprovalMode.safe => [
-          '--sandbox',
-          'read-only',
-          '--ask-for-approval',
-          'untrusted',
-        ],
       AgentApprovalMode.balanced => const [],
       AgentApprovalMode.aggressive => ['--full-auto'],
     };
@@ -88,7 +77,6 @@ class AgentApprovalConfig {
 
   List<String> get _qoderFlags {
     return switch (mode) {
-      AgentApprovalMode.safe => ['--permission-mode', 'plan'],
       AgentApprovalMode.balanced => const [],
       // Armin's YOLO mode keeps the terminal approval channel observable and
       // auto-approves through Runtime. Do not bypass qodercli permissions here.
@@ -98,7 +86,6 @@ class AgentApprovalConfig {
 
   List<String> get _claudeFlags {
     return switch (mode) {
-      AgentApprovalMode.safe => ['--permission-mode', 'plan'],
       AgentApprovalMode.balanced => const [],
       AgentApprovalMode.aggressive => ['--dangerously-skip-permissions'],
     };

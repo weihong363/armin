@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 
 import '../../../app_state_scope.dart';
+import '../../ai/screens/slm_settings_screen.dart';
 import '../../hosts/screens/host_list_screen.dart';
+import '../../notifications/screens/notification_settings_screen.dart';
 import '../../projects/screens/project_path_list_screen.dart';
 import '../../voice/screens/voice_settings_screen.dart';
 import '../../voice/services/device_voice_service.dart';
@@ -46,6 +48,24 @@ class SettingsScreen extends StatelessWidget {
               state.speechSettings.voiceStyle,
             ),
             onTap: () => _open(context, const VoiceSettingsScreen()),
+          ),
+          const SizedBox(height: 24),
+          const _SectionTitle(label: '通知'),
+          _SettingsTile(
+            key: const ValueKey('settings-notifications'),
+            icon: Icons.notifications_outlined,
+            title: '任务通知',
+            subtitle: '权限、触发范围与去重状态',
+            onTap: () => _open(context, const NotificationSettingsScreen()),
+          ),
+          const SizedBox(height: 24),
+          const _SectionTitle(label: '端侧 AI'),
+          _SettingsTile(
+            key: const ValueKey('settings-slm'),
+            icon: Icons.memory_outlined,
+            title: '端侧模型',
+            subtitle: '运行时状态、存储空间与失败降级',
+            onTap: () => _open(context, const SlmSettingsScreen()),
           ),
         ],
       ),

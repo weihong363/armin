@@ -4,7 +4,6 @@ import 'package:armin/core/services/armin_app_state.dart';
 import 'package:armin/features/agent/models/agent_approval_config.dart';
 import 'package:armin/features/agent/services/agent_session_service.dart';
 import 'package:armin/features/hosts/models/host_config.dart';
-import 'package:armin/features/projects/models/project_path_config.dart';
 import 'package:armin/features/runtime/models/approval_state.dart';
 import 'package:armin/features/runtime/models/work_state.dart';
 import 'package:armin/features/tasks/models/metric_event.dart';
@@ -30,6 +29,7 @@ const _testAgentCommand =
     '/Users/ironion/workspace/armin/scripts/qodercli-test';
 const _pollInterval = Duration(milliseconds: 250);
 const _testSshPassword = String.fromEnvironment('ARMINTEST_SSH_PASSWORD');
+HostConfig? _configuredTestHost;
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
@@ -52,7 +52,7 @@ void main() {
   Future<String> startTask(
     String mode,
     String marker, {
-    AgentApprovalMode approvalMode = AgentApprovalMode.safe,
+    AgentApprovalMode approvalMode = AgentApprovalMode.balanced,
     int durationSeconds = 10,
   }) async {
     final host = testHost(state);
@@ -490,27 +490,16 @@ Future<void> configureTestHost(ArminAppState state) async {
       '--dart-define=ARMINTEST_SSH_PASSWORD.',
     );
   }
-  final host = seeded ?? testSeedHost();
-  final needsUpdate = seeded == null ||
-      seeded.agentCommand != _testAgentCommand ||
-      seeded.password != password ||
-      seeded.projectPath != _testProjectPath;
-  if (needsUpdate) {
-    await state.saveHost(
-      host.copyWith(
-        agentCommand: _testAgentCommand,
-        password: password,
-        projectPath: _testProjectPath,
-      ),
-    );
-  }
-  if (!state.projectPaths.any((path) => path.path == _testProjectPath)) {
-    await state.saveProjectPath(testProject());
-  }
+  _configuredTestHost = (seeded ?? testSeedHost()).copyWith(
+    agentCommand: _testAgentCommand,
+    password: password,
+    projectPath: _testProjectPath,
+  );
 }
 
 HostConfig testHost(ArminAppState state) {
-  return state.hosts.firstWhere((host) => host.id == _seedHostId);
+  return _configuredTestHost ??
+      state.hosts.firstWhere((host) => host.id == _seedHostId);
 }
 
 HostConfig testSeedHost() {
@@ -533,17 +522,6 @@ HostConfig testSeedHost() {
         '\$HOME/.npm-packages/bin:\$HOME/.local/bin',
     shellWrapper: ShellWrapper.zshLogin,
     machineType: HostMachineType.macAppleSilicon,
-  );
-}
-
-ProjectPathConfig testProject() {
-  final now = DateTime.now().toUtc();
-  return ProjectPathConfig(
-    id: 'project-gate-test',
-    name: 'gate-test',
-    path: _testProjectPath,
-    createdAt: now,
-    updatedAt: now,
   );
 }
 

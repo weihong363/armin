@@ -167,6 +167,10 @@ class NativeOutputObserver {
     return observe(output, now: observedAt.add(idleThreshold));
   }
 
+  bool hasSettledTurnEvidence(String cleanedOutput) {
+    return _runtimeAdapter.finalEvidenceFor(cleanedOutput).isNotEmpty;
+  }
+
   List<String> _recentStatusLines(String cleaned, {int limit = 5}) {
     final lines = cleaned
         .split('\n')

@@ -209,7 +209,7 @@ class DeviceVoiceService implements VoiceService {
   }
 
   static String cleanSpeechSummary(String summary) {
-    return _compactForSpeech(_normalizeSpeechSpacing(cleanSpeechText(summary)));
+    return _normalizeSpeechSpacing(cleanSpeechText(summary));
   }
 
   @visibleForTesting
@@ -668,35 +668,6 @@ class DeviceVoiceService implements VoiceService {
         .replaceAll(RegExp(r'[/\\]+'), ' ')
         .replaceAll(RegExp(r'\s+'), ' ')
         .trim();
-  }
-
-  static String _compactForSpeech(String text) {
-    final trimmed = text.trim();
-    if (trimmed.length <= 90) {
-      return trimmed;
-    }
-    final sentences = trimmed
-        .split(RegExp(r'(?<=[。！？.!?])\s*'))
-        .map((sentence) => sentence.trim())
-        .where((sentence) => sentence.isNotEmpty)
-        .toList();
-    final buffer = StringBuffer();
-    for (final sentence in sentences) {
-      final candidate =
-          buffer.isEmpty ? sentence : '${buffer.toString()} $sentence';
-      if (candidate.length > 90) {
-        break;
-      }
-      buffer
-        ..clear()
-        ..write(candidate);
-      if (buffer.length >= 70) {
-        break;
-      }
-    }
-    final compacted =
-        buffer.isEmpty ? trimmed.substring(0, 90) : buffer.toString();
-    return compacted;
   }
 
   static Duration _speakTimeout(String text) {

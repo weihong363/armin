@@ -21,7 +21,7 @@ class SSHAgentSessionService
   static const _staleExitMarker = '__ARMIN_STALE_EXIT_MARKER__';
   static const _probeSessionExistsMarker = '__ARMIN_PROBE_SESSION_EXISTS__';
   static const _probeSessionMissingMarker = '__ARMIN_PROBE_SESSION_MISSING__';
-  static const _monitorScriptVersion = 'phase2.6-settled-v9';
+  static const _monitorScriptVersion = 'runtime-monitor-v11';
   static const _monitorDiagnosticsVerbose =
       bool.fromEnvironment('ARMIN_MONITOR_DIAG_VERBOSE');
   static const _controlCommandTimeout = Duration(seconds: 15);
@@ -301,7 +301,8 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
     final terminalPrompt = snapshot.state == NativeOutputObserverState.running
         ? null
         : promptState.terminalPrompt;
-    final hasSettledOutput = _hasSettledTurnEvidence(snapshot.cleanedOutput);
+    final hasSettledOutput =
+        observer.hasSettledTurnEvidence(snapshot.cleanedOutput);
     final turnIdle = settled && snapshot.turnIdle && hasSettledOutput;
     final observerState =
         snapshot.state == NativeOutputObserverState.turnIdle && !turnIdle
@@ -322,80 +323,6 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
     );
   }
 
-  bool _hasSettledTurnEvidence(String cleanedOutput) {
-    final lines = cleanedOutput
-        .split('\n')
-        .map((line) => line.trim())
-        .where((line) => line.isNotEmpty);
-    var hasAgentLine = false;
-    for (final line in lines) {
-      if (_looksLikeArminMarkerLine(line)) {
-        return true;
-      }
-      if (!line.startsWith('▪')) {
-        continue;
-      }
-      hasAgentLine = true;
-      final content = line.replaceFirst(RegExp(r'^▪\s*'), '').trim();
-      if (_looksLikeFinalAgentLine(content)) {
-        return true;
-      }
-    }
-    return hasAgentLine && lines.any(_looksLikeCompletionLine);
-  }
-
-  bool _looksLikeArminMarkerLine(String line) {
-    return RegExp(
-      r'\bARMIN_[A-Z0-9_]*_BEGIN\b.*\bARMIN_[A-Z0-9_]*_END\b',
-    ).hasMatch(line);
-  }
-
-  bool _looksLikeFinalAgentLine(String line) {
-    if (line.isEmpty) {
-      return false;
-    }
-    final lower = line.toLowerCase();
-    if (_looksLikePlanningLine(lower) || _looksLikeToolTrace(line)) {
-      return false;
-    }
-    return true;
-  }
-
-  bool _looksLikePlanningLine(String lower) {
-    return lower.startsWith('let me ') ||
-        lower.startsWith('first, ') ||
-        lower.startsWith('next, ') ||
-        lower.startsWith('now ') ||
-        lower.startsWith('i will ') ||
-        lower.startsWith("i'll ") ||
-        lower.startsWith('i need to ') ||
-        lower.startsWith('i am going to ') ||
-        lower.startsWith("i'm going to ") ||
-        lower.contains(' let me ') ||
-        lower.startsWith('让我') ||
-        lower.startsWith('我先') ||
-        lower.startsWith('我会') ||
-        lower.startsWith('我将');
-  }
-
-  bool _looksLikeToolTrace(String line) {
-    return RegExp(
-      r'^(?:Read|Write|Edit|MultiEdit|Glob|Grep|Bash|List|LS|Cat)\s*\(',
-      caseSensitive: false,
-    ).hasMatch(line);
-  }
-
-  bool _looksLikeCompletionLine(String line) {
-    final lower = line.toLowerCase();
-    return lower.contains('completed') ||
-        lower.contains('done') ||
-        lower.contains('ready') ||
-        lower.contains('status=pass') ||
-        lower.contains('完成') ||
-        lower.contains('通过') ||
-        lower.contains('就绪');
-  }
-
   AgentExecutionUpdate _buildStreamCompletionUpdate({
     required _ExecutionOutputState output,
     required NativeOutputObserver observer,
@@ -408,7 +335,7 @@ ${discovery.buildFindCommand()} 2>/dev/null || true
     );
     final settledSnapshot = observer.observeSettled(observedOutput);
     final hasSettledOutput =
-        _hasSettledTurnEvidence(settledSnapshot.cleanedOutput);
+        observer.hasSettledTurnEvidence(settledSnapshot.cleanedOutput);
     final snapshot =
         hasSettledOutput ? settledSnapshot : observer.observe(observedOutput);
     final terminalPrompt = snapshot.state == NativeOutputObserverState.running
@@ -939,6 +866,17 @@ armin_pane_semantic() {
     s/\\r/\\n/g;
     s/\\e\\[[0-?]*[ -\\/]*[@-~]//g;
     s/[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F\\x7F]//g;
+    my @outcomes = /(
+      ARMIN_LOOP_OUTCOME_BEGIN
+      .*?^\\s*state\\s*=\\s*(?:DONE|CONTINUE|BLOCKED)\\s*\$
+      .*?ARMIN_LOOP_OUTCOME_END
+    )/gmsx;
+    if (@outcomes) {
+      my \$outcome = \$outcomes[-1];
+      \$outcome =~ s/[ \\t]+\$//mg;
+      print "\$outcome\\n";
+      next;
+    }
     for my \$line (split /\\n/) {
       next if \$line =~ /[\\x{2800}-\\x{28ff}]/;
       \$line =~ s/\\s*[\\x{2800}-\\x{28ff}]\\s+(?:Thinking|.{1,80}\\.\\.\\.).*\$//i;
@@ -947,9 +885,13 @@ armin_pane_semantic() {
       next if \$line =~ /\\besc to cancel\\b/i;
       next if \$line =~ /\\b(?:Auto\\s+)?Model\\b.*\\bctx\\b/i;
       next if \$line =~ /\\bctx\\b\\s*\\d+%/i;
+      next if \$line =~ /\\bEnjoy Off-Peak Discount\\b/i;
+      next if \$line =~ /\\bTry \\/model to switch models\\b/i;
+      next if \$line =~ /\\b\\d+\\s+MCP servers?\\s*[·|]\\s*\\d+\\s+skills\\b/i;
       next if \$line =~ /^\\s*[\\x{2800}-\\x{28ff}]\\s+.{1,80}\\.\\.\\.\\s*\$/;
       next if \$line =~ /^\\s*[\\x{2800}-\\x{28ff}]?\\s*Thinking[. …]*(?:\\([^)]*\\))?\\s*\$/i;
       \$line =~ s/\\bType your message or \\@path\\/to\\/file\\b.*//i;
+      \$line =~ s/\\?\\s*for shortcuts\\b.*//i;
       \$line =~ s/(?:YOLO\\s+)?\\bShift\\+Tab to Auto(?:-accept Edits| Mode)?\\b.*//i;
       \$line =~ s/\\bAuto Model\\b.*//i;
       \$line =~ s/\\b(?:Auto\\s+)?Model\\b\\s*[·.].*//i;

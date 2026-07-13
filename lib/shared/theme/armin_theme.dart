@@ -6,6 +6,8 @@ class ArminTheme {
   static const primary = Color(0xFF0C6F61);
   static const primaryDark = Color(0xFF0B3F36);
   static const mint = Color(0xFF36C8B9);
+  static const scheduled = Color(0xFF5367B2);
+  static const scheduledSurface = Color(0xFFF1F3FC);
   static const surface = Color(0xFFFBFAF7);
   static const card = Color(0xFFFFFFFF);
   static const border = Color(0xFFE7E3DA);

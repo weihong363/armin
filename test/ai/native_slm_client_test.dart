@@ -23,6 +23,7 @@ void main() {
         'message': 'ready',
         'backend': 'llama.cpp',
         'modelPath': '/data/local/tmp/armin/slm/model.gguf',
+        'modelSizeBytes': 396361728,
       };
     });
 
@@ -32,6 +33,56 @@ void main() {
     expect(capability.message, 'ready');
     expect(capability.backend, 'llama.cpp');
     expect(capability.modelPath, '/data/local/tmp/armin/slm/model.gguf');
+    expect(capability.modelSizeBytes, 396361728);
+  });
+
+  test('deletes only through the native model management channel', () async {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+      expect(call.method, 'deleteModel');
+      expect(call.arguments, {'modelPath': NativeSlmClient.defaultModelPath});
+      return true;
+    });
+
+    expect(await const NativeSlmClient().deleteModel(), isTrue);
+  });
+
+  test('installs only a trusted HTTPS model with matching SHA configuration',
+      () async {
+    const checksum =
+        'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+      expect(call.method, 'installModel');
+      expect(call.arguments, {
+        'url': 'https://models.example/armin.gguf',
+        'sha256': checksum,
+      });
+      return {
+        'available': true,
+        'message': 'ready',
+        'backend': 'llama.cpp',
+        'modelPath': '/private/slm/model.gguf',
+        'modelSizeBytes': 42,
+      };
+    });
+
+    const client = NativeSlmClient(
+      modelDistributionUrl: 'https://models.example/armin.gguf',
+      modelDistributionSha256: checksum,
+    );
+    expect(client.canInstallManagedModel, isTrue);
+    expect((await client.installManagedModel()).available, isTrue);
+  });
+
+  test('rejects incomplete model distribution config before native work',
+      () async {
+    const client = NativeSlmClient(
+      modelDistributionUrl: 'http://models.example/armin.gguf',
+      modelDistributionSha256: 'bad',
+    );
+    expect(client.canInstallManagedModel, isFalse);
+    expect(client.installManagedModel, throwsStateError);
   });
 
   test('generates text through native llama channel', () async {

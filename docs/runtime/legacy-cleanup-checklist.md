@@ -62,7 +62,7 @@
 - [x] `emulator-5554`：冷启动无 crash、DB schema 正确、logcat 无 Armin 异常
 - [x] `emulator-5554`：状态自动收敛且不手动刷新（B01）— 远端最终 marker 与 Armin 自动状态变化必须分别取证
 - [x] `emulator-5554`：同 session follow-up 连续执行且状态不回退（B02）— Turn 1/2、session 和 observer 事件必须可关联
-- [x] `emulator-5554`：safe/balanced/aggressive 审批完整可操作（B03）— 识别、发送、解决和历史一致性缺一不可
+- [x] `emulator-5554`：balanced/aggressive 审批完整可操作（B03）— 识别、发送、解决和历史一致性缺一不可
 - [x] `emulator-5554`：暂停/恢复、断开/重新监听、停止、标记完成、标记失败和 cleanup（B04）— 使用独立任务覆盖全部子用例
 - [x] `emulator-5554`：Turn 2 不复用 Turn 1 结果（B06）— 以结果卡片和持久化 deliverable 判定，不以原始 timeline 判定
 - [x] `emulator-5554`：真实 qodercli smoke、项目简介、final sync 和同 session Turn 2 — 记录 `task_id`、`armin-*` session、两轮 marker 和 latest turn deliverable

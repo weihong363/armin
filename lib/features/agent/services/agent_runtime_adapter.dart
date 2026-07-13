@@ -71,28 +71,28 @@ class AgentRuntimeAdapter {
   }
 
   bool hasHighConfidenceDeliverable(List<String> lines) {
-    return lines.any((line) {
-      final normalized =
-          _statusWord(line).replaceFirst(RegExp(r'^[▪▫■●]\s*'), '').trim();
-      final lower = normalized.toLowerCase();
-      final hasBullet = line.trimLeft().startsWith(RegExp('[▪▫■●]'));
-      final hasStructuredMarker =
-          RegExp(r'\barmin_[a-z0-9_]+_begin\b').hasMatch(lower);
-      final hasStandaloneBulletMarker =
-          hasBullet && RegExp(r'\barmin[a-z0-9_]*\b').hasMatch(lower);
-      return hasStructuredMarker ||
-          hasStandaloneBulletMarker ||
-          lower.startsWith('done.') ||
-          lower.startsWith("i've created ") ||
-          lower.contains('completed successfully') ||
-          lower.contains('tests passed') ||
-          lower.contains('all tests passed') ||
-          lower.contains('all checks passed') ||
-          normalized.contains('已完成') ||
-          normalized.contains('已创建') ||
-          normalized.contains('全部通过') ||
-          normalized.contains('测试通过');
-    });
+    return finalEvidenceFor(lines.join('\n')).isNotEmpty;
+  }
+
+  String finalEvidenceFor(
+    String output, {
+    String prompt = '',
+    bool allowPlainText = false,
+  }) {
+    final lines = output.split('\n').map((line) => line.trimRight()).toList();
+    final agentBlock = _latestAgentResultBlock(lines, prompt);
+    if (agentBlock.isNotEmpty) {
+      return agentBlock;
+    }
+    final marker = _standaloneFinalMarker(lines, prompt);
+    if (marker.isNotEmpty) {
+      return marker;
+    }
+    final explicit = _explicitCompletionBlock(lines, prompt);
+    if (explicit.isNotEmpty) {
+      return explicit;
+    }
+    return allowPlainText ? _plainSettledEvidence(lines, prompt) : '';
   }
 
   bool isBackgroundTaskLine(String line) {
@@ -139,8 +139,16 @@ class AgentRuntimeAdapter {
 
   bool _isTerminalChromeLine(String lower) {
     return lower.contains('shift+tab to auto') ||
+        lower.contains('shift+tab to accept edits') ||
         lower.contains('auto model') ||
-        lower.contains('model · ctx');
+        lower.contains('model · ctx') ||
+        lower.contains('try /effort') ||
+        lower.contains('try /model to switch models') ||
+        lower.contains('enjoy off-peak discount') ||
+        RegExp(r'\b\d+\s+mcp servers?\s*[·|]\s*\d+\s+skills\b')
+            .hasMatch(lower) ||
+        lower.contains('for shortcuts') ||
+        lower.contains('type your message or @path/to/file');
   }
 
   bool _hasRecentWorkContext(List<String> lines) {
@@ -202,7 +210,119 @@ class AgentRuntimeAdapter {
         lower.startsWith('i need to ') ||
         lower.contains(" i'll ") ||
         lower.contains(' i will ') ||
-        lower.contains(' let me ');
+        lower.contains(' let me ') ||
+        lower.startsWith('让我') ||
+        lower.startsWith('我先') ||
+        lower.startsWith('我会') ||
+        lower.startsWith('我将') ||
+        lower.contains('让我确认');
+  }
+
+  String _latestAgentResultBlock(List<String> lines, String prompt) {
+    List<String>? latest;
+    List<String>? current;
+    for (final rawLine in lines) {
+      final line = rawLine.trim();
+      final bullet = RegExp(r'^[▪▫■●]\s*(.*)$').firstMatch(line);
+      if (bullet != null) {
+        final content = bullet.group(1)?.trim() ?? '';
+        current = _isFinalAgentContent(content) ? <String>[content] : null;
+        if (current != null) latest = current;
+        continue;
+      }
+      if (current == null || line.isEmpty) continue;
+      if (_isLoopProtocolControlLine(line)) {
+        continue;
+      }
+      if (RegExp(r'^ARMIN[A-Z0-9_]*\b').hasMatch(line)) {
+        current.add(line);
+        continue;
+      }
+      if (_isTerminalChromeLine(line.toLowerCase()) ||
+          _looksLikeToolTrace(line) ||
+          line.startsWith('└') ||
+          _isPromptEcho(line, prompt)) {
+        continue;
+      }
+      current.add(line);
+    }
+    return latest?.join('\n').trim() ?? '';
+  }
+
+  bool _isFinalAgentContent(String content) {
+    if (content.isEmpty || _looksLikeToolTrace(content)) return false;
+    final lower = content.toLowerCase();
+    return !lower.startsWith('initializing') &&
+        !_looksLikePlanningLine(lower) &&
+        !isBackgroundTaskLine('▪ $content');
+  }
+
+  String _standaloneFinalMarker(List<String> lines, String prompt) {
+    final markers = lines.where((line) {
+      final trimmed = line.trim();
+      final isAgentBullet =
+          RegExp(r'^[▪▫■●]\s*ARMIN[A-Z0-9_]*\b').hasMatch(trimmed);
+      final isScopedPlainMarker =
+          prompt.isNotEmpty && RegExp(r'^ARMIN[A-Z0-9_]*\b').hasMatch(trimmed);
+      return (isAgentBullet || isScopedPlainMarker) &&
+          !_isLoopProtocolControlLine(trimmed) &&
+          !_isPromptEcho(trimmed, prompt);
+    });
+    return markers.join('\n').trim();
+  }
+
+  bool _isLoopProtocolControlLine(String line) {
+    final normalized =
+        line.replaceFirst(RegExp(r'^[▪▫■●]\s*'), '').trim().toUpperCase();
+    return normalized == 'ARMIN_LOOP_OUTCOME_BEGIN' ||
+        normalized == 'ARMIN_LOOP_OUTCOME_END';
+  }
+
+  String _explicitCompletionBlock(List<String> lines, String prompt) {
+    for (var index = lines.length - 1; index >= 0; index--) {
+      final line = lines[index].trim();
+      if (_isPromptEcho(line, prompt) || !_isExplicitCompletion(line)) continue;
+      return line.replaceFirst(RegExp(r'^[▪▫■●]\s*'), '').trim();
+    }
+    return '';
+  }
+
+  bool _isExplicitCompletion(String line) {
+    final normalized = line.replaceFirst(RegExp(r'^[▪▫■●]\s*'), '').trim();
+    final lower = normalized.toLowerCase();
+    return lower.startsWith('done.') ||
+        lower.startsWith("i've created ") ||
+        lower.contains('completed successfully') ||
+        lower.contains('tests passed') ||
+        lower.contains('all checks passed') ||
+        normalized.contains('已完成') ||
+        normalized.contains('已创建') ||
+        normalized.contains('全部通过') ||
+        normalized.contains('测试通过');
+  }
+
+  String _plainSettledEvidence(List<String> lines, String prompt) {
+    final semantic = lines
+        .map((line) => line.trim())
+        .where((line) => line.isNotEmpty)
+        .where((line) => !_isPromptEcho(line, prompt))
+        .where((line) => !_isTerminalChromeLine(line.toLowerCase()))
+        .where((line) => !_looksLikeToolTrace(line))
+        .where((line) => !line.startsWith('└'))
+        .toList(growable: false);
+    if (semantic.isEmpty ||
+        semantic.every((line) => _looksLikePlanningLine(line.toLowerCase()))) {
+      return '';
+    }
+    return semantic.join('\n').trim();
+  }
+
+  bool _isPromptEcho(String line, String prompt) {
+    final compactPrompt = prompt.toLowerCase().replaceAll(RegExp(r'\s+'), '');
+    final compactLine = line.toLowerCase().replaceAll(RegExp(r'\s+'), '');
+    return compactPrompt.length >= 8 &&
+        compactLine.length >= 8 &&
+        compactPrompt.contains(compactLine);
   }
 
   bool _looksLikeToolTrace(String line) {

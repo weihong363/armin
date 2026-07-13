@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import '../../ai/services/native_slm_client.dart';
@@ -6,6 +7,7 @@ import '../models/loop_evaluation.dart';
 import '../models/metric_event.dart';
 import '../models/task_session.dart';
 import 'loop_follow_up_advisor.dart';
+import 'loop_runtime_protocol.dart';
 
 class LoopEvaluationSummary {
   const LoopEvaluationSummary({
@@ -13,12 +15,14 @@ class LoopEvaluationSummary {
     required this.source,
     required this.usedAi,
     this.nextAction,
+    this.fallbackReason,
   });
 
   final String text;
   final String source;
   final bool usedAi;
   final LoopNextAction? nextAction;
+  final String? fallbackReason;
 }
 
 enum LoopNextActionPolicy {
@@ -71,18 +75,21 @@ class LoopEvaluationAssistant {
     try {
       final capability = await _client.capability();
       if (!capability.available) {
-        return fallback;
+        return _withFallbackReason(fallback, capability.message);
       }
       final response = await _client.generate(
         SlmGenerationRequest(
           prompt: _promptFor(facts),
           maxTokens: 256,
           temperature: 0,
+          // Native decode is opt-in only for this low-frequency, read-only
+          // evaluation path. Result summaries and TTS stay rule-based.
+          allowUnsafeDecode: true,
         ),
       );
       final text = response.text.trim();
       if (text.isEmpty) {
-        return fallback;
+        return _withFallbackReason(fallback, '端侧模型未返回有效判断。');
       }
       return LoopEvaluationSummary(
         text: _truncate(text, 800),
@@ -90,8 +97,10 @@ class LoopEvaluationAssistant {
         usedAi: true,
         nextAction: nextAction,
       );
+    } on TimeoutException {
+      return _withFallbackReason(fallback, '端侧模型响应超时。');
     } catch (_) {
-      return fallback;
+      return _withFallbackReason(fallback, '端侧模型暂时不可用。');
     }
   }
 
@@ -112,6 +121,27 @@ class LoopEvaluationAssistant {
       reason: suggestion.reason,
       draft: suggestion.draft,
       policy: _policyGate.policyFor(task, suggestion),
+    );
+  }
+
+  LoopNextAction? autopilotNextActionFor(
+    TaskSession task, {
+    required String runtimeStatus,
+  }) {
+    if (runtimeStatus == 'running' || runtimeStatus == 'needApproval') {
+      return null;
+    }
+    final deliverable = task.turns.lastOrNull?.deliverable;
+    if (deliverable?.loopState != LoopRuntimeOutcomeState.continueWork.name ||
+        LoopRuntimeProtocol.isNoAction(deliverable!.loopNextAction)) {
+      return null;
+    }
+    return LoopNextAction(
+      id: LoopRuntimeProtocol.autoActionId,
+      title: '继续执行',
+      reason: 'Agent 按 Loop 协议声明仍有明确下一步。',
+      draft: deliverable.loopNextAction,
+      policy: _policyGate.policyForProtocol(task),
     );
   }
 
@@ -233,6 +263,20 @@ ${jsonEncode(facts.toJson())}
     );
   }
 
+  LoopEvaluationSummary _withFallbackReason(
+    LoopEvaluationSummary summary,
+    String reason,
+  ) {
+    final normalized = reason.trim();
+    return LoopEvaluationSummary(
+      text: summary.text,
+      source: summary.source,
+      usedAi: summary.usedAi,
+      nextAction: summary.nextAction,
+      fallbackReason: normalized.isEmpty ? '端侧模型暂时不可用。' : normalized,
+    );
+  }
+
   String _truncate(String value, int maxChars) {
     if (value.length <= maxChars) {
       return value;
@@ -254,12 +298,13 @@ class LoopActionPolicyGate {
     if (_requiresHumanDecision(suggestion.id)) {
       return LoopNextActionPolicy.confirmationRequired;
     }
-    return switch (task.approvalMode.name) {
-      'aggressive' => LoopNextActionPolicy.autoAllowed,
-      'balanced' => LoopNextActionPolicy.assisted,
-      _ => LoopNextActionPolicy.confirmationRequired,
-    };
+    return LoopNextActionPolicy.assisted;
   }
+
+  LoopNextActionPolicy policyForProtocol(TaskSession task) =>
+      task.approvalMode.name == 'aggressive'
+          ? LoopNextActionPolicy.autoAllowed
+          : LoopNextActionPolicy.assisted;
 
   bool _requiresHumanDecision(String suggestionId) {
     return suggestionId == 'resolve_blocker' ||

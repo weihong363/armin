@@ -140,7 +140,7 @@ Ran jq -r '.pet_id' output/hatch-pet/*/pet_request.json
     expect(enProfile.pitch, lessThanOrEqualTo(zhProfile.pitch));
   });
 
-  test('speech summary compacts long noisy output into readable summary', () {
+  test('speech summary cleans noisy output without truncating the result', () {
     final cleaned = DeviceVoiceService.cleanSpeechSummaryForTest('''
 Armin context governance:
 - Only inspect files directly related to the task.
@@ -156,7 +156,30 @@ You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), v
     expect(cleaned, isNot(contains('详情页')));
     expect(cleaned, isNot(contains('Search pet')));
     expect(cleaned, isNot(contains('jq -r')));
-    expect(cleaned.length, lessThan(230));
+    expect(cleaned, contains('我已经找到主要问题，需要稍后重试。'));
+    expect(cleaned, contains('应该保留最核心的信息。'));
+  });
+
+  test('speech summary preserves content beyond the former 90 char limit', () {
+    final summary = [
+      '第一部分说明任务已经完成。',
+      '第二部分列出修改内容和验证结果。',
+      '第三部分说明没有修改其他文件。',
+      '第四部分给出后续操作建议。',
+      '第五部分记录测试全部通过并且没有发现回归。',
+      '第六部分说明用户现在可以继续提交下一轮指令。',
+      '最后一部分必须被完整朗读，不能丢失。',
+    ].join('\n');
+
+    final cleaned = DeviceVoiceService.cleanSpeechSummaryForTest(summary);
+    final segments = DeviceVoiceService.buildSpeechSegmentsForTest(cleaned);
+
+    expect(cleaned.length, greaterThan(90));
+    expect(cleaned, endsWith('最后一部分必须被完整朗读，不能丢失。'));
+    expect(
+      segments.map((segment) => segment.text).join(' '),
+      allOf(contains('最后一部分必须被完整朗读'), contains('不能丢失')),
+    );
   });
 
   test('speech summary skips real agent terminal noise', () {

@@ -107,6 +107,47 @@ class BridgeRuntime {
     return taskStore.loadTask(taskId);
   }
 
+  Future<List<RuntimeEvent>> archivedEvents({
+    required String taskId,
+    int? afterArchiveId,
+    int limit = 100,
+  }) async {
+    _validateTaskId(taskId);
+    if (limit <= 0 || limit > 500) {
+      throw ArgumentError.value(limit, 'limit', 'Must be between 1 and 500.');
+    }
+    final store = taskStore;
+    if (store is! RuntimePersistenceStore) return const [];
+    return store.loadEvents(
+      taskId: taskId,
+      afterArchiveId: afterArchiveId,
+      limit: limit,
+    );
+  }
+
+  Future<void> drainDurableWrites() async {
+    while (_durableWriteChains.isNotEmpty) {
+      await Future.wait(_durableWriteChains.values.toList(growable: false));
+    }
+  }
+
+  Future<int?> replayArchivedEvents({
+    required String taskId,
+    int? afterArchiveId,
+    int limit = 100,
+    required FutureOr<void> Function(RuntimeEvent event) onEvent,
+  }) async {
+    final events = await archivedEvents(
+      taskId: taskId,
+      afterArchiveId: afterArchiveId ?? 0,
+      limit: limit,
+    );
+    for (final event in events) {
+      await onEvent(event);
+    }
+    return events.isEmpty ? afterArchiveId : events.last.archiveId;
+  }
+
   Future<RuntimeTaskSnapshot> projectTaskState({
     required String taskId,
     required RuntimeTaskStatus status,
@@ -141,6 +182,17 @@ class BridgeRuntime {
     final store = taskStore;
     if (store is! RuntimePersistenceStore) {
       return;
+    }
+    final snapshots = await store.loadTasks();
+    for (final snapshot in snapshots) {
+      if (snapshot.lastOutputFingerprint.isEmpty) {
+        continue;
+      }
+      watcher.restoreCheckpoint(
+        taskId: snapshot.taskId,
+        lastOffset: snapshot.lastLogOffset,
+        outputFingerprint: snapshot.lastOutputFingerprint,
+      );
     }
     final workStates = await store.loadWorkStates();
     for (final state in workStates) {
@@ -435,7 +487,7 @@ class BridgeRuntime {
       taskId: taskId,
       capturedOutput: capturedOutput,
     );
-    if (!update.hasUsefulUpdate) {
+    if (update.isDuplicate || !update.hasUsefulUpdate) {
       return null;
     }
     final observedAt = now ?? DateTime.now();
@@ -446,6 +498,7 @@ class BridgeRuntime {
       currentStep: update.action.isEmpty ? current.currentStep : update.action,
       progress: update.progress ?? current.progress,
       lastLogOffset: update.lastOffset,
+      lastOutputFingerprint: update.outputFingerprint,
       checkpoint:
           update.checkpoint.isEmpty ? current.checkpoint : update.checkpoint,
       summary: update.action.isEmpty ? current.summary : update.action,

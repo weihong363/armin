@@ -68,7 +68,7 @@ void main() {
   Future<String> startTask(
     String mode,
     String marker, {
-    AgentApprovalMode approvalMode = AgentApprovalMode.safe,
+    AgentApprovalMode approvalMode = AgentApprovalMode.balanced,
   }) async {
     final host = testHost(state);
     final now = DateTime.now();

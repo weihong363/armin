@@ -1,8 +1,7 @@
-import 'package:flutter_test/flutter_test.dart';
-
 import 'package:armin/features/tasks/models/secret_entry.dart';
 import 'package:armin/features/tasks/models/task_constraint.dart';
 import 'package:armin/features/tasks/services/prompt_template_builder.dart';
+import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   test('PromptTemplateBuilder builds final prompt with redacted secrets', () {
@@ -31,6 +30,9 @@ void main() {
     expect(prompt, contains('不要提交 Git'));
     expect(prompt, contains('## Context chunk'));
     expect(prompt, contains('## Secret placeholders'));
+    expect(prompt, contains('## Armin Loop Runtime Protocol'));
+    expect(prompt, contains('ARMIN_LOOP_OUTCOME_BEGIN'));
+    expect(prompt, contains('state=DONE | CONTINUE | BLOCKED'));
     expect(prompt, contains('错误日志'));
     expect(prompt, contains('修复登录失败'));
     expect(prompt, contains('GITHUB_TOKEN: [REDACTED]'));

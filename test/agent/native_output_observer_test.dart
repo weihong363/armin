@@ -479,6 +479,31 @@ Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdo
     expect(snapshot.turnIdle, isTrue);
   });
 
+  test('natural qoder final answer settles without a marker', () {
+    final observer = NativeOutputObserver(
+      idleThreshold: const Duration(seconds: 1),
+    );
+    const output = '''
+▪ Let me check the project metadata.
+▪ Read(/Users/.../pubspec.yaml)
+  └ Read 21 lines
+▪ The project is named countdown_widgets and its description is: "A package containing
+  various countdown widgets for Flutter applications."
+
+  This is a Flutter package that provides countdown-related UI widgets for Flutter
+  applications.
+Shift+Tab to Accept Edits      Try /effort or /context-window to adjust model settings
+* Type your message or @path/to/file
+Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdown_widgets
+''';
+
+    final snapshot = observer.observeSettled(output);
+
+    expect(snapshot.state, NativeOutputObserverState.turnIdle);
+    expect(snapshot.turnIdle, isTrue);
+    expect(observer.hasSettledTurnEvidence(snapshot.cleanedOutput), isTrue);
+  });
+
   test('credits exhausted is not hidden by trailing yolo status chrome', () {
     final observer = NativeOutputObserver(
       idleThreshold: const Duration(seconds: 1),

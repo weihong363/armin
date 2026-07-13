@@ -8,6 +8,7 @@ import 'secret_entry.dart';
 import 'subtask.dart';
 import 'task_constraint.dart';
 import 'task_draft.dart';
+import 'task_recurrence.dart';
 import 'voice_input.dart';
 
 class TaskSession {
@@ -27,6 +28,8 @@ class TaskSession {
     this.approvalMode = AgentApprovalMode.balanced,
     this.startedAt,
     this.scheduledFor,
+    this.calendarSyncEnabled = false,
+    this.recurrence = TaskRecurrence.once,
     this.completedAt,
     this.parentTaskId,
     this.workerLabel,
@@ -47,6 +50,8 @@ class TaskSession {
   final DateTime updatedAt;
   final DateTime? startedAt;
   final DateTime? scheduledFor;
+  final bool calendarSyncEnabled;
+  final TaskRecurrence recurrence;
   final DateTime? completedAt;
   final String? parentTaskId;
   final String? workerLabel;
@@ -86,6 +91,11 @@ class TaskSession {
       updatedAt: _date(json['updatedAt']),
       startedAt: _nullableDate(json['startedAt']),
       scheduledFor: _nullableDate(json['scheduledFor']),
+      calendarSyncEnabled: json['calendarSyncEnabled'] == true,
+      recurrence: TaskRecurrence.values.firstWhere(
+        (value) => value.name == json['recurrence'],
+        orElse: () => TaskRecurrence.once,
+      ),
       completedAt: _nullableDate(json['completedAt']),
       parentTaskId: json['parentTaskId'] as String?,
       workerLabel: json['workerLabel'] as String?,
@@ -125,6 +135,8 @@ class TaskSession {
     DateTime? updatedAt,
     DateTime? startedAt,
     DateTime? scheduledFor,
+    bool? calendarSyncEnabled,
+    TaskRecurrence? recurrence,
     DateTime? completedAt,
     String? parentTaskId,
     String? workerLabel,
@@ -156,6 +168,8 @@ class TaskSession {
       startedAt: startedAt ?? this.startedAt,
       scheduledFor:
           clearScheduledFor ? null : scheduledFor ?? this.scheduledFor,
+      calendarSyncEnabled: calendarSyncEnabled ?? this.calendarSyncEnabled,
+      recurrence: recurrence ?? this.recurrence,
       completedAt: completedAt ?? this.completedAt,
       parentTaskId: parentTaskId ?? this.parentTaskId,
       workerLabel: workerLabel ?? this.workerLabel,
@@ -212,6 +226,8 @@ class TaskSession {
       'updatedAt': updatedAt.toIso8601String(),
       'startedAt': startedAt?.toIso8601String(),
       'scheduledFor': scheduledFor?.toIso8601String(),
+      'calendarSyncEnabled': calendarSyncEnabled,
+      'recurrence': recurrence.name,
       'completedAt': completedAt?.toIso8601String(),
       'parentTaskId': parentTaskId,
       'workerLabel': workerLabel,
@@ -260,6 +276,8 @@ class TaskSession {
       'updatedAt': updatedAt.toIso8601String(),
       'startedAt': startedAt?.toIso8601String(),
       'scheduledFor': scheduledFor?.toIso8601String(),
+      'calendarSyncEnabled': calendarSyncEnabled,
+      'recurrence': recurrence.name,
       'completedAt': completedAt?.toIso8601String(),
       'parentTaskId': parentTaskId,
       'workerLabel': workerLabel,

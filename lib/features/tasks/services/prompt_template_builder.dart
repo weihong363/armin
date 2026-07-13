@@ -1,5 +1,6 @@
 import '../models/secret_entry.dart';
 import '../models/task_constraint.dart';
+import 'loop_runtime_protocol.dart';
 import 'prompt_context_chunker.dart';
 import 'prompt_governor.dart';
 import 'secret_redactor.dart';
@@ -13,7 +14,7 @@ class PromptTemplateBuilder {
         _governor = governor ?? const PromptGovernor(),
         _chunker = chunker ?? const PromptContextChunker();
 
-  static const templateVersion = 'armin-task-v1';
+  static const templateVersion = 'armin-task-v2';
 
   final SecretRedactor _redactor;
   final PromptGovernor _governor;
@@ -36,6 +37,7 @@ class PromptTemplateBuilder {
       secretsText: secretsText,
     );
 
-    return _governor.apply(chunkedPrompt, constraints: constraints);
+    return '${_governor.apply(chunkedPrompt, constraints: constraints)}\n\n'
+        '${LoopRuntimeProtocol.promptContract}';
   }
 }

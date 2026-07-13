@@ -2,6 +2,21 @@ import 'package:armin/features/agent/services/agent_output_cleaner.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('removes qoder shortcuts footer from cleaned output', () {
+    const cleaner = AgentOutputCleaner();
+
+    expect(cleaner.clean('? for shortcuts'), isEmpty);
+  });
+
+  test('removes rotating qoder footer promotions', () {
+    const cleaner = AgentOutputCleaner();
+
+    expect(cleaner.clean('Enjoy Off-Peak Discount using Qwen 3.7 Models'),
+        isEmpty);
+    expect(cleaner.clean('Try /model to switch models'), isEmpty);
+    expect(cleaner.clean('1 MCP server · 15 skills'), isEmpty);
+  });
+
   test('removes ansi and Codex TUI noise without mutating raw text', () {
     const raw = '\x1B[32mhello\x1B[0m\n'
         '│ >_ OpenAI Codex (v0.130.0)\n'
@@ -140,6 +155,21 @@ AGENTS.md file · 12 skills
     expect(cleaned, isNot(contains('Type your message or @path/to/file')));
     expect(cleaned, isNot(contains('Auto Model')));
     expect(cleaned, isNot(contains('Shift+Tab')));
+  });
+
+  test('drops current qoder result footer chrome', () {
+    const raw = '''
+▪ The project is named countdown_widgets.
+Shift+Tab to Accept Edits      Try /effort or /context-window to adjust model settings
+Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdown_widgets
+''';
+
+    final cleaned = const AgentOutputCleaner().clean(raw);
+
+    expect(cleaned, contains('countdown_widgets'));
+    expect(cleaned, isNot(contains('Shift+Tab')));
+    expect(cleaned, isNot(contains('Try /effort')));
+    expect(cleaned, isNot(contains('Model · ctx')));
   });
 
   test('removes aggressive governance header and rules', () {

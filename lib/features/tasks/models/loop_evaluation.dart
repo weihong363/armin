@@ -270,6 +270,7 @@ class LoopUserAction {
 
 enum LoopAutoActionState {
   sent,
+  confirmed,
   skipped,
   rejected,
 }

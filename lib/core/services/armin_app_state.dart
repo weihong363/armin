@@ -29,11 +29,15 @@ import '../../features/tasks/models/loop_evaluation.dart';
 import '../../features/tasks/models/metric_event.dart';
 import '../../features/tasks/models/native_output_turn.dart';
 import '../../features/tasks/models/task_constraint.dart';
+import '../../features/tasks/models/task_recurrence.dart';
 import '../../features/tasks/models/task_session.dart';
 import '../../features/tasks/models/voice_input.dart';
 import '../../features/tasks/services/loop_evaluation_assistant.dart';
+import '../../features/tasks/services/loop_runtime_protocol.dart';
 import '../../features/tasks/services/output_summary_provider.dart';
+import '../../features/tasks/services/scheduled_task_wake_service.dart';
 import '../../features/tasks/services/secret_redactor.dart';
+import '../../features/tasks/services/system_calendar_service.dart';
 import '../../features/tasks/services/task_deliverable_source.dart';
 import '../../features/voice/services/device_voice_service.dart';
 import '../../features/voice/services/task_speech_policy.dart';
@@ -46,7 +50,6 @@ OutputSummaryProvider _defaultOutputSummaryProvider() =>
     const RuleBasedOutputSummaryProvider();
 
 class ArminAppState extends ChangeNotifier {
-  static const _deliverableSource = TaskDeliverableSource();
   static const _loopEvaluationAssistant = LoopEvaluationAssistant();
   static const _appDiagnosticsEnabled = bool.fromEnvironment('ARMIN_APP_DIAG');
   static const _maxAutopilotActionsPerTask = 3;
@@ -58,6 +61,8 @@ class ArminAppState extends ChangeNotifier {
     TaskNotificationService? taskNotificationService,
     TaskSpeechPolicy? taskSpeechPolicy,
     OutputSummaryProvider? outputSummaryProvider,
+    this.scheduledTaskWakeService = const NoopScheduledTaskWakeService(),
+    this.systemCalendarService = const NoopSystemCalendarService(),
     this.speechSettings = const TaskSpeechSettings(),
     RuntimeEventBus? runtimeEventBus,
     BridgeRuntime? bridgeRuntime,
@@ -90,6 +95,8 @@ class ArminAppState extends ChangeNotifier {
     VoiceService? voiceService,
     TaskNotificationService? taskNotificationService,
     OutputSummaryProvider? outputSummaryProvider,
+    ScheduledTaskWakeService? scheduledTaskWakeService,
+    SystemCalendarService? systemCalendarService,
   })  : _store = store ??
             (() {
               final runtimeStore = SQLiteRuntimePersistenceStore();
@@ -98,10 +105,14 @@ class ArminAppState extends ChangeNotifier {
         agentSessionService = agentSessionService ?? SSHAgentSessionService(),
         voiceService = voiceService ?? DeviceVoiceService(),
         taskNotificationService =
-            taskNotificationService ?? const NoopTaskNotificationService(),
+            taskNotificationService ?? NativeTaskNotificationService(),
         _taskSpeechPolicy = const TaskSpeechPolicy(),
         outputSummaryProvider =
             outputSummaryProvider ?? _defaultOutputSummaryProvider(),
+        scheduledTaskWakeService =
+            scheduledTaskWakeService ?? const NativeScheduledTaskWakeService(),
+        systemCalendarService =
+            systemCalendarService ?? const NativeSystemCalendarService(),
         speechSettings = const TaskSpeechSettings(),
         _enableRemoteReconcile = true,
         _remoteReconcileInterval = const Duration(seconds: 10),
@@ -123,6 +134,8 @@ class ArminAppState extends ChangeNotifier {
   final TaskNotificationService taskNotificationService;
   final TaskSpeechPolicy _taskSpeechPolicy;
   final OutputSummaryProvider outputSummaryProvider;
+  final ScheduledTaskWakeService scheduledTaskWakeService;
+  final SystemCalendarService systemCalendarService;
   final SecretRedactor _secretRedactor = const SecretRedactor();
   TaskSpeechSettings speechSettings;
   final RuntimeEventBus runtimeEventBus;
@@ -157,7 +170,16 @@ class ArminAppState extends ChangeNotifier {
   /// Active tasks: any task that is NOT in a terminal state.
   /// Terminal states: completed, userCompleted, failed, userFailed, stopped.
   List<TaskSession> get activeTasks {
-    return tasks.where((t) => !_isTerminalTask(t)).toList(growable: false);
+    return tasks
+        .where((task) =>
+            !_isTerminalTask(task) && !isRecurringScheduleTemplate(task))
+        .toList(growable: false);
+  }
+
+  bool isRecurringScheduleTemplate(TaskSession task) {
+    return task.recurrence.isRecurring &&
+        task.scheduledFor != null &&
+        task.startedAt == null;
   }
 
   bool _isTerminalTask(TaskSession task) {
@@ -240,6 +262,7 @@ class ArminAppState extends ChangeNotifier {
       _runningExecutions = {};
   final Map<String, Timer> _autoDetachTimers = {};
   final Map<String, Timer> _scheduledTaskTimers = {};
+  final Set<String> _scheduledStartsInFlight = {};
   final Map<String, String> _lastSpokenHashes = {};
   final Set<String> _seenDeliverableSpeechKeys = {};
   final Set<String> _seenTaskNotificationKeys = {};
@@ -257,9 +280,42 @@ class ArminAppState extends ChangeNotifier {
   bool _remoteSnapshotPollRunning = false;
   StreamSubscription<RuntimeEvent>? _speechEventSubscription;
   StreamSubscription<RuntimeEvent>? _notificationEventSubscription;
+  StreamSubscription<String>? _notificationTapSubscription;
+  Future<void>? _loadInFlight;
+  Future<void>? _resumeInFlight;
+  bool _runtimeForeground = true;
+  final ValueNotifier<String?> notificationTaskToOpen = ValueNotifier(null);
 
-  Future<void> load() async {
-    await bridgeRuntime.restoreDurableState();
+  /// Whether Armin is actively observing the remote runtime from the foreground.
+  ///
+  /// Remote tmux sessions continue independently while the app is backgrounded.
+  /// Armin intentionally makes no background-observation guarantee until a native
+  /// background transport exists; [resumeRuntime] reconciles immediately instead.
+  bool get isRuntimeForeground => _runtimeForeground;
+
+  void consumeNotificationTaskToOpen(String taskId) {
+    if (notificationTaskToOpen.value == taskId) {
+      notificationTaskToOpen.value = null;
+    }
+  }
+
+  Future<void> load() {
+    if (_disposed) {
+      return Future<void>.value();
+    }
+    return _loadInFlight ??= _loadFromStore(
+      restoreRuntime: !ready,
+    ).whenComplete(() {
+      _loadInFlight = null;
+    });
+  }
+
+  /// Explicit storage reload used by startup and user/test refresh paths.
+  /// Lifecycle resume intentionally uses [resumeRuntime] instead.
+  Future<void> _loadFromStore({required bool restoreRuntime}) async {
+    if (restoreRuntime) {
+      await bridgeRuntime.restoreDurableState();
+    }
     // [DEV-ONLY] Import seed passwords before loading hosts.
     // This is a no-op in production. Only the Android emulator workflow
     // (seed-config.sh) places a temporary password file on the device.
@@ -307,15 +363,75 @@ class ArminAppState extends ChangeNotifier {
     _startRemoteReconcileLoop();
     _startRemoteSnapshotPollLoop();
     _syncScheduledTaskTimers();
-    _speechEventSubscription = runtimeEvents.listen(_onSpeechEvent);
-    _notificationEventSubscription = runtimeEvents.listen(_onNotificationEvent);
+    await _syncPlatformScheduledTasks();
+    _installRuntimeEventSubscriptions();
+    await _restorePendingNotificationTap();
     notifyListeners();
+  }
+
+  /// Pauses app-owned polling only. The remote session remains untouched.
+  void pauseRuntime() {
+    if (_disposed || !_runtimeForeground) {
+      return;
+    }
+    _runtimeForeground = false;
+    bridgeRuntime.stopReconcileLoop();
+    _remoteSnapshotPollTimer?.cancel();
+    _remoteSnapshotPollTimer = null;
+  }
+
+  /// Re-enters foreground observation without re-hydrating the whole app state.
+  ///
+  /// A resumed app first runs one immediate snapshot pass, then restores the
+  /// normal reconcile/poll loops. This keeps UI position and event consumers
+  /// stable while still catching remote progress made in the background.
+  Future<void> resumeRuntime() {
+    if (_disposed) {
+      return Future<void>.value();
+    }
+    if (!ready) {
+      return load();
+    }
+    _runtimeForeground = true;
+    return _resumeInFlight ??= _resumeRuntime().whenComplete(() {
+      _resumeInFlight = null;
+    });
+  }
+
+  Future<void> _resumeRuntime() async {
+    _installRuntimeEventSubscriptions();
+    _startRemoteReconcileLoop();
+    _startRemoteSnapshotPollLoop();
+    await _runRemoteSnapshotPoll();
+  }
+
+  void _installRuntimeEventSubscriptions() {
+    _speechEventSubscription ??= runtimeEvents.listen(_onSpeechEvent);
+    _notificationEventSubscription ??=
+        runtimeEvents.listen(_onNotificationEvent);
+    _notificationTapSubscription ??=
+        taskNotificationService.openedTaskIds.listen(_openTaskFromNotification);
+  }
+
+  Future<void> _restorePendingNotificationTap() async {
+    final taskId = await taskNotificationService.consumePendingTaskId();
+    if (taskId != null) {
+      _openTaskFromNotification(taskId);
+    }
+  }
+
+  void _openTaskFromNotification(String taskId) {
+    if (_disposed || _latestTask(taskId) == null) {
+      return;
+    }
+    notificationTaskToOpen.value = taskId;
   }
 
   @override
   void dispose() {
     _disposed = true;
     homeSnapshot.dispose();
+    notificationTaskToOpen.dispose();
     for (final snapshot in _taskSnapshots.values) {
       snapshot.dispose();
     }
@@ -323,6 +439,10 @@ class ArminAppState extends ChangeNotifier {
     _remoteSnapshotPollTimer?.cancel();
     _speechEventSubscription?.cancel();
     _notificationEventSubscription?.cancel();
+    _notificationTapSubscription?.cancel();
+    _speechEventSubscription = null;
+    _notificationEventSubscription = null;
+    _notificationTapSubscription = null;
     for (final timer in _autoDetachTimers.values) {
       timer.cancel();
     }
@@ -363,6 +483,7 @@ class ArminAppState extends ChangeNotifier {
     if (_runtimeSyncChains.isNotEmpty) {
       await Future.wait(_runtimeSyncChains.values.toList(growable: false));
     }
+    await bridgeRuntime.drainDurableWrites();
 
     // 3. Wait for queued autopilot callbacks triggered by fresh deliverables.
     await _autopilotQueue;
@@ -433,30 +554,30 @@ class ArminAppState extends ChangeNotifier {
     updatedTasks.insert(0, taskToSave);
     tasks = updatedTasks;
     _syncScheduledTaskTimer(taskToSave);
+    await _syncPlatformScheduledTask(taskToSave);
+    await _syncSystemCalendarTask(taskToSave);
     _reconcileMissStreak.remove(task.id);
+    if (publishDeliverable) {
+      await _publishDeliverableIfAvailable(taskToSave);
+    }
+    final visibleTask = _latestTask(taskToSave.id) ?? taskToSave;
     final statusChanged = previous == null ||
         _projectedStatusSignature(previous) !=
-            _projectedStatusSignature(taskToSave);
+            _projectedStatusSignature(visibleTask);
     if (statusChanged) {
       unawaited(
-        _enqueueRuntimeSync(taskToSave).then((_) {
+        _enqueueRuntimeSync(visibleTask).then((_) {
           if (_disposed) return;
-          _updateTaskSnapshot(taskToSave);
+          _updateTaskSnapshot(visibleTask);
           _updateHomeSnapshot(force: true);
-          _queueAggressiveAutoApproveIfNeeded(taskToSave);
+          _queueAggressiveAutoApproveIfNeeded(visibleTask);
         }),
       );
-      if (publishDeliverable) {
-        unawaited(_publishDeliverableIfAvailable(taskToSave));
-      }
       return;
     }
-    _updateTaskSnapshot(taskToSave);
+    _updateTaskSnapshot(visibleTask);
     _updateHomeSnapshot();
-    _queueAggressiveAutoApproveIfNeeded(taskToSave);
-    if (publishDeliverable) {
-      unawaited(_publishDeliverableIfAvailable(taskToSave));
-    }
+    _queueAggressiveAutoApproveIfNeeded(visibleTask);
   }
 
   void _queueAggressiveAutoApproveIfNeeded(TaskSession task) {
@@ -698,7 +819,11 @@ class ArminAppState extends ChangeNotifier {
     await saveTask(updated);
   }
 
-  Future<void> scheduleTask(TaskSession task, DateTime scheduledFor) async {
+  Future<void> scheduleTask(
+    TaskSession task,
+    DateTime scheduledFor, {
+    TaskRecurrence recurrence = TaskRecurrence.once,
+  }) async {
     final latest = _latestTask(task.id) ?? task;
     if (_isTerminalTask(latest) || _taskStatus(latest) == TaskStatus.running) {
       throw StateError('Only inactive tasks can be scheduled.');
@@ -710,12 +835,14 @@ class ArminAppState extends ChangeNotifier {
       now: now,
     ).copyWith(
       scheduledFor: scheduledFor,
+      recurrence: recurrence,
       metricEvents: _metricEventsWithCreated(
         latest.metricEvents,
         taskId: latest.id,
         eventType: 'task_scheduled',
         payloadJson: jsonEncode({
           'scheduledFor': scheduledFor.toIso8601String(),
+          'recurrence': recurrence.name,
         }),
         now: now,
       ),
@@ -742,6 +869,7 @@ class ArminAppState extends ChangeNotifier {
         eventType: 'task_rescheduled',
         payloadJson: jsonEncode({
           'scheduledFor': scheduledFor.toIso8601String(),
+          'recurrence': latest.recurrence.name,
         }),
         now: now,
       ),
@@ -758,15 +886,16 @@ class ArminAppState extends ChangeNotifier {
     final now = DateTime.now();
     final canceled = _projectTaskStatus(
       latest,
-      status: TaskStatus.draft,
+      status: TaskStatus.userCompleted,
       now: now,
       clearScheduledFor: true,
     ).copyWith(
+      recurrence: TaskRecurrence.once,
       metricEvents: _metricEventsWithCreated(
         latest.metricEvents,
         taskId: latest.id,
         eventType: 'task_schedule_canceled',
-        payloadJson: '{"status":"draft"}',
+        payloadJson: '{"status":"userCompleted"}',
         now: now,
       ),
     );
@@ -892,7 +1021,8 @@ class ArminAppState extends ChangeNotifier {
     LoopNextAction action,
   ) async {
     final latest = _latestTask(task.id) ?? task;
-    if (!action.canAutoExecute) {
+    if (!action.canAutoExecute ||
+        action.id != LoopRuntimeProtocol.autoActionId) {
       _runtimeDiag(
         'AUTOPILOT_REJECT task=${latest.id} reason=policy '
         'policy=${action.policy.name}',
@@ -958,20 +1088,41 @@ class ArminAppState extends ChangeNotifier {
     return true;
   }
 
-  String _autopilotInstruction(TaskSession task, LoopNextAction action) {
-    final nextTurnIndex = (task.turns.lastOrNull?.turnIndex ?? 0) + 1;
-    final markerAction = action.id
-        .replaceAll(RegExp(r'[^a-zA-Z0-9]+'), '_')
-        .replaceAll(RegExp(r'_+'), '_')
-        .toUpperCase();
-    final marker = 'ARMIN_AUTOPILOT_${markerAction}_T$nextTurnIndex';
-    return '''
-${action.draft.trim()}
+  Future<bool> confirmLoopNextAction(
+    TaskSession task,
+    LoopNextAction action, {
+    required String instruction,
+  }) async {
+    final normalized = instruction.trim();
+    final latest = _latestTask(task.id) ?? task;
+    if (normalized.isEmpty || action.canAutoExecute) {
+      return false;
+    }
+    if (!_canAutopilotContinue(latest) || _hasAutoAction(latest, action)) {
+      return false;
+    }
+    final confirmedAction = LoopNextAction(
+      id: action.id,
+      title: action.title,
+      reason: action.reason,
+      draft: normalized,
+      policy: action.policy,
+    );
+    await _recordLoopAutoAction(
+      latest,
+      confirmedAction,
+      state: LoopAutoActionState.confirmed,
+    );
+    final saved = _latestTask(latest.id) ?? latest;
+    await sendFollowUp(saved, normalized);
+    return true;
+  }
 
-Armin autopilot verification:
-- Stop after this follow-up result.
-- Final answer must include:
-$marker status=PASS next=WAIT
+  String _autopilotInstruction(TaskSession task, LoopNextAction action) {
+    return '''
+继续执行当前任务的下一步：${action.draft.trim()}
+
+完成后继续遵循初始 Prompt 中的 Armin Loop Runtime Protocol；只有仍有明确、必要的下一步时才输出 state=CONTINUE。
 ''';
   }
 
@@ -982,7 +1133,7 @@ $marker status=PASS next=WAIT
       return false;
     }
     final projectedStatus = _projectedTaskStatus(latest);
-    final action = _loopEvaluationAssistant.nextActionFor(
+    final action = _loopEvaluationAssistant.autopilotNextActionFor(
       latest,
       runtimeStatus: projectedStatus.name,
     );
@@ -1133,7 +1284,8 @@ $marker status=PASS next=WAIT
         final autoAction = LoopAutoAction.fromJson(
           jsonDecode(event.payloadJson) as Map<String, Object?>,
         );
-        return autoAction.state == LoopAutoActionState.sent &&
+        return (autoAction.state == LoopAutoActionState.sent ||
+                autoAction.state == LoopAutoActionState.confirmed) &&
             autoAction.dedupeKey == key;
       } catch (_) {
         return false;
@@ -1572,8 +1724,16 @@ $marker status=PASS next=WAIT
     String snapshot, {
     bool allowSettled = false,
   }) async {
+    // Observation may enrich focus/checkpoint data, but it never decides task
+    // lifecycle or deliverables. Those remain Runtime state projections.
+    await bridgeRuntime.observeOutput(
+      taskId: task.id,
+      capturedOutput: snapshot,
+    );
+    final runtimeAdapter =
+        AgentRuntimeAdapter.forCommand(task.host.agentCommand);
     final observer = NativeOutputObserver(
-      runtimeAdapter: AgentRuntimeAdapter.forCommand(task.host.agentCommand),
+      runtimeAdapter: runtimeAdapter,
       idleThreshold: const RuntimePolicy()
           .forApprovalMode(task.approvalMode)
           .idleThreshold,
@@ -1595,22 +1755,34 @@ $marker status=PASS next=WAIT
     final cleanedOutput = observed.cleanedOutput.trim().isNotEmpty
         ? observed.cleanedOutput
         : snapshot;
+    final hasFinalEvidence = runtimeAdapter
+        .finalEvidenceFor(
+          cleanedOutput,
+          prompt: task.turns.lastOrNull?.userInput ?? task.userText,
+        )
+        .isNotEmpty;
+    final preserveAttentionForFinal = !allowSettled &&
+        _taskStatus(task) == TaskStatus.needAttention &&
+        hasFinalEvidence;
     final update = AgentExecutionUpdate(
       rawOutput: '',
       cleanedOutput: cleanedOutput,
       observerState: observed.state,
       turnIdle: allowSettled && observed.turnIdle,
       runtimeLost: observed.runtimeLost,
-      needsAttention: hasAttention || observed.needsAttention,
+      needsAttention:
+          hasAttention || observed.needsAttention || preserveAttentionForFinal,
       nativeApproval: nativeApproval,
-      done: !hasAttention &&
-          (observed.runtimeLost ||
-              observed.needsAttention ||
-              (allowSettled && observed.turnIdle)),
+      done: preserveAttentionForFinal ||
+          (!hasAttention &&
+              (observed.runtimeLost ||
+                  observed.needsAttention ||
+                  (allowSettled && observed.turnIdle))),
     );
     final hasStrongState = hasAttention ||
         observed.runtimeLost ||
         observed.needsAttention ||
+        preserveAttentionForFinal ||
         (allowSettled && observed.turnIdle);
     if (!hasStrongState) {
       _notifyRuntimeOutput(task.id, snapshot);
@@ -2406,6 +2578,66 @@ Apply this decision to the pending approval request.
     }
   }
 
+  Future<void> _syncPlatformScheduledTasks() async {
+    try {
+      await scheduledTaskWakeService.initialize();
+    } catch (error) {
+      _reportProjectionFailure('scheduled wake initialization', error);
+      return;
+    }
+    for (final task in tasks) {
+      await _syncPlatformScheduledTask(task);
+    }
+  }
+
+  Future<void> _syncPlatformScheduledTask(TaskSession task) async {
+    try {
+      if (_taskStatus(task) == TaskStatus.pending &&
+          task.scheduledFor != null) {
+        await scheduledTaskWakeService.schedule(task.id, task.scheduledFor!);
+        return;
+      }
+      await scheduledTaskWakeService.cancel(task.id);
+    } catch (error) {
+      _reportProjectionFailure('scheduled wake for ${task.id}', error);
+    }
+  }
+
+  Future<void> _syncSystemCalendarTask(TaskSession task) async {
+    if (!task.calendarSyncEnabled) return;
+    try {
+      if (task.scheduledFor != null && task.completedAt == null) {
+        await systemCalendarService.upsertScheduledTask(task);
+        return;
+      }
+      await systemCalendarService.removeScheduledTask(task.id);
+    } catch (error) {
+      _reportProjectionFailure('system calendar for ${task.id}', error);
+    }
+  }
+
+  void _reportProjectionFailure(String projection, Object error) {
+    if (_appDiagnosticsEnabled) {
+      debugPrint('ARMIN_DIAG: $projection failed: $error');
+    }
+  }
+
+  Future<void> processDueScheduledTasks({DateTime? now}) async {
+    final dueAt = now ?? DateTime.now();
+    final dueTaskIds = tasks
+        .where(
+          (task) =>
+              _taskStatus(task) == TaskStatus.pending &&
+              task.scheduledFor != null &&
+              !task.scheduledFor!.isAfter(dueAt),
+        )
+        .map((task) => task.id)
+        .toList(growable: false);
+    for (final taskId in dueTaskIds) {
+      await _startScheduledTask(taskId);
+    }
+  }
+
   void _syncScheduledTaskTimer(TaskSession task) {
     _scheduledTaskTimers.remove(task.id)?.cancel();
     if (_disposed ||
@@ -2425,6 +2657,15 @@ Apply this decision to the pending approval request.
   }
 
   Future<void> _startScheduledTask(String taskId) async {
+    if (!_scheduledStartsInFlight.add(taskId)) return;
+    try {
+      await _startScheduledTaskOnce(taskId);
+    } finally {
+      _scheduledStartsInFlight.remove(taskId);
+    }
+  }
+
+  Future<void> _startScheduledTaskOnce(String taskId) async {
     if (_disposed) {
       return;
     }
@@ -2436,6 +2677,10 @@ Apply this decision to the pending approval request.
     }
     _scheduledTaskTimers.remove(taskId)?.cancel();
     final now = DateTime.now();
+    if (latest.recurrence.isRecurring) {
+      await _startRecurringScheduledTask(latest, now);
+      return;
+    }
     final running = _projectTaskStatus(
       latest,
       status: TaskStatus.running,
@@ -2459,6 +2704,112 @@ Apply this decision to the pending approval request.
     startTaskExecution(
       _latestTask(taskId) ?? running,
       _executionRequest(running),
+    );
+  }
+
+  Future<void> _startRecurringScheduledTask(
+    TaskSession template,
+    DateTime now,
+  ) async {
+    final scheduledFor = template.scheduledFor;
+    if (scheduledFor == null) {
+      return;
+    }
+    final nextRunAt = template.recurrence.nextAfter(scheduledFor, now);
+    final refreshedTemplate = template.copyWith(
+      scheduledFor: nextRunAt,
+      updatedAt: now,
+      metricEvents: _metricEventsWithCreated(
+        template.metricEvents,
+        taskId: template.id,
+        eventType: 'task_recurrence_triggered',
+        payloadJson: jsonEncode({
+          'scheduledFor': scheduledFor.toIso8601String(),
+          'nextRunAt': nextRunAt.toIso8601String(),
+          'recurrence': template.recurrence.name,
+        }),
+        now: now,
+      ),
+    );
+    await saveTask(refreshedTemplate, publishDeliverable: false);
+
+    if (activeTasks.length >= maxActiveTasks) {
+      final skippedTemplate = refreshedTemplate.copyWith(
+        updatedAt: now,
+        metricEvents: _metricEventsWithCreated(
+          refreshedTemplate.metricEvents,
+          taskId: refreshedTemplate.id,
+          eventType: 'task_recurrence_skipped_capacity',
+          payloadJson: jsonEncode({
+            'scheduledFor': scheduledFor.toIso8601String(),
+            'maxActiveTasks': maxActiveTasks,
+          }),
+          now: now,
+        ),
+      );
+      await saveTask(skippedTemplate, publishDeliverable: false);
+      runtimeEventBus.publish(
+        RuntimeEvent(
+          type: RuntimeEventType.scheduleSkippedCapacity,
+          taskId: skippedTemplate.id,
+          createdAt: now,
+          message: 'maxActiveTasks=$maxActiveTasks',
+        ),
+      );
+      return;
+    }
+
+    final occurrence = _recurringOccurrenceFromTemplate(
+      refreshedTemplate,
+      scheduledFor: scheduledFor,
+      now: now,
+    );
+    await saveTask(occurrence, publishDeliverable: false);
+    if (_disposed) {
+      return;
+    }
+    startTaskExecution(occurrence, _executionRequest(occurrence));
+  }
+
+  TaskSession _recurringOccurrenceFromTemplate(
+    TaskSession template, {
+    required DateTime scheduledFor,
+    required DateTime now,
+  }) {
+    final occurrenceId = 'task-${now.microsecondsSinceEpoch}';
+    final sessionName = 'armin-${now.microsecondsSinceEpoch}';
+    final host = template.host.copyWith(
+      tmuxSessionName: sessionName,
+      updatedAt: now,
+    );
+    return TaskSession(
+      id: occurrenceId,
+      host: host,
+      title: template.title,
+      createdAt: now,
+      updatedAt: now,
+      startedAt: now,
+      parentTaskId: template.id,
+      rawSttText: template.rawSttText,
+      cleanedDraft: template.cleanedDraft,
+      userText: template.userText,
+      context: template.context,
+      constraints: template.constraints,
+      finalPrompt: template.finalPrompt,
+      secretRecords: template.secretRecords,
+      approvalMode: template.approvalMode,
+      metricEvents: [
+        MetricEvent.create(
+          taskId: occurrenceId,
+          eventType: 'task_scheduled_started',
+          payloadJson: jsonEncode({
+            'templateTaskId': template.id,
+            'scheduledFor': scheduledFor.toIso8601String(),
+            'recurrence': template.recurrence.name,
+          }),
+          now: now,
+        ),
+      ],
     );
   }
 
@@ -2685,7 +3036,10 @@ Apply this decision to the pending approval request.
   }
 
   Future<void> _publishDeliverableIfAvailable(TaskSession task) async {
-    final candidate = _deliverableSource.latestCandidate(task.turns);
+    final deliverableSource = TaskDeliverableSource(
+      runtimeAdapter: AgentRuntimeAdapter.forCommand(task.host.agentCommand),
+    );
+    final candidate = deliverableSource.latestCandidate(task.turns);
     if (candidate == null) {
       _runtimeDiag(
         'DELIVERABLE_SKIP task=${task.id} reason=no_candidate '
@@ -2694,7 +3048,7 @@ Apply this decision to the pending approval request.
       );
       return;
     }
-    final evidence = _deliverableSource.evidenceFor(task.turns, candidate);
+    final evidence = deliverableSource.evidenceFor(task.turns, candidate);
     if (evidence == null) {
       _runtimeDiag(
         'DELIVERABLE_SKIP task=${task.id} '
@@ -2717,7 +3071,7 @@ Apply this decision to the pending approval request.
       'turn=${candidate.turn.id} evidence=${evidence.text.length} '
       'fingerprint=${evidence.fingerprint}',
     );
-    final resolved = await _deliverableSource.resolve(
+    final resolved = await deliverableSource.resolve(
       task.turns,
       candidate,
       provider: outputSummaryProvider,
@@ -2734,12 +3088,11 @@ Apply this decision to the pending approval request.
       return;
     }
     final latest = _latestTask(task.id);
-    final latestCandidate = latest == null
-        ? null
-        : _deliverableSource.latestCandidate(latest.turns);
+    final latestCandidate =
+        latest == null ? null : deliverableSource.latestCandidate(latest.turns);
     final latestEvidence = latestCandidate == null
         ? null
-        : _deliverableSource.evidenceFor(latest!.turns, latestCandidate);
+        : deliverableSource.evidenceFor(latest!.turns, latestCandidate);
     if (latestCandidate?.turn.id != candidate.turn.id) {
       _runtimeDiag(
         'DELIVERABLE_SKIP task=${task.id} '
@@ -2763,6 +3116,8 @@ Apply this decision to the pending approval request.
         displaySummary: resolved.displaySummary,
         speechSummary: resolved.speechSummary,
         evidenceFingerprint: resolved.provenance.evidenceFingerprint,
+        loopState: resolved.loopState,
+        loopNextAction: resolved.loopNextAction,
       ),
     );
     final syncedLatest = _latestTask(task.id) ?? latest;
@@ -3759,6 +4114,8 @@ Apply this decision to the pending approval request.
           title: '任务失败',
           createdAt: createdAt,
         ),
+      RuntimeEventType.scheduleSkippedCapacity =>
+        _scheduleSkippedNotification(task, createdAt),
       _ => null,
     };
   }
@@ -3858,6 +4215,36 @@ Apply this decision to the pending approval request.
       title: '连接已暂停',
       createdAt: createdAt,
     );
+  }
+
+  TaskNotification? _scheduleSkippedNotification(
+    TaskSession task,
+    DateTime createdAt,
+  ) {
+    final scheduledFor = task.scheduledFor;
+    if (!task.recurrence.isRecurring || scheduledFor == null) {
+      return null;
+    }
+    return TaskNotification(
+      id: _taskNotificationId(
+        taskId: task.id,
+        kind: TaskNotificationKind.scheduleSkipped,
+        evidenceFingerprint: scheduledFor.toIso8601String(),
+      ),
+      taskId: task.id,
+      kind: TaskNotificationKind.scheduleSkipped,
+      title: '本次计划未启动',
+      body: '活跃任务已达上限；下次计划于 ${_scheduledNotificationTime(scheduledFor)}。',
+      createdAt: createdAt,
+      evidenceFingerprint: scheduledFor.toIso8601String(),
+    );
+  }
+
+  String _scheduledNotificationTime(DateTime value) {
+    final local = value.toLocal();
+    final hour = local.hour.toString().padLeft(2, '0');
+    final minute = local.minute.toString().padLeft(2, '0');
+    return '${local.month}/${local.day} $hour:$minute';
   }
 
   TaskNotification _terminalNotification(

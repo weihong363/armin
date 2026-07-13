@@ -6,6 +6,7 @@ import '../../../core/models/task_status.dart';
 import '../../../shared/theme/armin_theme.dart';
 import '../../runtime/models/resolved_runtime_state.dart';
 import '../../runtime/models/work_state.dart';
+import '../models/task_recurrence.dart';
 import '../models/task_session.dart';
 import '../services/semantic_snippet_builder.dart';
 
@@ -27,6 +28,8 @@ class TaskCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isScheduled =
+        status == TaskStatus.pending && task.scheduledFor != null;
     final runtime = resolveRuntimeState(
       task,
       taskStatus: status,
@@ -42,6 +45,13 @@ class TaskCard extends StatelessWidget {
       );
     }
     return Card(
+      color: isScheduled ? ArminTheme.scheduledSurface : null,
+      shape: isScheduled
+          ? RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(14),
+              side: const BorderSide(color: ArminTheme.scheduled),
+            )
+          : null,
       margin: const EdgeInsets.only(bottom: 12),
       child: InkWell(
         onTap: onTap,
@@ -67,7 +77,11 @@ class TaskCard extends StatelessWidget {
                 ],
               ),
               const SizedBox(height: 8),
-              _StatusPill(status: status, workState: effectiveWorkState),
+              _StatusPill(
+                status: status,
+                workState: effectiveWorkState,
+                scheduled: isScheduled,
+              ),
               const SizedBox(height: 8),
               Text(
                 _readableSummary(task, status, effectiveWorkState),
@@ -147,6 +161,8 @@ class _FeaturedTaskCardState extends State<_FeaturedTaskCard> {
   @override
   Widget build(BuildContext context) {
     final task = widget.task;
+    final isScheduled =
+        widget.status == TaskStatus.pending && task.scheduledFor != null;
     final runtime = resolveRuntimeState(
       task,
       taskStatus: widget.status,
@@ -158,10 +174,12 @@ class _FeaturedTaskCardState extends State<_FeaturedTaskCard> {
       margin: const EdgeInsets.only(bottom: 20),
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(16),
-        gradient: const LinearGradient(
+        gradient: LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
-          colors: [Color(0xFF103D35), Color(0xFF0A2F29)],
+          colors: isScheduled
+              ? const [Color(0xFF5367B2), Color(0xFF394A8A)]
+              : const [Color(0xFF103D35), Color(0xFF0A2F29)],
         ),
         boxShadow: [
           BoxShadow(
@@ -181,7 +199,11 @@ class _FeaturedTaskCardState extends State<_FeaturedTaskCard> {
             children: [
               Row(
                 children: [
-                  _DarkBadge(status: widget.status, workState: workState),
+                  _DarkBadge(
+                    status: widget.status,
+                    workState: workState,
+                    scheduled: isScheduled,
+                  ),
                   const Spacer(),
                   Text(
                     '${_durationPrefix(task, widget.status, runtime)} '
@@ -307,7 +329,7 @@ String _readableSummary(
   WorkState? workState,
 ) {
   if (status == TaskStatus.pending && task.scheduledFor != null) {
-    return _scheduledTaskLabel(task.scheduledFor!);
+    return _scheduledTaskLabel(task.scheduledFor!, task.recurrence);
   }
   final statusText = workState?.statusText.trim() ?? '';
   final deliverableText = _latestDeliverableSummary(task);
@@ -330,18 +352,26 @@ String _latestDeliverableSummary(TaskSession task) {
 }
 
 class _StatusPill extends StatelessWidget {
-  const _StatusPill({required this.status, required this.workState});
+  const _StatusPill({
+    required this.status,
+    required this.workState,
+    required this.scheduled,
+  });
 
   final TaskStatus status;
   final WorkState? workState;
+  final bool scheduled;
 
   @override
   Widget build(BuildContext context) {
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: _statusColor(status, workState).withValues(alpha: 0.12),
+        color: _statusColor(status, workState: workState, scheduled: scheduled)
+            .withValues(alpha: 0.12),
         border: Border.all(
-          color: _statusColor(status, workState).withValues(alpha: 0.28),
+          color:
+              _statusColor(status, workState: workState, scheduled: scheduled)
+                  .withValues(alpha: 0.28),
         ),
         borderRadius: BorderRadius.circular(999),
       ),
@@ -350,12 +380,24 @@ class _StatusPill extends StatelessWidget {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.circle, color: _statusColor(status, workState), size: 8),
+            Icon(
+              scheduled ? Icons.schedule : Icons.circle,
+              color: _statusColor(
+                status,
+                workState: workState,
+                scheduled: scheduled,
+              ),
+              size: scheduled ? 13 : 8,
+            ),
             const SizedBox(width: 6),
             Text(
-              _statusLabel(status, workState),
+              scheduled ? '已计划' : _statusLabel(status, workState),
               style: TextStyle(
-                color: _statusColor(status, workState),
+                color: _statusColor(
+                  status,
+                  workState: workState,
+                  scheduled: scheduled,
+                ),
                 fontSize: 12,
                 fontWeight: FontWeight.w600,
               ),
@@ -368,10 +410,15 @@ class _StatusPill extends StatelessWidget {
 }
 
 class _DarkBadge extends StatelessWidget {
-  const _DarkBadge({required this.status, required this.workState});
+  const _DarkBadge({
+    required this.status,
+    required this.workState,
+    required this.scheduled,
+  });
 
   final TaskStatus status;
   final WorkState? workState;
+  final bool scheduled;
 
   @override
   Widget build(BuildContext context) {
@@ -385,10 +432,14 @@ class _DarkBadge extends StatelessWidget {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.circle, color: ArminTheme.mint, size: 8),
+            Icon(
+              scheduled ? Icons.schedule : Icons.circle,
+              color: scheduled ? Colors.white : ArminTheme.mint,
+              size: scheduled ? 13 : 8,
+            ),
             const SizedBox(width: 6),
             Text(
-              _statusLabel(status, workState),
+              scheduled ? '已计划' : _statusLabel(status, workState),
               style: const TextStyle(
                 color: Colors.white,
                 fontSize: 12,
@@ -479,12 +530,20 @@ String _durationPrefix(
   return '总耗时';
 }
 
-String _scheduledTaskLabel(DateTime scheduledFor) {
+String _scheduledTaskLabel(
+  DateTime scheduledFor,
+  TaskRecurrence recurrence,
+) {
   final now = DateTime.now();
   if (!scheduledFor.isAfter(now)) {
     return '计划已到点，正在准备启动';
   }
-  return '计划于 ${_timeLabel(scheduledFor)} 执行';
+  final cadence = switch (recurrence) {
+    TaskRecurrence.once => '',
+    TaskRecurrence.daily => '，之后每天重复',
+    TaskRecurrence.weekly => '，之后每周重复',
+  };
+  return '计划于 ${_timeLabel(scheduledFor)} 执行$cadence';
 }
 
 String _hostLabel(TaskSession task) {
@@ -514,7 +573,14 @@ String _statusLabel(TaskStatus status, [WorkState? workState]) {
   };
 }
 
-Color _statusColor(TaskStatus status, [WorkState? workState]) {
+Color _statusColor(
+  TaskStatus status, {
+  WorkState? workState,
+  bool scheduled = false,
+}) {
+  if (scheduled) {
+    return ArminTheme.scheduled;
+  }
   return switch (runtimePhaseForTaskStatus(status)) {
     WorkPhase.needsApproval ||
     WorkPhase.needsDecision ||

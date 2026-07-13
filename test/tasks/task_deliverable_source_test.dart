@@ -81,6 +81,95 @@ void main() {
     expect(slicer.cleanedCalls, 2);
   });
 
+  test('resolved deliverable stores loop outcome outside visible summary',
+      () async {
+    final now = DateTime(2026, 7, 13);
+    final turns = [
+      _turn(
+        id: 'turn-1',
+        index: 1,
+        input: '读取项目名',
+        output: '''
+项目名为：countdown_widgets
+ARMIN_LOOP_OUTCOME_BEGIN
+state=CONTINUE
+next_action=运行最小测试
+acceptance=UNKNOWN
+ARMIN_LOOP_OUTCOME_END
+''',
+        now: now,
+      ),
+    ];
+    const source = TaskDeliverableSource();
+    final candidate = source.latestCandidate(turns)!;
+    final provider = _CapturingSummaryProvider(
+      const OutputSummary(
+        displaySummary: '项目名为：countdown_widgets',
+        speechSummary: '项目名为：countdown_widgets',
+      ),
+    );
+
+    final resolved = await source.resolve(
+      turns,
+      candidate,
+      provider: provider,
+      context: const DeliverableResolveContext(
+        status: TaskStatus.turnIdle,
+        taskTitle: '读取项目名',
+        agentCommand: 'qodercli',
+      ),
+    );
+
+    expect(provider.lastRequest?.cleanedOutput, '项目名为：countdown_widgets');
+    expect(resolved?.displaySummary, '项目名为：countdown_widgets');
+    expect(resolved?.loopState, 'continueWork');
+    expect(resolved?.loopNextAction, '运行最小测试');
+  });
+
+  test('loop outcome can be recovered from the same turn raw event', () async {
+    final now = DateTime(2026, 7, 13);
+    final turns = [
+      NativeOutputTurn(
+        id: 'turn-1',
+        taskId: 'task-1',
+        turnIndex: 1,
+        userInput: '读取项目名',
+        rawOutput: '''
+▪ 项目名为：countdown_widgets
+ARMIN_LOOP_OUTCOME_BEGIN
+state=CONTINUE
+next_action=读取导出文件
+acceptance=PASS
+ARMIN_LOOP_OUTCOME_END
+''',
+        cleanedOutput: '▪ 项目名为：countdown_widgets',
+        startedAt: now,
+        lastOutputAt: now,
+        status: NativeOutputTurnStatus.turnIdle,
+      ),
+    ];
+    const source = TaskDeliverableSource();
+    final resolved = await source.resolve(
+      turns,
+      source.latestCandidate(turns)!,
+      provider: _CapturingSummaryProvider(
+        const OutputSummary(
+          displaySummary: '项目名为：countdown_widgets',
+          speechSummary: '项目名为：countdown_widgets',
+        ),
+      ),
+      context: const DeliverableResolveContext(
+        status: TaskStatus.turnIdle,
+        taskTitle: '读取项目名',
+        agentCommand: 'qodercli',
+      ),
+    );
+
+    expect(resolved?.displaySummary, '项目名为：countdown_widgets');
+    expect(resolved?.loopState, 'continueWork');
+    expect(resolved?.loopNextAction, '读取导出文件');
+  });
+
   test('deliverable evidence prefers cleaned output over raw terminal log',
       () async {
     final now = DateTime(2026, 7, 7);
@@ -249,6 +338,31 @@ ARMIN_LOOP_LONG_D1 status=PASS files_changed=0 next=WAIT
     expect(source.candidateCount(turns), 0);
   });
 
+  test('loop protocol prompt echo is not deliverable evidence', () {
+    final now = DateTime(2026, 7, 13);
+    final turns = [
+      _turn(
+        id: 'turn-1',
+        index: 1,
+        input: '读取项目名',
+        output: '''
+> Armin context governance:
+## Armin Loop Runtime Protocol
+ARMIN_LOOP_OUTCOME_BEGIN
+state=DONE | CONTINUE | BLOCKED
+next_action=下一步具体动作
+ARMIN_LOOP_OUTCOME_END
+x You've reached your credit usage limit. Please upgrade your subscription plan.
+''',
+        now: now,
+        status: NativeOutputTurnStatus.needAttention,
+      ),
+    ];
+    const source = TaskDeliverableSource();
+
+    expect(source.latestCandidate(turns), isNull);
+  });
+
   test(
       'attention qoder final marker after agent output is deliverable evidence',
       () {
@@ -288,6 +402,42 @@ Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdo
     expect(source.latestCandidate(turns)?.turn.id, 'turn-1');
     expect(source.evidenceFor(turns, source.latestCandidate(turns)!)?.text,
         contains('ARMIN_REAL_QODER_REGRESSION_D1'));
+  });
+
+  test('natural qoder final block is the only deliverable evidence', () {
+    final now = DateTime(2026, 7, 12);
+    final turns = [
+      _turn(
+        id: 'turn-1',
+        index: 1,
+        input: '输出项目名称以及简介',
+        output: '''
+▪ Let me check package.json for the project name and description.
+▪ Read(/Users/.../pubspec.yaml)
+  └ Read 21 lines
+▪ The project is named countdown_widgets and its description is: "A package containing
+  various countdown widgets for Flutter applications."
+
+  This is a Flutter package that provides countdown-related UI widgets for Flutter
+  applications.
+Shift+Tab to Accept Edits      Try /effort or /context-window to adjust model settings
+Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdown_widgets
+''',
+        now: now,
+        status: NativeOutputTurnStatus.turnIdle,
+      ),
+    ];
+    const source = TaskDeliverableSource();
+    final candidate = source.latestCandidate(turns)!;
+
+    final evidence = source.evidenceFor(turns, candidate)!.text;
+
+    expect(evidence, contains('The project is named countdown_widgets'));
+    expect(evidence, contains('countdown-related UI widgets'));
+    expect(evidence, isNot(contains('Let me check')));
+    expect(evidence, isNot(contains('Read(')));
+    expect(evidence, isNot(contains('Shift+Tab')));
+    expect(evidence, isNot(contains('Model · ctx')));
   });
 }
 

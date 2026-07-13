@@ -13,7 +13,11 @@ abstract class RuntimeTaskStore {
 abstract class RuntimePersistenceStore implements RuntimeTaskStore {
   Future<void> saveEvent(RuntimeEvent event);
 
-  Future<List<RuntimeEvent>> loadEvents({String? taskId, int? limit});
+  Future<List<RuntimeEvent>> loadEvents({
+    String? taskId,
+    int? afterArchiveId,
+    int? limit,
+  });
 
   Future<void> saveWorkState(WorkState state);
 
@@ -25,6 +29,7 @@ abstract class RuntimePersistenceStore implements RuntimeTaskStore {
 class InMemoryRuntimeTaskStore implements RuntimePersistenceStore {
   final Map<String, RuntimeTaskSnapshot> _tasks = {};
   final List<RuntimeEvent> _events = [];
+  int _nextArchiveId = 1;
 
   @override
   Future<RuntimeTaskSnapshot?> loadTask(String taskId) async {
@@ -45,17 +50,28 @@ class InMemoryRuntimeTaskStore implements RuntimePersistenceStore {
 
   @override
   Future<void> saveEvent(RuntimeEvent event) async {
-    _events.add(event);
+    _events.add(event.copyWith(archiveId: _nextArchiveId++));
   }
 
   @override
-  Future<List<RuntimeEvent>> loadEvents({String? taskId, int? limit}) async {
-    final filtered = taskId == null
-        ? _events
-        : _events.where((event) => event.taskId == taskId);
+  Future<List<RuntimeEvent>> loadEvents({
+    String? taskId,
+    int? afterArchiveId,
+    int? limit,
+  }) async {
+    final filtered = _events.where((event) {
+      if (taskId != null && event.taskId != taskId) return false;
+      if (afterArchiveId != null && (event.archiveId ?? 0) <= afterArchiveId) {
+        return false;
+      }
+      return true;
+    });
     final events = filtered.toList(growable: false);
     if (limit == null || events.length <= limit) {
       return events;
+    }
+    if (afterArchiveId != null) {
+      return events.take(limit).toList(growable: false);
     }
     return events.sublist(events.length - limit);
   }

@@ -1494,8 +1494,8 @@ README.md 已写入，包含三种模式的完整使用示例、公共参数表�
     );
     await _tapDetailTab(tester, '结果');
 
-    expect(find.textContaining('最近进展'), findsOneWidget);
-    expect(find.textContaining('项目简介已生成'), findsOneWidget);
+    expect(find.textContaining('本轮已结束，暂无可展示的正式结果'), findsOneWidget);
+    expect(find.textContaining('项目简介已生成'), findsNothing);
 
     store.task = initialTask.copyWith(
       updatedAt: now.add(const Duration(seconds: 1)),
@@ -1552,8 +1552,8 @@ README.md 已写入，包含三种模式的完整使用示例、公共参数表�
     );
     await _tapDetailTab(tester, '结果');
 
-    expect(find.textContaining('最近进展'), findsOneWidget);
-    expect(find.textContaining('需要你补充下一步'), findsOneWidget);
+    expect(find.textContaining('任务正在等待你的处理，暂无可展示的正式结果'), findsOneWidget);
+    expect(find.textContaining('需要你补充下一步'), findsNothing);
     expect(find.textContaining('任务仍在执行'), findsNothing);
   });
 
@@ -1640,7 +1640,7 @@ ARMIN_DIAG: monitor_version=phase2.6-settled-v8
     expect(find.textContaining('Not Login'), findsNothing);
   });
 
-  testWidgets('result panel shows progress when cli produced no final result',
+  testWidgets('result panel never promotes raw progress to a result',
       (tester) async {
     final now = DateTime(2026, 5, 18);
     final task = _task(status: TaskStatus.needAttention).copyWith(
@@ -1681,10 +1681,10 @@ ARMIN_DIAG: monitor_version=phase2.6-settled-v8
     );
     await _tapDetailTab(tester, '结果');
 
-    expect(find.text('最近进展（非最终结果）'), findsOneWidget);
-    expect(find.textContaining('目标 CLI 尚未输出正式结果'), findsOneWidget);
-    expect(find.textContaining('已检查 test/**/*.dart'), findsOneWidget);
-    expect(find.textContaining('已读取 countdown_widgets.dart'), findsOneWidget);
+    expect(find.textContaining('任务正在等待你的处理，暂无可展示的正式结果'), findsOneWidget);
+    expect(find.textContaining('最近进展'), findsNothing);
+    expect(find.textContaining('test/**/*.dart'), findsNothing);
+    expect(find.textContaining('countdown_widgets.dart'), findsNothing);
   });
 
   testWidgets('resuming the app does not force the result tab', (tester) async {
@@ -1973,6 +1973,40 @@ Summer 是一个桌面宠物。
     await tester.pumpAndSettle();
 
     expect(find.text('新建任务'), findsOneWidget);
+  });
+
+  testWidgets('scheduled task can be canceled from task detail',
+      (tester) async {
+    final scheduledFor = DateTime.now().add(const Duration(hours: 1));
+    final store = _TaskStore(
+      _task(status: TaskStatus.pending).copyWith(scheduledFor: scheduledFor),
+    );
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: const _NoopAgent(),
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+
+    await tester.pumpWidget(
+      AppStateScope(
+        state: state,
+        child: const MaterialApp(home: TaskDetailScreen(taskId: 'task-1')),
+      ),
+    );
+    await tester.tap(find.byIcon(Icons.more_vert));
+    await tester.pumpAndSettle();
+
+    expect(find.text('调整执行时间'), findsOneWidget);
+    await tester.tap(find.text('取消计划'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, '取消计划'));
+    await tester.pumpAndSettle();
+
+    expect(store.task.scheduledFor, isNull);
+    expect(state.taskStatus(store.task), TaskStatus.completed);
+    expect(store.task.completedAt, isNotNull);
+    state.dispose();
   });
 
   testWidgets('terminal task exposes remote session cleanup action',

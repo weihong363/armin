@@ -120,7 +120,12 @@ void main() {
     expect(command, contains('Enter'));
     expect(command, contains('stable_count'));
     expect(command, contains('__ARMIN_SETTLED_CANDIDATE__'));
-    expect(command, contains('monitor_version=phase2.6-settled-v9'));
+    expect(command, contains('monitor_version=runtime-monitor-v11'));
+    expect(command, contains('ARMIN_LOOP_OUTCOME_BEGIN'));
+    expect(command, contains('(?:DONE|CONTINUE|BLOCKED)'));
+    expect(command, contains('Enjoy Off-Peak Discount'));
+    expect(command, contains('Try \\/model to switch models'));
+    expect(command, contains('MCP servers?'));
     expect(command, contains('STABLE_POLLS=4'));
     expect(command, contains(r'next if $line =~ /[\x{2800}-\x{28ff}]/;'));
     expect(command, contains(r'stable_count" -ge "$STABLE_POLLS"'));
@@ -736,6 +741,25 @@ __ARMIN_SNAPSHOT_END__
 __ARMIN_SNAPSHOT_BEGIN__
 IMPORTANT: After completing your current task, you MUST address the user's message
 above. Do not ignore it.
+__ARMIN_SNAPSHOT_END__
+''',
+      '__ARMIN_SETTLED_CANDIDATE__\n',
+    ]);
+
+    expect(updates.last.turnIdle, isFalse);
+    expect(updates.last.done, isFalse);
+    expect(
+      updates.last.observerState,
+      NativeOutputObserverState.outputQuieting,
+    );
+  });
+
+  test('settled qoder shortcuts footer does not close the turn', () {
+    final service = SSHAgentSessionService();
+    final updates = service.streamingUpdatesForChunksForTest([
+      '''
+__ARMIN_SNAPSHOT_BEGIN__
+? for shortcuts
 __ARMIN_SNAPSHOT_END__
 ''',
       '__ARMIN_SETTLED_CANDIDATE__\n',

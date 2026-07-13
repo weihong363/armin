@@ -23,7 +23,6 @@ class RuntimePolicy {
     }
     return copyWith(
       idleThreshold: switch (mode) {
-        AgentApprovalMode.safe => AgentRuntimeConfig.turnIdleThreshold,
         AgentApprovalMode.balanced =>
           AgentRuntimeConfig.balancedTurnIdleThreshold,
         AgentApprovalMode.aggressive =>

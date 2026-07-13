@@ -34,6 +34,27 @@ void main() {
 
     expect(find.text('任务详情'), findsOneWidget);
   });
+
+  testWidgets('history opens searchable audit events', (tester) async {
+    final state = ArminAppState(
+      store: _HistoryStore(_task()),
+      agentSessionService: MockAgentSessionService(),
+      voiceService: MockVoiceService(),
+    );
+    await state.load();
+    await tester.pumpWidget(
+      AppStateScope(
+        state: state,
+        child: const MaterialApp(home: TaskHistoryScreen()),
+      ),
+    );
+
+    await tester.tap(find.byKey(const ValueKey('open-audit-history')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('审计历史'), findsOneWidget);
+    expect(find.text('没有匹配的审计事件'), findsOneWidget);
+  });
 }
 
 TaskSession _task() {

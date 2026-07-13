@@ -11,7 +11,7 @@
 默认模型路径：
 
 ```text
-/data/local/tmp/armin/slm/model.gguf
+/data/user/0/com.ironion.armin/files/slm/model.gguf
 ```
 
 本地模型缓存：

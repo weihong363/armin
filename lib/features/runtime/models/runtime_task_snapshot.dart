@@ -22,6 +22,7 @@ class RuntimeTaskSnapshot {
     this.action = '',
     this.progress = 0,
     this.lastLogOffset = 0,
+    this.lastOutputFingerprint = '',
     this.checkpoint = '',
     this.workState,
   });
@@ -36,6 +37,7 @@ class RuntimeTaskSnapshot {
   final String action;
   final int progress;
   final int lastLogOffset;
+  final String lastOutputFingerprint;
   final String checkpoint;
   final WorkState? workState;
 
@@ -68,6 +70,7 @@ class RuntimeTaskSnapshot {
     String? action,
     int? progress,
     int? lastLogOffset,
+    String? lastOutputFingerprint,
     String? checkpoint,
     WorkState? workState,
   }) {
@@ -82,6 +85,8 @@ class RuntimeTaskSnapshot {
       action: action ?? this.action,
       progress: progress ?? this.progress,
       lastLogOffset: lastLogOffset ?? this.lastLogOffset,
+      lastOutputFingerprint:
+          lastOutputFingerprint ?? this.lastOutputFingerprint,
       checkpoint: checkpoint ?? this.checkpoint,
       workState: workState ?? this.workState,
     );
@@ -99,6 +104,7 @@ class RuntimeTaskSnapshot {
       'action': action,
       'progress': progress,
       'last_log_offset': lastLogOffset,
+      'last_output_fingerprint': lastOutputFingerprint,
       'checkpoint': checkpoint,
       'work_state': workState?.toJson(),
     };
@@ -122,6 +128,8 @@ class RuntimeTaskSnapshot {
       action: json['action'] as String? ?? '',
       progress: json['progress'] as int? ?? 0,
       lastLogOffset: json['last_log_offset'] as int? ?? 0,
+      lastOutputFingerprint:
+          json['last_output_fingerprint'] as String? ?? '',
       checkpoint: json['checkpoint'] as String? ?? '',
       workState: workStateJson is Map<String, Object?>
           ? WorkState.fromJson(workStateJson)

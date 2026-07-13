@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 
 import '../../../app_state_scope.dart';
-import '../../../core/models/task_status.dart';
 import '../../../shared/theme/armin_theme.dart';
 import '../../agent/models/agent_approval_config.dart';
 import '../../agent/services/agent_session_service.dart';
@@ -18,13 +17,17 @@ import '../models/prompt_record.dart';
 import '../models/secret_entry.dart';
 import '../models/task_constraint.dart';
 import '../models/task_draft.dart';
+import '../models/task_recurrence.dart';
 import '../models/task_session.dart';
 import '../models/voice_input.dart';
 import '../services/agent_instruction_discovery.dart';
 import '../services/constraint_extractor.dart';
+import '../services/loop_evaluation_assistant.dart';
 import '../services/prompt_template_builder.dart';
 import '../services/secret_redactor.dart';
 import '../services/speech_draft_cleaner.dart';
+import '../services/system_calendar_service.dart';
+import '../widgets/schedule_date_time_picker.dart';
 
 enum _VoiceInteractionStatus {
   idle,
@@ -38,6 +41,8 @@ class TaskDraftScreen extends StatefulWidget {
     this.initialTaskTitle = '',
     this.selectedHostId,
     this.initialProjectPath,
+    this.calendarService = const NativeSystemCalendarService(),
+    this.loopEvaluationAssistant = const LoopEvaluationAssistant(),
     super.key,
   });
 
@@ -45,6 +50,8 @@ class TaskDraftScreen extends StatefulWidget {
   final String initialTaskTitle;
   final String? selectedHostId;
   final String? initialProjectPath;
+  final SystemCalendarService calendarService;
+  final LoopEvaluationAssistant loopEvaluationAssistant;
 
   @override
   State<TaskDraftScreen> createState() => _TaskDraftScreenState();
@@ -71,6 +78,9 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
   bool _showAdvanced = false;
   bool _taskTitleEdited = false;
   _ExecutionMode _executionMode = _ExecutionMode.balanced;
+  DateTime? _scheduledFor;
+  TaskRecurrence _recurrence = TaskRecurrence.once;
+  bool _addToCalendar = false;
 
   String _rawStt = '';
   String _cleanedDraft = '';
@@ -187,6 +197,23 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
             },
           ),
           const SizedBox(height: 20),
+          const _SectionTitle(title: '执行时间'),
+          const SizedBox(height: 8),
+          _ScheduleSelector(
+            scheduledFor: _scheduledFor,
+            recurrence: _recurrence,
+            addToCalendar: _addToCalendar,
+            onScheduleChanged: (scheduledFor) {
+              setState(() => _scheduledFor = scheduledFor);
+            },
+            onRecurrenceChanged: (recurrence) {
+              setState(() => _recurrence = recurrence);
+            },
+            onAddToCalendarChanged: (value) {
+              setState(() => _addToCalendar = value);
+            },
+          ),
+          const SizedBox(height: 20),
           InkWell(
             onTap: () => setState(() => _showAdvanced = !_showAdvanced),
             child: Row(
@@ -252,7 +279,11 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
                 Expanded(
                   child: FilledButton.icon(
                     icon: const Icon(Icons.send_outlined),
-                    label: Text(_isSending ? '发送中...' : '发送任务'),
+                    label: Text(
+                      _isSending
+                          ? '发送中...'
+                          : (_scheduledFor == null ? '发送任务' : '创建计划'),
+                    ),
                     onPressed: _isSending ? null : _send,
                   ),
                 ),
@@ -564,21 +595,21 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
       return;
     }
 
-    final activeCount = state.tasks
-        .where((t) => switch (state.taskStatus(t)) {
-              TaskStatus.completed ||
-              TaskStatus.userCompleted ||
-              TaskStatus.failed ||
-              TaskStatus.userFailed ||
-              TaskStatus.stopped ||
-              TaskStatus.paused ||
-              TaskStatus.observerDetached ||
-              TaskStatus.runtimeLost =>
-                false,
-              _ => true,
-            })
-        .length;
-    if (activeCount >= state.maxActiveTasks) {
+    final isScheduled = _scheduledFor != null;
+    if (isScheduled && _addToCalendar) {
+      final permission = await widget.calendarService.requestPermission();
+      if (permission != SystemCalendarPermission.granted) {
+        if (!mounted) return;
+        setState(() => _isSending = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('需要日历权限才能同步计划任务。')),
+        );
+        return;
+      }
+    }
+    if (!mounted) return;
+    final activeCount = state.activeTasks.length;
+    if (!isScheduled && activeCount >= state.maxActiveTasks) {
       setState(() => _isSending = false);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -611,7 +642,10 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
       title: _taskTitleFor(taskText),
       createdAt: now,
       updatedAt: now,
-      startedAt: now,
+      startedAt: isScheduled ? null : now,
+      scheduledFor: _scheduledFor,
+      calendarSyncEnabled: isScheduled && _addToCalendar,
+      recurrence: _recurrence,
       rawSttText: _rawStt,
       cleanedDraft: _cleanedDraft,
       userText: taskText,
@@ -647,19 +681,21 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
         templateVersion: PromptTemplateBuilder.templateVersion,
         createdAt: now,
       ),
-      turns: [
-        NativeOutputTurn(
-          id: 'turn-$taskId-1',
-          taskId: taskId,
-          turnIndex: 1,
-          userInput: _secretRedactor.redactInlineSecrets(taskText),
-          rawOutput: '',
-          cleanedOutput: '',
-          startedAt: now,
-          lastOutputAt: now,
-          status: NativeOutputTurnStatus.running,
-        ),
-      ],
+      turns: isScheduled
+          ? const []
+          : [
+              NativeOutputTurn(
+                id: 'turn-$taskId-1',
+                taskId: taskId,
+                turnIndex: 1,
+                userInput: _secretRedactor.redactInlineSecrets(taskText),
+                rawOutput: '',
+                cleanedOutput: '',
+                startedAt: now,
+                lastOutputAt: now,
+                status: NativeOutputTurnStatus.running,
+              ),
+            ],
       metricEvents: [
         MetricEvent.create(
           taskId: taskId,
@@ -667,44 +703,58 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
           payloadJson: '{"source":"new_task"}',
           now: now,
         ),
-        MetricEvent.create(
-          taskId: taskId,
-          eventType: 'task_started',
-          payloadJson: '{"agent_command":"${host.agentCommand}"}',
-          now: now,
-        ),
+        if (!isScheduled)
+          MetricEvent.create(
+            taskId: taskId,
+            eventType: 'task_started',
+            payloadJson: '{"agent_command":"${host.agentCommand}"}',
+            now: now,
+          ),
       ],
     );
-    await state.saveTask(task);
+    if (isScheduled) {
+      await state.scheduleTask(
+        task,
+        _scheduledFor!,
+        recurrence: _recurrence,
+      );
+    } else {
+      await state.saveTask(task);
+    }
     if (!mounted) {
       return;
     }
-    state.startTaskExecution(
-      task,
-      AgentExecutionRequest(
-        prompt: prompt,
-        hostId: host.id,
-        host: host.host,
-        port: host.port,
-        username: host.username,
-        projectPath: projectPath,
-        tmuxSessionName: tmuxSessionName,
-        agentCommand: host.agentCommand,
-        tmuxCommand: host.tmuxCommand,
-        pathPrepend: host.pathPrepend,
-        shellWrapper: host.shellWrapper,
-        password: host.password,
-        approvalConfig: AgentApprovalConfig(
-          agentType: AgentTypeDetection.detect(host.agentCommand),
-          mode: approvalMode,
+    if (!isScheduled) {
+      state.startTaskExecution(
+        task,
+        AgentExecutionRequest(
+          prompt: prompt,
+          hostId: host.id,
+          host: host.host,
+          port: host.port,
+          username: host.username,
+          projectPath: projectPath,
+          tmuxSessionName: tmuxSessionName,
+          agentCommand: host.agentCommand,
+          tmuxCommand: host.tmuxCommand,
+          pathPrepend: host.pathPrepend,
+          shellWrapper: host.shellWrapper,
+          password: host.password,
+          approvalConfig: AgentApprovalConfig(
+            agentType: AgentTypeDetection.detect(host.agentCommand),
+            mode: approvalMode,
+          ),
         ),
-      ),
-    );
+      );
+    }
 
     setState(() => _isSending = false);
     Navigator.of(context).pushReplacement(
       MaterialPageRoute<void>(
-        builder: (_) => TaskDetailScreen(taskId: task.id),
+        builder: (_) => TaskDetailScreen(
+          taskId: task.id,
+          loopEvaluationAssistant: widget.loopEvaluationAssistant,
+        ),
       ),
     );
   }
@@ -886,12 +936,6 @@ class _TaskDraftScreenState extends State<TaskDraftScreen> {
   void _syncConstraintsFromMode() {
     _constraints.clear();
     switch (_executionMode) {
-      case _ExecutionMode.safe:
-        _constraints.addAll({
-          TaskConstraint.analyzeOnly,
-          TaskConstraint.noGitCommit,
-          TaskConstraint.confirmHighRisk,
-        });
       case _ExecutionMode.balanced:
         _constraints.addAll({
           TaskConstraint.minimalChange,
@@ -1180,7 +1224,6 @@ class _CompactVoiceButton extends StatelessWidget {
 // ──────────────────── New Task Composer Widgets ────────────────────
 
 enum _ExecutionMode {
-  safe,
   balanced,
   aggressive,
 }
@@ -1188,7 +1231,6 @@ enum _ExecutionMode {
 extension _ExecutionModeApproval on _ExecutionMode {
   AgentApprovalMode toApprovalMode() {
     return switch (this) {
-      _ExecutionMode.safe => AgentApprovalMode.safe,
       _ExecutionMode.balanced => AgentApprovalMode.balanced,
       _ExecutionMode.aggressive => AgentApprovalMode.aggressive,
     };
@@ -1198,7 +1240,6 @@ extension _ExecutionModeApproval on _ExecutionMode {
 extension _ExecutionModeLabel on _ExecutionMode {
   String get label {
     return switch (this) {
-      _ExecutionMode.safe => '安全',
       _ExecutionMode.balanced => '平衡',
       _ExecutionMode.aggressive => '激进',
     };
@@ -1206,15 +1247,13 @@ extension _ExecutionModeLabel on _ExecutionMode {
 
   String get description {
     return switch (this) {
-      _ExecutionMode.safe => '只读 · 不做修改',
-      _ExecutionMode.balanced => '可修改代码 · 先请示',
-      _ExecutionMode.aggressive => '完全授权 · 不中断',
+      _ExecutionMode.balanced => '适合短期任务或需要人工把关的工作；允许修改，但关键操作会暂停并请求确认。',
+      _ExecutionMode.aggressive => '适合目标明确的长期任务；允许自主修改、处理审批并连续推进，通常无需人工守候。',
     };
   }
 
   IconData get icon {
     return switch (this) {
-      _ExecutionMode.safe => Icons.shield_outlined,
       _ExecutionMode.balanced => Icons.tune_outlined,
       _ExecutionMode.aggressive => Icons.flash_on_outlined,
     };
@@ -1539,6 +1578,107 @@ class _ExecutionModeSelector extends StatelessWidget {
       ],
     );
   }
+}
+
+class _ScheduleSelector extends StatelessWidget {
+  const _ScheduleSelector({
+    required this.scheduledFor,
+    required this.recurrence,
+    required this.addToCalendar,
+    required this.onScheduleChanged,
+    required this.onRecurrenceChanged,
+    required this.onAddToCalendarChanged,
+  });
+
+  final DateTime? scheduledFor;
+  final TaskRecurrence recurrence;
+  final bool addToCalendar;
+  final ValueChanged<DateTime?> onScheduleChanged;
+  final ValueChanged<TaskRecurrence> onRecurrenceChanged;
+  final ValueChanged<bool> onAddToCalendarChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final hasSchedule = scheduledFor != null;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SegmentedButton<bool>(
+          key: const ValueKey('schedule-mode-selector'),
+          segments: const [
+            ButtonSegment(value: false, label: Text('立即执行')),
+            ButtonSegment(value: true, label: Text('计划执行')),
+          ],
+          selected: {hasSchedule},
+          onSelectionChanged: (selection) async {
+            if (!selection.single) {
+              onScheduleChanged(null);
+              onRecurrenceChanged(TaskRecurrence.once);
+              return;
+            }
+            final selected = await _pickSchedule(context, scheduledFor);
+            if (selected != null) {
+              onScheduleChanged(selected);
+            }
+          },
+        ),
+        if (hasSchedule) ...[
+          const SizedBox(height: 10),
+          OutlinedButton.icon(
+            key: const ValueKey('schedule-time-picker'),
+            icon: const Icon(Icons.schedule_outlined),
+            label: Text('首次执行：${_scheduledTimeLabel(scheduledFor!)}'),
+            onPressed: () async {
+              final selected = await _pickSchedule(context, scheduledFor);
+              if (selected != null) {
+                onScheduleChanged(selected);
+              }
+            },
+          ),
+          const SizedBox(height: 8),
+          DropdownButtonFormField<TaskRecurrence>(
+            key: const ValueKey('schedule-recurrence-selector'),
+            initialValue: recurrence,
+            decoration: const InputDecoration(labelText: '重复'),
+            items: const [
+              DropdownMenuItem(value: TaskRecurrence.once, child: Text('仅一次')),
+              DropdownMenuItem(value: TaskRecurrence.daily, child: Text('每天')),
+              DropdownMenuItem(value: TaskRecurrence.weekly, child: Text('每周')),
+            ],
+            onChanged: (value) {
+              if (value != null) {
+                onRecurrenceChanged(value);
+              }
+            },
+          ),
+          const SizedBox(height: 4),
+          SwitchListTile(
+            key: const ValueKey('schedule-add-to-calendar'),
+            contentPadding: EdgeInsets.zero,
+            title: const Text('添加到系统日历'),
+            subtitle: const Text('创建计划后打开日历确认日程'),
+            value: addToCalendar,
+            onChanged: onAddToCalendarChanged,
+          ),
+        ],
+      ],
+    );
+  }
+
+  Future<DateTime?> _pickSchedule(
+    BuildContext context,
+    DateTime? current,
+  ) async {
+    return showScheduleDateTimePicker(context, initialValue: current);
+  }
+}
+
+String _scheduledTimeLabel(DateTime value) {
+  final local = value.toLocal();
+  final date = '${local.month}/${local.day}';
+  final hour = local.hour.toString().padLeft(2, '0');
+  final minute = local.minute.toString().padLeft(2, '0');
+  return '$date $hour:$minute';
 }
 
 class _ModeCard extends StatelessWidget {

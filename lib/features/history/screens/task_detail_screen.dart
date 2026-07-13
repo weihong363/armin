@@ -10,7 +10,6 @@ import '../../../core/services/armin_app_state.dart';
 import '../../../shared/line_noise_filter.dart';
 import '../../../shared/scroll/armin_scroll_behavior.dart';
 import '../../../shared/theme/armin_theme.dart';
-import '../../agent/parsers/terminal_prompt_parser.dart';
 import '../../agent/services/agent_output_cleaner.dart';
 import '../../hosts/models/host_config.dart';
 import '../../projects/models/project_path_config.dart';
@@ -21,19 +20,24 @@ import '../../runtime/models/work_state.dart';
 import '../../runtime/services/runtime_event_bus.dart';
 import '../../tasks/models/loop_evaluation.dart';
 import '../../tasks/models/native_output_turn.dart';
+import '../../tasks/models/task_recurrence.dart';
 import '../../tasks/models/task_session.dart';
 import '../../tasks/models/voice_input.dart';
 import '../../tasks/screens/task_draft_screen.dart';
 import '../../tasks/services/loop_evaluation_assistant.dart';
 import '../../tasks/services/loop_follow_up_advisor.dart';
+import '../../tasks/services/loop_quality_analyzer.dart';
 import '../../tasks/services/semantic_snippet_builder.dart';
 import '../../tasks/services/voice_task_command_processor.dart';
 import '../../tasks/widgets/add_context_sheet.dart';
+import '../../tasks/widgets/schedule_date_time_picker.dart';
 import '../../voice/services/device_voice_service.dart';
 import '../../voice/services/voice_service.dart';
 
 enum _TaskDetailAction {
   rerun,
+  reschedule,
+  cancelSchedule,
   forceStop,
   cleanupSession,
   delete,
@@ -224,6 +228,10 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
               switch (action) {
                 case _TaskDetailAction.rerun:
                   _rerunTask(context, task);
+                case _TaskDetailAction.reschedule:
+                  await _rescheduleTask(context, task);
+                case _TaskDetailAction.cancelSchedule:
+                  await _cancelSchedule(context, task);
                 case _TaskDetailAction.forceStop:
                   await _forceStopTask(context, task);
                 case _TaskDetailAction.cleanupSession:
@@ -238,6 +246,16 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
                 enabled: _canRerun(status),
                 child: const Text('重新执行'),
               ),
+              if (_canManageSchedule(task, status)) ...[
+                const PopupMenuItem(
+                  value: _TaskDetailAction.reschedule,
+                  child: Text('调整执行时间'),
+                ),
+                const PopupMenuItem(
+                  value: _TaskDetailAction.cancelSchedule,
+                  child: Text('取消计划'),
+                ),
+              ],
               PopupMenuItem(
                 value: _TaskDetailAction.forceStop,
                 enabled: _canForceStop(status),
@@ -482,6 +500,66 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
     );
   }
 
+  Future<void> _rescheduleTask(BuildContext context, TaskSession task) async {
+    final current = task.scheduledFor;
+    if (current == null) {
+      return;
+    }
+    final selected = await _pickScheduledTime(context, current);
+    if (selected == null || !context.mounted) {
+      return;
+    }
+    try {
+      await AppStateScope.read(context).rescheduleTask(task, selected);
+    } catch (error) {
+      if (!context.mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('调整计划失败：$error')),
+      );
+    }
+  }
+
+  Future<void> _cancelSchedule(BuildContext context, TaskSession task) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('取消计划执行?'),
+        content: Text('“${task.displayTitle}”将不再执行，并标记为已完成。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('保留计划'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('取消计划'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !context.mounted) {
+      return;
+    }
+    try {
+      await AppStateScope.read(context).cancelScheduledTask(task);
+    } catch (error) {
+      if (!context.mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('取消计划失败：$error')),
+      );
+    }
+  }
+
+  Future<DateTime?> _pickScheduledTime(
+    BuildContext context,
+    DateTime current,
+  ) =>
+      showScheduleDateTimePicker(context, initialValue: current);
+
   Future<void> _forceStopTask(BuildContext context, TaskSession task) async {
     try {
       await AppStateScope.read(context).stopTask(task);
@@ -575,6 +653,10 @@ class _TaskDetailScreenState extends State<TaskDetailScreen>
         status == TaskStatus.needAttention ||
         status == TaskStatus.observerDetached ||
         status == TaskStatus.pending;
+  }
+
+  bool _canManageSchedule(TaskSession task, TaskStatus status) {
+    return status == TaskStatus.pending && task.scheduledFor != null;
   }
 
   bool _canRerun(TaskStatus status) {
@@ -1781,7 +1863,10 @@ class _TimelinePanelState extends State<_TimelinePanel> {
         }
         if (_viewModel.showAiEvaluation) {
           if (itemIndex == 0) {
-            return _LoopEvaluationCard(future: aiEvaluationFuture);
+            return _LoopEvaluationCard(
+              future: aiEvaluationFuture,
+              onConfirmHighRiskAction: _confirmHighRiskLoopAction,
+            );
           }
           itemIndex -= 1;
         }
@@ -1839,11 +1924,95 @@ class _TimelinePanelState extends State<_TimelinePanel> {
     );
   }
 
+  Future<void> _confirmHighRiskLoopAction(LoopNextAction action) async {
+    final instruction = await showDialog<String>(
+      context: context,
+      builder: (_) => _HighRiskLoopActionDialog(action: action),
+    );
+    if (instruction == null || !mounted) {
+      return;
+    }
+    final sent = await AppStateScope.read(context).confirmLoopNextAction(
+      widget.task,
+      action,
+      instruction: instruction,
+    );
+    if (!sent && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('任务状态已变化，请重新生成辅助判断。')),
+      );
+    }
+  }
+
   static Iterable<VoiceInput> _followUpVoiceInputsFor(TaskSession task) {
     final hasInitialVoice = task.rawSttText.trim().isNotEmpty &&
         task.voiceInputs.isNotEmpty &&
         task.voiceInputs.first.rawSttText.trim() == task.rawSttText.trim();
     return task.voiceInputs.skip(hasInitialVoice ? 1 : 0);
+  }
+}
+
+class _HighRiskLoopActionDialog extends StatefulWidget {
+  const _HighRiskLoopActionDialog({required this.action});
+
+  final LoopNextAction action;
+
+  @override
+  State<_HighRiskLoopActionDialog> createState() =>
+      _HighRiskLoopActionDialogState();
+}
+
+class _HighRiskLoopActionDialogState extends State<_HighRiskLoopActionDialog> {
+  late final TextEditingController _controller =
+      TextEditingController(text: widget.action.draft);
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final canSend = _controller.text.trim().isNotEmpty;
+    return AlertDialog(
+      title: const Text('确认高风险后续动作'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(widget.action.reason),
+            const SizedBox(height: 8),
+            const Text('发送后将创建新的 Turn，并记录为用户确认的 Loop 动作。'),
+            const SizedBox(height: 12),
+            TextField(
+              key: const ValueKey('high-risk-action-instruction'),
+              controller: _controller,
+              minLines: 4,
+              maxLines: 8,
+              onChanged: (_) => setState(() {}),
+              decoration: const InputDecoration(
+                labelText: '将发送的指令',
+                alignLabelWithHint: true,
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          onPressed: canSend
+              ? () => Navigator.of(context).pop(_controller.text.trim())
+              : null,
+          child: const Text('确认并发送'),
+        ),
+      ],
+    );
   }
 }
 
@@ -2140,115 +2309,7 @@ class _ResultPanelState extends State<_ResultPanel> {
         );
       }
     }
-    if (summaries.isEmpty) {
-      final progress = _progressOutputSummary(task);
-      if (progress != null) {
-        summaries.add(progress);
-      }
-    }
     return summaries;
-  }
-
-  _TurnOutputSummary? _progressOutputSummary(TaskSession task) {
-    for (var index = task.turns.length - 1; index >= 0; index--) {
-      final turn = task.turns[index];
-      if (turn.deliverable != null ||
-          turn.status == NativeOutputTurnStatus.running) {
-        continue;
-      }
-      final text = _progressSummaryText(turn);
-      if (text.isEmpty) continue;
-      return _TurnOutputSummary(
-        title: '最近进展（非最终结果）',
-        text: text,
-        speechText: '',
-        fullOutputForSpeech: '',
-      );
-    }
-    return null;
-  }
-
-  String _progressSummaryText(NativeOutputTurn turn) {
-    final source = turn.cleanedOutput.trim().isNotEmpty
-        ? turn.cleanedOutput
-        : turn.rawOutput;
-    if (const TerminalPromptParser().parse(source) != null ||
-        _looksLikeTerminalInteraction(source)) {
-      return '';
-    }
-    final cleaned = const AgentOutputCleaner().clean(source);
-    if (cleaned.trim().isEmpty) return '';
-    final lines = <String>[];
-    for (final line in cleaned.split('\n')) {
-      final progressLine = _progressLine(line);
-      if (progressLine.isNotEmpty && !lines.contains(progressLine)) {
-        lines.add(progressLine);
-      }
-    }
-    if (lines.isEmpty) return '';
-    final tail = lines.length <= 6 ? lines : lines.sublist(lines.length - 6);
-    return [
-      '目标 CLI 尚未输出正式结果；下面是最近可确认的执行进展。',
-      ...tail,
-    ].join('\n');
-  }
-
-  bool _looksLikeTerminalInteraction(String output) {
-    final lower = output.toLowerCase();
-    return (lower.contains('allow once') ||
-            lower.contains('reject and type something') ||
-            lower.contains('permission required')) &&
-        (lower.contains('allow this command') ||
-            lower.contains('apply this change') ||
-            lower.contains('redirection detected') ||
-            lower.contains('command:'));
-  }
-
-  String _progressLine(String line) {
-    final trimmed = line.trim();
-    if (trimmed.isEmpty) return '';
-    final lower = trimmed.toLowerCase();
-    if (lower.startsWith('armin_diag:') ||
-        lower.startsWith('armin context governance') ||
-        lower.startsWith('## user task') ||
-        lower.startsWith('## user constraints') ||
-        lower.startsWith('thinking') ||
-        const LineNoiseFilter().isUnreadable(trimmed) ||
-        lower.contains("what's new") ||
-        lower.contains('not login please auth') ||
-        lower.contains('/release-notes for more')) {
-      return '';
-    }
-    final content = trimmed.replaceFirst(RegExp(r'^[▪▫]\s*'), '').trim();
-    final readMatch = RegExp(r'^Read\((.+)\)$').firstMatch(content);
-    if (readMatch != null) {
-      return '已读取 ${_compactPath(readMatch.group(1) ?? '')}';
-    }
-    final globMatch = RegExp(r"^Glob\('(.+)'\)$").firstMatch(content);
-    if (globMatch != null) {
-      return '已检查 ${globMatch.group(1)}';
-    }
-    final bashMatch = RegExp(r'^Bash\((.+)\)$').firstMatch(content);
-    if (bashMatch != null) {
-      return '已执行 ${bashMatch.group(1)}';
-    }
-    if (content.startsWith('└')) {
-      return content.replaceFirst(RegExp(r'^└\s*'), '').trim();
-    }
-    final contentLower = content.toLowerCase();
-    if (contentLower.startsWith('let me ') ||
-        contentLower.startsWith('i will ') ||
-        contentLower.startsWith("i'll ")) {
-      return '';
-    }
-    return content;
-  }
-
-  String _compactPath(String value) {
-    final normalized = value.trim();
-    if (normalized.isEmpty) return '文件';
-    final parts = normalized.split('/');
-    return parts.isEmpty ? normalized : parts.last.replaceAll(')', '');
   }
 
   List<_IndexedTurn> _resultTurns(TaskSession task, {required int limit}) {
@@ -2370,7 +2431,7 @@ class _ResultPanelState extends State<_ResultPanel> {
       _resultTurnCount(task) > 0;
 
   bool _shouldBuildResultContent(TaskSession task) =>
-      _shouldBuildResultSummary(task) || _progressOutputSummary(task) != null;
+      _shouldBuildResultSummary(task);
 }
 
 String _emptyResultText(TaskStatus status) {
@@ -2586,6 +2647,7 @@ class _LoopFactsCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final summary = _LoopFactsSummary.fromTask(task);
+    final quality = const LoopQualityAnalyzer().analyze(task);
     return _InfoCard(
       title: 'Loop 事实',
       child: Wrap(
@@ -2622,6 +2684,28 @@ class _LoopFactsCard extends StatelessWidget {
             ),
           if (summary.loopSummaryText.isNotEmpty)
             _LoopSummaryText(summary.loopSummaryText),
+          if (quality.hasData) ...[
+            _FactChip(
+              label: '结果率',
+              value: '${quality.deliverableTurns}/${quality.evaluatedTurns}',
+            ),
+            _FactChip(
+              label: '接受率',
+              value: '${(quality.acceptanceRate * 100).round()}%',
+            ),
+            _FactChip(
+              label: '返工率',
+              value: '${(quality.redoRate * 100).round()}%',
+            ),
+            _FactChip(label: '重试', value: '${quality.totalRetries}'),
+            if (quality.averageWaitMs > 0)
+              _FactChip(
+                label: '平均等待',
+                value: _elapsedLabel(
+                  Duration(milliseconds: quality.averageWaitMs),
+                ),
+              ),
+          ],
         ],
       ),
     );
@@ -2648,9 +2732,13 @@ class _LoopSummaryText extends StatelessWidget {
 }
 
 class _LoopEvaluationCard extends StatelessWidget {
-  const _LoopEvaluationCard({required this.future});
+  const _LoopEvaluationCard({
+    required this.future,
+    required this.onConfirmHighRiskAction,
+  });
 
   final Future<LoopEvaluationSummary> future;
+  final ValueChanged<LoopNextAction> onConfirmHighRiskAction;
 
   @override
   Widget build(BuildContext context) {
@@ -2684,6 +2772,7 @@ class _LoopEvaluationCard extends StatelessWidget {
             final text = summary?.text.trim() ?? '暂时无法生成辅助判断。';
             final source = summary?.usedAi == true ? '端侧模型' : '规则判断';
             final nextAction = summary?.nextAction;
+            final fallbackReason = summary?.fallbackReason?.trim() ?? '';
             return AnimatedSwitcher(
               duration: const Duration(milliseconds: 180),
               child: Column(
@@ -2697,7 +2786,14 @@ class _LoopEvaluationCard extends StatelessWidget {
                   ),
                   if (nextAction != null) ...[
                     const SizedBox(height: 10),
-                    _LoopNextActionView(action: nextAction),
+                    _LoopNextActionView(
+                      action: nextAction,
+                      onConfirmHighRiskAction: onConfirmHighRiskAction,
+                    ),
+                  ],
+                  if (fallbackReason.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    _FactChip(label: '端侧模型', value: '已降级：$fallbackReason'),
                   ],
                   const SizedBox(height: 10),
                   _FactChip(label: '来源', value: source),
@@ -2712,9 +2808,13 @@ class _LoopEvaluationCard extends StatelessWidget {
 }
 
 class _LoopNextActionView extends StatelessWidget {
-  const _LoopNextActionView({required this.action});
+  const _LoopNextActionView({
+    required this.action,
+    required this.onConfirmHighRiskAction,
+  });
 
   final LoopNextAction action;
+  final ValueChanged<LoopNextAction> onConfirmHighRiskAction;
 
   @override
   Widget build(BuildContext context) {
@@ -2742,6 +2842,14 @@ class _LoopNextActionView extends StatelessWidget {
             Text(action.reason),
             const SizedBox(height: 8),
             _FactChip(label: '执行策略', value: label),
+            if (action.policy == LoopNextActionPolicy.confirmationRequired) ...[
+              const SizedBox(height: 10),
+              OutlinedButton.icon(
+                onPressed: () => onConfirmHighRiskAction(action),
+                icon: const Icon(Icons.warning_amber_outlined),
+                label: const Text('查看并确认'),
+              ),
+            ],
           ],
         ),
       ),
@@ -4364,7 +4472,7 @@ Color _detailStatusColor(TaskStatus status, [WorkState? workState]) {
 
 String _statusTimingText(TaskSession task, TaskStatus status) {
   if (status == TaskStatus.pending && task.scheduledFor != null) {
-    return _scheduledTaskLabel(task.scheduledFor!);
+    return _scheduledTaskLabel(task.scheduledFor!, task.recurrence);
   }
   if (task.completedAt != null) {
     return '更新于 ${_timeLabel(task.completedAt!)}';
@@ -4432,7 +4540,7 @@ String _currentSituationText(
   WorkState? workState,
 ]) {
   if (status == TaskStatus.pending && task.scheduledFor != null) {
-    return '${_scheduledTaskLabel(task.scheduledFor!)}。';
+    return '${_scheduledTaskLabel(task.scheduledFor!, task.recurrence)}。';
   }
   if (workState == null) {
     return '正在同步任务状态。';
@@ -4682,12 +4790,17 @@ String _timeLabel(DateTime value) {
   return '$hour:$minute';
 }
 
-String _scheduledTaskLabel(DateTime scheduledFor) {
+String _scheduledTaskLabel(DateTime scheduledFor, TaskRecurrence recurrence) {
   final now = DateTime.now();
   if (!scheduledFor.isAfter(now)) {
     return '计划已到点，正在准备启动';
   }
-  return '计划于 ${_timeLabel(scheduledFor)} 执行';
+  final cadence = switch (recurrence) {
+    TaskRecurrence.once => '',
+    TaskRecurrence.daily => '，之后每天重复',
+    TaskRecurrence.weekly => '，之后每周重复',
+  };
+  return '计划于 ${_timeLabel(scheduledFor)} 执行$cadence';
 }
 
 String _timelineResultTitle(TaskStatus status) {

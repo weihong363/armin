@@ -5,11 +5,12 @@ import 'package:armin/features/agent/models/agent_approval_config.dart';
 import 'package:armin/features/agent/services/agent_session_service.dart';
 import 'package:armin/features/history/screens/task_detail_screen.dart';
 import 'package:armin/features/hosts/models/host_config.dart';
-import 'package:armin/features/projects/models/project_path_config.dart';
 import 'package:armin/features/runtime/models/work_state.dart';
 import 'package:armin/features/tasks/models/metric_event.dart';
 import 'package:armin/features/tasks/models/native_output_turn.dart';
 import 'package:armin/features/tasks/models/task_session.dart';
+import 'package:armin/features/tasks/services/loop_runtime_protocol.dart';
+import 'package:armin/features/tasks/services/prompt_template_builder.dart';
 import 'package:armin/features/voice/services/voice_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -21,6 +22,9 @@ const _testProjectPath =
 const _realAgentCommand = r'$HOME/.local/bin/qodercli';
 const _pollInterval = Duration(milliseconds: 250);
 const _testSshPassword = String.fromEnvironment('ARMINTEST_SSH_PASSWORD');
+const _evidenceHoldSeconds =
+    int.fromEnvironment('ARMINTEST_EVIDENCE_HOLD_SECONDS');
+HostConfig? _configuredRealHost;
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
@@ -85,6 +89,7 @@ $firstMarker status=PASS files_changed=0 next=WAIT
       timeout: const Duration(seconds: 240),
     );
     final session = first.host.tmuxSessionName;
+    debugPrint('ARMIN_EVIDENCE_SESSION case=DONE session=$session');
     expect(session, startsWith('armin-'));
     expect(
         state.taskStatus(first),
@@ -98,6 +103,15 @@ $firstMarker status=PASS files_changed=0 next=WAIT
         first.turns.last.deliverable!.displaySummary, contains('status=PASS'));
     expect(first.turns.last.deliverable!.displaySummary,
         contains('files_changed=0'));
+    expect(first.turns.last.deliverable!.loopState,
+        LoopRuntimeOutcomeState.done.name);
+    expect(first.turns.last.deliverable!.displaySummary,
+        isNot(contains('ARMIN_LOOP_OUTCOME_BEGIN')));
+
+    await tester.pump(const Duration(seconds: 8));
+    final afterDone = state.tasks.firstWhere((task) => task.id == taskId);
+    expect(afterDone.turns, hasLength(1));
+    await _holdForExternalEvidence(tester);
 
     await _pumpDetailResult(tester, state, taskId);
     await _expandResultSummaries(tester);
@@ -149,6 +163,41 @@ $firstMarker status=PASS files_changed=0 next=WAIT
     final probe = await _probeTask(state, second);
     expect(probe.sessionExists, isTrue);
   });
+
+  testWidgets('real qodercli blocked outcome does not auto follow-up',
+      (tester) async {
+    const marker = 'ARMIN_REAL_QODER_BLOCKED';
+    final taskId = await _startTask(
+      state,
+      marker: marker,
+      prompt: '''
+Do not inspect or modify files. Completion requires the unavailable external
+value ARMIN_UNKNOWN_TOKEN. Explain the blocker concisely and stop.
+Final answer must include: $marker status=BLOCKED files_changed=0.
+''',
+    );
+    taskIds.add(taskId);
+
+    final blocked = await _waitForDeliverable(
+      tester,
+      state,
+      taskId,
+      marker,
+      timeout: const Duration(seconds: 240),
+    );
+    final deliverable = blocked.turns.single.deliverable!;
+    debugPrint(
+      'ARMIN_EVIDENCE_SESSION case=BLOCKED '
+      'session=${blocked.host.tmuxSessionName}',
+    );
+    expect(deliverable.loopState, LoopRuntimeOutcomeState.blocked.name);
+    expect(deliverable.displaySummary,
+        isNot(contains('ARMIN_LOOP_OUTCOME_BEGIN')));
+    await tester.pump(const Duration(seconds: 8));
+    expect(state.tasks.firstWhere((task) => task.id == taskId).turns,
+        hasLength(1));
+    await _holdForExternalEvidence(tester);
+  });
 }
 
 Future<String> _startTask(
@@ -164,6 +213,12 @@ Future<String> _startTask(
     tmuxSessionName: 'armin-$taskId',
     agentCommand: _realAgentCommand,
   );
+  final finalPrompt = PromptTemplateBuilder().build(
+    taskDescription: prompt,
+    context: '',
+    constraints: const {},
+    secrets: const [],
+  );
   final task = TaskSession(
     id: taskId,
     host: taskHost,
@@ -176,7 +231,7 @@ Future<String> _startTask(
     userText: prompt,
     context: '',
     constraints: const {},
-    finalPrompt: prompt,
+    finalPrompt: finalPrompt,
     secretRecords: const [],
     approvalMode: AgentApprovalMode.aggressive,
     turns: [
@@ -211,7 +266,7 @@ Future<String> _startTask(
   state.startTaskExecution(
     task,
     AgentExecutionRequest(
-      prompt: task.userText,
+      prompt: task.finalPrompt,
       hostId: task.host.id,
       host: task.host.host,
       port: task.host.port,
@@ -230,6 +285,12 @@ Future<String> _startTask(
     ),
   );
   return taskId;
+}
+
+Future<void> _holdForExternalEvidence(WidgetTester tester) async {
+  if (_evidenceHoldSeconds <= 0) return;
+  debugPrint('ARMIN_EVIDENCE_HOLD seconds=$_evidenceHoldSeconds');
+  await tester.pump(const Duration(seconds: _evidenceHoldSeconds));
 }
 
 Future<void> _pumpDetailResult(
@@ -252,6 +313,8 @@ Future<void> _expandResultSummaries(WidgetTester tester) async {
   for (var index = 0; index < 8; index++) {
     final button = find.text('展开完整摘要');
     if (button.evaluate().isNotEmpty) {
+      await tester.ensureVisible(button.first);
+      await tester.pumpAndSettle();
       await tester.tap(button.first);
       await tester.pumpAndSettle();
       continue;
@@ -307,27 +370,16 @@ Future<void> _configureRealHost(ArminAppState state) async {
       '--dart-define=ARMINTEST_SSH_PASSWORD.',
     );
   }
-  final host = seeded ?? _testSeedHost();
-  final needsUpdate = seeded == null ||
-      seeded.agentCommand != _realAgentCommand ||
-      seeded.password != password ||
-      seeded.projectPath != _testProjectPath;
-  if (needsUpdate) {
-    await state.saveHost(
-      host.copyWith(
-        agentCommand: _realAgentCommand,
-        password: password,
-        projectPath: _testProjectPath,
-      ),
-    );
-  }
-  if (!state.projectPaths.any((path) => path.path == _testProjectPath)) {
-    await state.saveProjectPath(_testProject());
-  }
+  _configuredRealHost = (seeded ?? _testSeedHost()).copyWith(
+    agentCommand: _realAgentCommand,
+    password: password,
+    projectPath: _testProjectPath,
+  );
 }
 
 HostConfig _testHost(ArminAppState state) {
-  return state.hosts.firstWhere((host) => host.id == _seedHostId);
+  return _configuredRealHost ??
+      state.hosts.firstWhere((host) => host.id == _seedHostId);
 }
 
 HostConfig _testSeedHost() {
@@ -350,17 +402,6 @@ HostConfig _testSeedHost() {
         '\$HOME/.npm-packages/bin:\$HOME/.local/bin',
     shellWrapper: ShellWrapper.zshLogin,
     machineType: HostMachineType.macAppleSilicon,
-  );
-}
-
-ProjectPathConfig _testProject() {
-  final now = DateTime.now().toUtc();
-  return ProjectPathConfig(
-    id: 'project-real-qodercli-regression',
-    name: 'real-qodercli-regression',
-    path: _testProjectPath,
-    createdAt: now,
-    updatedAt: now,
   );
 }
 

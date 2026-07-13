@@ -19,8 +19,11 @@ import 'package:armin/features/tasks/models/loop_evaluation.dart';
 import 'package:armin/features/tasks/models/metric_event.dart';
 import 'package:armin/features/tasks/models/native_output_turn.dart';
 import 'package:armin/features/tasks/models/task_constraint.dart';
+import 'package:armin/features/tasks/models/task_recurrence.dart';
 import 'package:armin/features/tasks/models/task_session.dart';
 import 'package:armin/features/tasks/services/loop_evaluation_assistant.dart';
+import 'package:armin/features/tasks/services/scheduled_task_wake_service.dart';
+import 'package:armin/features/tasks/services/system_calendar_service.dart';
 import 'package:armin/features/voice/services/voice_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -270,6 +273,10 @@ void main() {
     );
 
     await state.load();
+    await Future.wait([
+      state.processDueScheduledTasks(),
+      state.processDueScheduledTasks(),
+    ]);
     await _waitUntil(() => agent.lastExecuteRequest != null);
 
     expect(state.taskStatus(store.task!), TaskStatus.running);
@@ -279,18 +286,23 @@ void main() {
     expect(
         agent.lastExecuteRequest?.tmuxSessionName, task.host.tmuxSessionName);
     expect(store.task!.metricEvents.last.eventType, 'task_scheduled_started');
+    expect(agent.executeCount, 1);
   });
 
   test('rescheduleTask updates pending schedule before start', () async {
     final task = _scheduledTask(
       scheduledFor: DateTime.now().add(const Duration(minutes: 5)),
-    );
+    ).copyWith(calendarSyncEnabled: true);
     final store = _TaskStore(task);
     final agent = _ControlAgent();
+    final wakeService = _CapturingScheduledTaskWakeService();
+    final calendarService = _CapturingSystemCalendarService();
     final state = ArminAppState(
       store: store,
       agentSessionService: agent,
       voiceService: const _SilentVoiceService(),
+      scheduledTaskWakeService: wakeService,
+      systemCalendarService: calendarService,
     );
     await state.load();
 
@@ -301,6 +313,8 @@ void main() {
     expect(store.task!.scheduledFor, newTime);
     expect(store.task!.metricEvents.last.eventType, 'task_rescheduled');
     expect(agent.lastExecuteRequest, isNull);
+    expect(wakeService.scheduled.last, (task.id, newTime));
+    expect(calendarService.upserted.last.scheduledFor, newTime);
 
     await _waitUntil(() => agent.lastExecuteRequest != null);
     expect(state.taskStatus(store.task!), TaskStatus.running);
@@ -309,8 +323,40 @@ void main() {
   test('cancelScheduledTask clears schedule without starting agent', () async {
     final task = _scheduledTask(
       scheduledFor: DateTime.now().add(const Duration(minutes: 5)),
-    );
+    ).copyWith(calendarSyncEnabled: true);
     final store = _TaskStore(task);
+    final agent = _ControlAgent();
+    final wakeService = _CapturingScheduledTaskWakeService();
+    final calendarService = _CapturingSystemCalendarService();
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: agent,
+      voiceService: const _SilentVoiceService(),
+      scheduledTaskWakeService: wakeService,
+      systemCalendarService: calendarService,
+    );
+    await state.load();
+
+    await state.cancelScheduledTask(task);
+    await Future<void>.delayed(const Duration(milliseconds: 30));
+
+    expect(state.taskStatus(store.task!), TaskStatus.completed);
+    expect(store.task!.scheduledFor, isNull);
+    expect(store.task!.completedAt, isNotNull);
+    expect(store.task!.metricEvents.last.eventType, 'task_schedule_canceled');
+    expect(agent.lastExecuteRequest, isNull);
+    expect(wakeService.cancelled, contains(task.id));
+    expect(calendarService.removed, contains(task.id));
+  });
+
+  test('daily recurrence advances template and starts an isolated occurrence',
+      () async {
+    final dueAt = DateTime.now().subtract(const Duration(days: 1));
+    final template = _scheduledTask(
+      scheduledFor: dueAt,
+      recurrence: TaskRecurrence.daily,
+    );
+    final store = _TaskStore(template);
     final agent = _ControlAgent();
     final state = ArminAppState(
       store: store,
@@ -318,14 +364,66 @@ void main() {
       voiceService: const _SilentVoiceService(),
     );
     await state.load();
+    await _waitUntil(() => agent.lastExecuteRequest != null);
 
-    await state.cancelScheduledTask(task);
-    await Future<void>.delayed(const Duration(milliseconds: 30));
+    final refreshedTemplate = state.tasks.singleWhere(
+      (task) => task.id == template.id,
+    );
+    final occurrence = state.tasks.singleWhere(
+      (task) => task.parentTaskId == template.id,
+    );
 
-    expect(state.taskStatus(store.task!), TaskStatus.draft);
-    expect(store.task!.scheduledFor, isNull);
-    expect(store.task!.metricEvents.last.eventType, 'task_schedule_canceled');
+    expect(refreshedTemplate.recurrence, TaskRecurrence.daily);
+    expect(refreshedTemplate.scheduledFor, isNotNull);
+    expect(refreshedTemplate.scheduledFor!.isAfter(DateTime.now()), isTrue);
+    expect(
+      refreshedTemplate.metricEvents.map((event) => event.eventType),
+      contains('task_recurrence_triggered'),
+    );
+    expect(occurrence.recurrence, TaskRecurrence.once);
+    expect(occurrence.scheduledFor, isNull);
+    expect(occurrence.turns, isEmpty);
+    expect(occurrence.host.tmuxSessionName, startsWith('armin-'));
+    expect(
+        occurrence.host.tmuxSessionName, isNot(template.host.tmuxSessionName));
+    expect(agent.lastExecuteRequest?.tmuxSessionName,
+        occurrence.host.tmuxSessionName);
+    expect(state.activeTasks, contains(occurrence));
+    expect(state.activeTasks, isNot(contains(refreshedTemplate)));
+  });
+
+  test('recurring schedule notifies once when active capacity skips a run',
+      () async {
+    final template = _scheduledTask(
+      scheduledFor: DateTime.now().subtract(const Duration(days: 1)),
+      recurrence: TaskRecurrence.daily,
+    );
+    final notifications = _CapturingTaskNotificationService();
+    addTearDown(notifications.opened.close);
+    final store = _TaskStore(template);
+    final agent = _ControlAgent();
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: agent,
+      voiceService: const _SilentVoiceService(),
+      taskNotificationService: notifications,
+    )..maxActiveTasks = 0;
+    await state.load();
+    await _waitUntil(() => notifications.notifications.isNotEmpty);
+
     expect(agent.lastExecuteRequest, isNull);
+    expect(state.tasks, hasLength(1));
+    expect(
+      store.task!.metricEvents.map((event) => event.eventType),
+      contains('task_recurrence_skipped_capacity'),
+    );
+    expect(notifications.notifications, hasLength(1));
+    expect(
+      notifications.notifications.single.kind,
+      TaskNotificationKind.scheduleSkipped,
+    );
+    expect(notifications.notifications.single.body, contains('下次计划于'));
+    state.dispose();
   });
 
   test('turn idle deliverable event uses waiting runtime snapshot', () async {
@@ -2183,6 +2281,32 @@ Model · ctx ░░░░░░░░░░ 2% · ~/workspace/armin-test/countdo
     expect(notifications.notifications, isEmpty);
   });
 
+  test(
+      'notification taps target an existing runtime task without state changes',
+      () async {
+    final task = _task(status: TaskStatus.turnIdle);
+    final notifications = _CapturingTaskNotificationService()
+      ..pendingTaskId = task.id;
+    addTearDown(notifications.opened.close);
+    final state = ArminAppState(
+      store: _TaskStore(task),
+      agentSessionService: _ControlAgent(),
+      voiceService: const _SilentVoiceService(),
+      taskNotificationService: notifications,
+    );
+    await state.load();
+
+    expect(state.notificationTaskToOpen.value, task.id);
+    expect(state.taskStatus(task), TaskStatus.turnIdle);
+
+    state.consumeNotificationTaskToOpen(task.id);
+    notifications.opened.add(task.id);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(state.notificationTaskToOpen.value, task.id);
+    expect(state.taskStatus(task), TaskStatus.turnIdle);
+  });
+
   test('fresh deliverable event only auto speaks once', () async {
     final now = DateTime(2026, 5, 18);
     final baseTask = _task(status: TaskStatus.turnIdle);
@@ -3046,12 +3170,11 @@ Model · ctx ░░░░░░░░░░ 2%
     expect(executed, isTrue);
     expect(agent.events, contains('sendFollowUp'));
     expect(agent.lastFollowUp, contains('运行最小测试'));
-    expect(agent.lastFollowUp,
-        contains('ARMIN_AUTOPILOT_REQUEST_TEST_EVIDENCE_T2 status=PASS'));
+    expect(agent.lastFollowUp, contains('继续执行当前任务的下一步'));
     expect(store.task!.turns, hasLength(2));
     final autoActions = _loopAutoActions(store.task!);
     expect(autoActions.single.state, LoopAutoActionState.sent);
-    expect(autoActions.single.actionId, 'request_test_evidence');
+    expect(autoActions.single.actionId, 'continue_protocol');
   });
 
   test('runAutopilotNextAction dedupes same turn evidence and action',
@@ -3100,6 +3223,36 @@ Model · ctx ░░░░░░░░░░ 2%
     expect(store.task!.turns, hasLength(1));
     expect(_loopAutoActions(store.task!).single.state,
         LoopAutoActionState.rejected);
+  });
+
+  test('confirmed high risk action records audit fact and sends edited draft',
+      () async {
+    final task = _taskWithSettledTurn();
+    final store = _TaskStore(task);
+    final agent = _ControlAgent();
+    final state = ArminAppState(
+      store: store,
+      agentSessionService: agent,
+      voiceService: const _SilentVoiceService(),
+    );
+    await state.load();
+    final action = _autoAction(
+      policy: LoopNextActionPolicy.confirmationRequired,
+    );
+
+    final sent = await state.confirmLoopNextAction(
+      task,
+      action,
+      instruction: '先备份，再删除临时文件。',
+    );
+
+    expect(sent, isTrue);
+    expect(agent.lastFollowUp, '先备份，再删除临时文件。');
+    expect(store.task!.turns, hasLength(2));
+    final fact = _loopAutoActions(store.task!).single;
+    expect(fact.state, LoopAutoActionState.confirmed);
+    expect(fact.policy, LoopNextActionPolicy.confirmationRequired.name);
+    expect(fact.instructionLength, '先备份，再删除临时文件。'.length);
   });
 
   test('load restores loop user action facts without controls or speech',
@@ -3739,16 +3892,21 @@ TaskSession _task({required TaskStatus status}) {
   );
 }
 
-TaskSession _scheduledTask({required DateTime scheduledFor}) {
+TaskSession _scheduledTask({
+  required DateTime scheduledFor,
+  TaskRecurrence recurrence = TaskRecurrence.once,
+}) {
   final task = _task(status: TaskStatus.pending);
   return task.copyWith(
     scheduledFor: scheduledFor,
+    recurrence: recurrence,
     metricEvents: [
       MetricEvent.create(
         taskId: task.id,
         eventType: 'task_scheduled',
         payloadJson: jsonEncode({
           'scheduledFor': scheduledFor.toIso8601String(),
+          'recurrence': recurrence.name,
         }),
         now: task.createdAt,
       ),
@@ -3812,8 +3970,8 @@ List<LoopAutoAction> _loopAutoActions(TaskSession task) {
 
 LoopNextAction _autoAction({required LoopNextActionPolicy policy}) {
   return LoopNextAction(
-    id: 'request_test_evidence',
-    title: '补充测试证据',
+    id: 'continue_protocol',
+    title: '继续执行',
     reason: '需要验证证据。',
     draft: '请运行最小测试，并输出测试命令和结果。',
     policy: policy,
@@ -4009,9 +4167,11 @@ class _ControlAgent implements AgentSessionService {
   final List<String> events = [];
   AgentControlRequest? lastResumeRequest;
   AgentExecutionRequest? lastExecuteRequest;
+  int executeCount = 0;
 
   @override
   Stream<AgentExecutionUpdate> execute(AgentExecutionRequest request) async* {
+    executeCount++;
     lastExecuteRequest = request;
   }
 
@@ -4531,9 +4691,72 @@ class _CapturingVoiceService implements VoiceService {
 
 class _CapturingTaskNotificationService implements TaskNotificationService {
   final List<TaskNotification> notifications = [];
+  final opened = StreamController<String>.broadcast();
+  String? pendingTaskId;
+
+  @override
+  Future<TaskNotificationPermission> permissionStatus() async =>
+      TaskNotificationPermission.granted;
+
+  @override
+  Future<TaskNotificationPermission> requestPermission() async =>
+      TaskNotificationPermission.granted;
 
   @override
   Future<void> show(TaskNotification notification) async {
     notifications.add(notification);
+  }
+
+  @override
+  Stream<String> get openedTaskIds => opened.stream;
+
+  @override
+  Future<String?> consumePendingTaskId() async {
+    final taskId = pendingTaskId;
+    pendingTaskId = null;
+    return taskId;
+  }
+}
+
+class _CapturingScheduledTaskWakeService implements ScheduledTaskWakeService {
+  final scheduled = <(String, DateTime)>[];
+  final cancelled = <String>[];
+
+  @override
+  Future<void> initialize() async {}
+
+  @override
+  Future<bool> schedule(String taskId, DateTime scheduledFor) async {
+    scheduled.add((taskId, scheduledFor));
+    return true;
+  }
+
+  @override
+  Future<void> cancel(String taskId) async {
+    cancelled.add(taskId);
+  }
+}
+
+class _CapturingSystemCalendarService implements SystemCalendarService {
+  final upserted = <TaskSession>[];
+  final removed = <String>[];
+
+  @override
+  Future<SystemCalendarPermission> permissionStatus() async =>
+      SystemCalendarPermission.granted;
+
+  @override
+  Future<SystemCalendarPermission> requestPermission() async =>
+      SystemCalendarPermission.granted;
+
+  @override
+  Future<bool> upsertScheduledTask(TaskSession task) async {
+    upserted.add(task);
+    return true;
+  }
+
+  @override
+  Future<void> removeScheduledTask(String taskId) async {
+    removed.add(taskId);
   }
 }

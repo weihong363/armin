@@ -28,6 +28,7 @@ enum RuntimeEventType {
   waitingForInstruction,
   waitingForReview,
   waitingForApproval,
+  scheduleSkippedCapacity,
 }
 
 extension RuntimeEventTypeWireName on RuntimeEventType {
@@ -58,6 +59,7 @@ extension RuntimeEventTypeWireName on RuntimeEventType {
       RuntimeEventType.waitingForInstruction => 'WAITING_FOR_INSTRUCTION',
       RuntimeEventType.waitingForReview => 'WAITING_FOR_REVIEW',
       RuntimeEventType.waitingForApproval => 'WAITING_FOR_APPROVAL',
+      RuntimeEventType.scheduleSkippedCapacity => 'SCHEDULE_SKIPPED_CAPACITY',
     };
   }
 
@@ -80,6 +82,7 @@ class RuntimeEvent {
     this.message = '',
     this.turnId,
     this.evidenceFingerprint,
+    this.archiveId,
   });
 
   final RuntimeEventType type;
@@ -89,6 +92,20 @@ class RuntimeEvent {
   final String message;
   final String? turnId;
   final String? evidenceFingerprint;
+  final int? archiveId;
+
+  RuntimeEvent copyWith({int? archiveId}) {
+    return RuntimeEvent(
+      type: type,
+      taskId: taskId,
+      createdAt: createdAt,
+      snapshot: snapshot,
+      message: message,
+      turnId: turnId,
+      evidenceFingerprint: evidenceFingerprint,
+      archiveId: archiveId ?? this.archiveId,
+    );
+  }
 
   Map<String, Object?> toJson() {
     return {
@@ -99,6 +116,7 @@ class RuntimeEvent {
       'message': message,
       'turn_id': turnId,
       'evidence_fingerprint': evidenceFingerprint,
+      'archive_id': archiveId,
     };
   }
 
@@ -117,6 +135,7 @@ class RuntimeEvent {
       message: json['message'] as String? ?? '',
       turnId: json['turn_id'] as String?,
       evidenceFingerprint: json['evidence_fingerprint'] as String?,
+      archiveId: json['archive_id'] as int?,
     );
   }
 }

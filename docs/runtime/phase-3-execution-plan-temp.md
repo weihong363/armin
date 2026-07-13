@@ -121,7 +121,7 @@ Phase 3 从 Phase 2.6/2.7 已验证的单任务可靠执行继续推进到轻量
 - 到点启动复用现有 `startTaskExecution` 和 Runtime 主链路；调度动作本身不发布 deliverable、不触发 TTS。
 - 任务卡片和任务详情会展示 pending 调度任务的下一次执行时间，避免误显示为已运行。
 - 已补充单元测试覆盖 due-on-load、reschedule 后启动、cancel 后不启动。
-- 未实现 recurrence、日历产品化、通知策略或自动继续执行。
+- 已实现有限 recurrence：新建任务页可创建单次、daily / weekly 计划；模板在到点后创建独立 occurrence task 并推进下次时间；不补跑遗漏周期、不复用旧 tmux / turn / deliverable。日历产品化、通知策略或自动继续执行仍不由 scheduler 决定。
 
 ### Phase 3.5：审批工作流增强
 
@@ -136,7 +136,7 @@ Phase 3 从 Phase 2.6/2.7 已验证的单任务可靠执行继续推进到轻量
 
 验收：
 
-- safe / balanced / aggressive 不回归。
+- balanced / aggressive 不回归；安全模式已从产品执行模式中移除。
 - 审批状态不丢。
 - 审批后任务能继续收敛。
 
@@ -191,12 +191,12 @@ Phase 3 从 Phase 2.6/2.7 已验证的单任务可靠执行继续推进到轻量
 
 当前状态：
 
-- 已新增轻量 `TaskNotificationService` 接口和默认 no-op 实现，作为后续 Android/iOS 系统通知 adapter 的唯一入口；当前阶段不接 push、不申请系统通知权限、不改变 TTS。
+- 已新增轻量 `TaskNotificationService` 作为唯一通知入口；Android 已实现系统通知权限、通知渠道、展示和点击跳回对应任务。当前不接 push、不改变 TTS。
 - AppState 已把 RuntimeEventBus 事件映射为本地通知请求：需要审批、等待用户指示、fresh deliverable 结果可验收、运行连接丢失、任务完成和任务失败。
 - 结果通知只在正式 `DELIVERABLE_UPDATED` 且当前 turn 内存在同 fingerprint 的 `TurnDeliverable` 时触发；旧 deliverable、恢复数据、reconnect snapshot、prompt echo、thinking 和 TUI chrome 不会补发通知。
 - 通知按 task / kind / turn / evidence fingerprint 去重；审批按 approval id 去重；状态通知按当前 task status 二次确认，避免 paused、runtimeLost、turnIdle 混淆。
 - 已补充 AppState 单元测试覆盖旧结果不通知、新结果只通知一次、审批通知只通知一次、等待输入和 runtimeLost 通知状态一致；`flutter test test/core/armin_app_state_task_control_test.dart` 已通过。
-- 系统通知展示、通知权限和点击跳转到任务详情保留到原生通知 adapter 接入时实现；当前 Phase 3.7 完成的是可测试的本地通知事件层。
+- 通知状态只来自已提交的 RuntimeEventBus 事件；系统通知、权限和点击跳转都不能写入或覆盖 Runtime 状态。
 
 ### Phase 3.8：AI 辅助 Loop Evaluation
 
@@ -206,13 +206,23 @@ Phase 3 从 Phase 2.6/2.7 已验证的单任务可靠执行继续推进到轻量
 
 - Android 侧已接入 llama.cpp native runtime，`native_slm_smoke_test.dart` 可验证本地 GGUF 真模型生成。
 - 已新增 `LoopEvaluationAssistant`，输入限定为 runtime status、latest `TurnDeliverable`、`loop_evaluated`、`loop_user_action`、`loop_approval_event`。
-- 已新增 `LoopNextAction` 与 `LoopActionPolicyGate`：AI/规则层可以提出下一步 action，但低风险自动执行、高风险确认的边界由 Runtime policy 决定。
+- 已新增 `LoopNextAction` 与 `LoopActionPolicyGate`：AI/规则层可以提出辅助 action，但只有正式 deliverable 中的结构化 `CONTINUE + next_action` 可以进入 Autopilot。
 - 已新增 `ArminAppState.runAutopilotNextAction` Runtime 入口：只接受 `autoAllowed` action，写入 `loop_auto_action` fact，按 turn / evidence / action 去重，并复用现有 `sendFollowUp` 主链路创建下一轮 Turn。
-- 已将 Autopilot 开关绑定到 `aggressive` / YOLO 执行模式：fresh deliverable 后可自动执行低风险下一步；native terminal approval 可自动 approve，但仍先记录 requested fact，再走现有 approval resolution 路径。
+- 已将 Autopilot 绑定到 `aggressive` / YOLO 执行模式：fresh deliverable 为 `CONTINUE` 时可执行协议中的具体下一步；`DONE` / `BLOCKED` 不续跑。native terminal approval 可自动 approve，但仍先记录 requested fact，再走现有 approval resolution 路径。
 - 已接入任务详情「动态」Tab 的 `辅助判断` 卡片，展示辅助判断、下一步 action 和执行策略；不绕过 `sendFollowUp` 主链路，不触发 TTS。
 - 模型不可用、超时、空输出或异常时回落到规则判断；fallback 不影响结果卡片、状态刷新或继续输入。
 
 本轮执行记录（2026-07-10）：Phase 3.8 聚焦回归 183/183、完整 Runtime Gate 14/14 通过；native SLM、真实 qodercli deliverable/Turn 2、真实 qodercli YOLO 审批与自动 follow-up 通过。spinner 收敛、session cleanup、终态合同、SSH teardown、自动审批 Runtime 状态和 notifier 生命周期问题均已修复。动态页视觉和真实音频仅保留为发布前人工抽样。
+
+产品化增强记录（2026-07-12）：计划任务已有独立管理页并按首次执行日期排序，编辑/取消不新增第二写路径；Android 通知权限由设置页显式申请，通知事件不再隐式弹权限；高风险 Autopilot 草稿可编辑、取消和确认，确认动作写入 `loop_auto_action/confirmed` 后统一走 `sendFollowUp`。
+
+产品化增强第二批（2026-07-12）：端侧模型设置页可检查 llama.cpp runtime、模型路径、空间占用和降级原因，并可安全删除默认模型；Loop quality 直接聚合 `loop_evaluated`、`loop_user_action` facts，展示结果、接受、返工、重试和等待指标；审计历史支持结构化搜索与 JSON 导出。三者均为只读消费或显式用户动作，不写入 Runtime 状态、不参与 deliverable/TTS。
+
+产品化增强第三批（2026-07-12）：新增发布代码/设备门禁命令；Runtime 持久事件支持 archive id cursor 增量读取和显式 callback replay。Replay 不广播到 live EventBus，因而不能重复触发通知、语音和 UI 状态。跨重启恢复继续以 Runtime aggregate 和 session binding 为事实源，watcher checkpoint 只用于观察去重。
+
+产品化增强第四批（2026-07-13）：Android 使用 AlarmManager + 开机恢复 + foreground headless Flutter Runtime 处理后台到期计划，仍调用同一 `_startScheduledTask`；系统日历由 `calendarSyncEnabled` 事实投影，创建、改期和取消均经过 `saveTask`；SLM 支持 HTTPS + SHA-256 可信安装到应用私有目录。iOS 工程及通知、EventKit、计划提醒、SLM 管理通道已加入，但 iOS 计划提醒不承诺精确后台执行，llama.cpp decode 尚未达到 Android 等价能力。
+
+发布验收（2026-07-13）：代码门禁 `222/222`、analyze、Android debug build 通过；设备上产品化门禁、完整 Runtime Gate、真实 qodercli deliverable/Turn 2 回归依次通过。门禁不写设备 Host/项目配置。启动阶段有 Choreographer 跳帧日志，P06 运行时 Tab 响应通过，真实音频仍需人工听取。
 
 验收拆成三层：
 
@@ -224,7 +234,7 @@ Phase 3 从 Phase 2.6/2.7 已验证的单任务可靠执行继续推进到轻量
 
 - 当前 AI 可以生成结构化下一步 action；Autopilot 只能在 YOLO 模式下执行 `LoopActionPolicyGate` 允许的低风险 action。
 - 当前 AI 不直接审批；只有 YOLO 模式下的 Runtime Policy Gate 可以自动 approve native terminal approval，且不能标记完成/失败或替代用户最终验收。
-- 模型文件仍通过 `.models/slm/Qwen3-0.6B-Q4_K_M.gguf` 本地缓存推送到模拟器；不提交 GGUF。
+- 生产构建通过 `ARMIN_SLM_MODEL_URL` + `ARMIN_SLM_MODEL_SHA256` 下载并校验模型；`.models/slm/Qwen3-0.6B-Q4_K_M.gguf` 和 `push-gguf-model.sh` 仅保留为本地开发入口，不提交 GGUF。
 - 端侧生成耗时约 18 秒，不能放入同步 UI 关键路径。
 
 ## Phase 3.0 完成记录

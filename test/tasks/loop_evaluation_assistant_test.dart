@@ -8,6 +8,7 @@ import 'package:armin/features/tasks/models/metric_event.dart';
 import 'package:armin/features/tasks/models/native_output_turn.dart';
 import 'package:armin/features/tasks/models/task_session.dart';
 import 'package:armin/features/tasks/services/loop_evaluation_assistant.dart';
+import 'package:armin/features/tasks/services/loop_runtime_protocol.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -30,6 +31,7 @@ void main() {
     expect(summary.text, contains('需要用户验收'));
     expect(client.lastPrompt, contains('结构化事实'));
     expect(client.lastPrompt, contains('已完成 README 更新'));
+    expect(client.lastRequest?.allowUnsafeDecode, isTrue);
     expect(
         client.lastPrompt, isNot(contains('RAW_PROMPT_ECHO_SHOULD_NOT_LEAK')));
   });
@@ -47,6 +49,7 @@ void main() {
     expect(summary.usedAi, isFalse);
     expect(summary.source, 'rules');
     expect(summary.text, contains('本轮已有正式结果'));
+    expect(summary.fallbackReason, 'missing');
   });
 
   test('does not evaluate completion while task is still running', () async {
@@ -101,8 +104,7 @@ void main() {
     expect(summary.text, contains('待处理审批'));
   });
 
-  test('allows low-risk next action to auto execute in aggressive mode',
-      () async {
+  test('keeps rule suggestions assisted even in aggressive mode', () async {
     final assistant = LoopEvaluationAssistant(
       client: _FakeSlmClient(available: false),
     );
@@ -116,8 +118,8 @@ void main() {
     );
 
     expect(summary.nextAction?.id, 'request_test_evidence');
-    expect(summary.nextAction?.policy, LoopNextActionPolicy.autoAllowed);
-    expect(summary.nextAction?.canAutoExecute, isTrue);
+    expect(summary.nextAction?.policy, LoopNextActionPolicy.assisted);
+    expect(summary.nextAction?.canAutoExecute, isFalse);
   });
 
   test('keeps low-risk next action assisted in balanced mode', () async {
@@ -170,6 +172,48 @@ void main() {
 
     expect(summary.nextAction, isNull);
   });
+
+  test('autopilot only continues from an explicit loop outcome', () {
+    final assistant = LoopEvaluationAssistant(
+      client: _FakeSlmClient(available: false),
+    );
+    final task = _task(
+      deliverableSummary: '''
+第一步已完成。
+ARMIN_LOOP_OUTCOME_BEGIN
+state=CONTINUE
+next_action=运行最小测试并汇总结果
+acceptance=UNKNOWN
+ARMIN_LOOP_OUTCOME_END
+''',
+      approvalMode: AgentApprovalMode.aggressive,
+    );
+
+    final action = assistant.autopilotNextActionFor(
+      task,
+      runtimeStatus: 'turnIdle',
+    );
+
+    expect(action?.id, 'continue_protocol');
+    expect(action?.draft, '运行最小测试并汇总结果');
+    expect(action?.policy, LoopNextActionPolicy.autoAllowed);
+  });
+
+  test('short but valid result never creates an autopilot action', () {
+    final assistant = LoopEvaluationAssistant(
+      client: _FakeSlmClient(available: false),
+    );
+
+    final action = assistant.autopilotNextActionFor(
+      _task(
+        deliverableSummary: '项目名为：countdown_widgets',
+        approvalMode: AgentApprovalMode.aggressive,
+      ),
+      runtimeStatus: 'turnIdle',
+    );
+
+    expect(action, isNull);
+  });
 }
 
 class _FakeSlmClient implements SlmClient {
@@ -181,6 +225,7 @@ class _FakeSlmClient implements SlmClient {
   final bool available;
   final String response;
   String lastPrompt = '';
+  SlmGenerationRequest? lastRequest;
   int generateCount = 0;
 
   @override
@@ -196,6 +241,7 @@ class _FakeSlmClient implements SlmClient {
   @override
   Future<SlmGenerationResponse> generate(SlmGenerationRequest request) async {
     generateCount += 1;
+    lastRequest = request;
     lastPrompt = request.prompt;
     return SlmGenerationResponse(text: response, backend: 'fake');
   }
@@ -251,12 +297,19 @@ TaskSession _task({
             : NativeOutputTurnStatus.turnIdle,
         deliverable: deliverableSummary == null
             ? null
-            : TurnDeliverable(
-                displaySummary: deliverableSummary,
-                speechSummary: deliverableSummary,
-                evidenceFingerprint: 'fingerprint-turn-1',
-              ),
+            : _deliverable(deliverableSummary),
       ),
     ],
+  );
+}
+
+TurnDeliverable _deliverable(String summary) {
+  final outcome = LoopRuntimeProtocol.parse(summary);
+  return TurnDeliverable(
+    displaySummary: LoopRuntimeProtocol.strip(summary),
+    speechSummary: LoopRuntimeProtocol.strip(summary),
+    evidenceFingerprint: 'fingerprint-turn-1',
+    loopState: outcome?.state.name ?? '',
+    loopNextAction: outcome?.nextAction ?? '',
   );
 }

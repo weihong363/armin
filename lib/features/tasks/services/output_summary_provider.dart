@@ -947,6 +947,7 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
         .replaceAll(RegExp(r'\bAuto Model\b.*', caseSensitive: false), '')
         .replaceAll(RegExp(r'\bAuto Mode\b.*', caseSensitive: false), '')
         .replaceAll(RegExp(r'\bTry /effort\b.*', caseSensitive: false), '')
+        .replaceAll(RegExp(r'\?\s*for shortcuts\b.*', caseSensitive: false), '')
         .replaceAll(RegExp(r'\b/context-window\b.*', caseSensitive: false), '')
         .replaceAll(RegExp(r'\bModel\s*·\s*ctx\b.*', caseSensitive: false), '')
         .replaceAll(
@@ -1087,8 +1088,7 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
         lower.startsWith('var ') ||
         lower.startsWith('return ') ||
         lower.startsWith('await ') ||
-        lower.startsWith('flutter ') ||
-        lower.startsWith('dart ') ||
+        _looksLikeSdkCommand(lower) ||
         lower.startsWith('search ') ||
         lower.startsWith('list ') ||
         lower.startsWith('ran ') ||
@@ -1196,15 +1196,6 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
     return score;
   }
 
-  Set<String> _taskWords(String taskTitle) {
-    return taskTitle
-        .toLowerCase()
-        .split(RegExp(r'\s+'))
-        .map((word) => word.trim())
-        .where((word) => word.length >= 3)
-        .toSet();
-  }
-
   bool _looksLikePromptEcho(
     String line,
     List<String> promptInputs,
@@ -1223,16 +1214,14 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
           compactInput.contains(compactLine.replaceAll('.', ''))) {
         return true;
       }
-      final taskWords = _taskWords(input);
-      if (taskWords.isNotEmpty) {
-        final lower = line.toLowerCase();
-        final hits = taskWords.where(lower.contains).length;
-        if (hits >= 3 && line.length <= 120) {
-          return true;
-        }
-      }
     }
     return false;
+  }
+
+  bool _looksLikeSdkCommand(String lower) {
+    return RegExp(
+      r'^(?:flutter|dart) (?:test|run|build|analyze|pub|clean|doctor)\b',
+    ).hasMatch(lower);
   }
 
   bool _looksLikeChinesePromptEcho(String compactLine, String compactInput) {
@@ -1273,8 +1262,7 @@ class RuleBasedOutputSummaryProvider implements OutputSummaryProvider {
         lower.startsWith('var ') ||
         lower.startsWith('return ') ||
         lower.startsWith('await ') ||
-        lower.startsWith('flutter ') ||
-        lower.startsWith('dart ') ||
+        _looksLikeSdkCommand(lower) ||
         lower.startsWith('任务：') ||
         lower.startsWith('任务:') ||
         lower.startsWith('constraints:') ||
